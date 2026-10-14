@@ -103,6 +103,47 @@ t("missing everything: ok with found:false; missing IRIS dir does not break the 
   const o = process.env.AGENT_DESKTOP_IRIS_DIR; process.env.AGENT_DESKTOP_IRIS_DIR = "X:\\iris-fixture"; assert.strictEqual(T.irisDir("C:\\real"), "X:\\iris-fixture");
   if (o === undefined) delete process.env.AGENT_DESKTOP_IRIS_DIR; else process.env.AGENT_DESKTOP_IRIS_DIR = o; assert.strictEqual(T.irisDir("C:\\real"), o || "C:\\real");
 });
+const NOIRIS = (F) => ({ irisDir: path.join(F.root, "noiris") });
+const qs = (r) => r.questions.map((q) => q.id).join("\n");
+t("waiting box: a question counts as answered by a LATER owner note in the same thread, and leaves the unread count too", async () => {
+  const F = mkEx();
+  W(F.A, day(2) + "_Sam_calendar-sync-plan.md", "To: Alex. From: Sam.\n\nShould the calendar sync run nightly?\n", 2 * DAY);
+  W(F.B, day(1) + "_Alex_calendar-sync-plan-reply.md", "To: Sam. From: Alex.\n\nYes, nightly.\n", 1 * DAY);
+  W(F.A, day(1) + "_Sam_backup-schedule-check.md", "To: Alex. From: Sam.\n\nCan you confirm the backup schedule?\n", 3 * HOUR);
+  const r = await L(F.root, Object.assign({ lastSeen: 0 }, NOIRIS(F)));
+  assert.ok(!/calendar-sync/.test(qs(r)), "answered"); assert.ok(/backup-schedule/.test(qs(r)), "still open"); assert.strictEqual(r.unread, 1, "only the open one is unread"); rm(F.root);
+});
+t("waiting box: owner-side notes and notes addressed to the other side are never in the box", async () => {
+  const F = mkEx();
+  W(F.B, day(1) + "_Alex_to-Sam_pricing-question.md", "To: Sam. From: Alex.\n\nWhat is the price?\n", HOUR);
+  W(F.A, day(1) + "_misfiled-copy-question.md", "To: Sam. From: Alex's COO.\n\nDid you get this?\n", HOUR); // an owner-side note sitting in the inbox folder
+  W(F.A, day(1) + "_to-Sarah_other-party-question.md", "To: Sarah's COO. From: Sam.\n\nIs this for you?\n", HOUR); // addressed to the partner's own agents
+  W(F.A, day(1) + "_Sam_real-open-question.md", "To: Alex. From: Sam.\n\nIs this for you?\n", HOUR);
+  const r = await L(F.root, NOIRIS(F)); assert.strictEqual(qs(r).split("\n").filter(Boolean).length, 1, qs(r)); assert.ok(/real-open-question/.test(qs(r))); rm(F.root);
+});
+t("waiting box: a later note to a different person, an OLDER note, or an attachment does not answer", async () => {
+  const F = mkEx();
+  W(F.B, day(3) + "_Alex_to-Sam_invoice-review-earlier.md", "To: Sam. From: Alex.\n\nearlier\n", 3 * DAY); // older than the question
+  W(F.A, day(2) + "_Sam_invoice-review-question.md", "To: Alex. From: Sam.\n\nCan you review the invoice?\n", 2 * DAY);
+  W(F.B, day(1) + "_Alex_to-Kim_invoice-review-forward.md", "To: Kim. From: Alex.\n\nforwarding\n", 1 * DAY); // same thread, other person
+  W(F.B, day(1) + "_Alex_invoice-review-scan.png", "x", HOUR); // attachment
+  fs.mkdirSync(path.join(F.B, day(1) + "_invoice-review-folder")); // directory
+  const r = await L(F.root, NOIRIS(F)); assert.ok(/invoice-review-question/.test(qs(r)), "still open: " + qs(r));
+  W(F.B, day(0) + "_Alex_to-Sam_invoice-review-answer.md", "To: Sam. From: Alex.\n\nreviewed\n", 10 * 60000);
+  const r2 = await L(F.root, NOIRIS(F)); assert.ok(!/invoice-review-question/.test(qs(r2)), "a later note to the same sender answers"); rm(F.root);
+});
+t("waiting box: without a thread key a later owner note to the same sender answers, to another person does not", () => {
+  const q = { side: "partner", sender: "Sam", date: 1000, mtimeMs: 1000, hasNameDate: false };
+  const o = (recipient, mtimeMs) => ({ side: "owner", recipient, date: mtimeMs, mtimeMs, hasNameDate: false });
+  assert.ok(M.answersQuestion(o("Sam", 2000), q)); assert.ok(!M.answersQuestion(o("Kim", 2000), q), "different person"); assert.ok(!M.answersQuestion(o("Sam", 500), q), "older");
+  assert.ok(!M.answersQuestion(o("unknown", 2000), q), "no thread key and no recipient: cannot tell");
+  assert.ok(!M.answersQuestion(Object.assign(o("Sam", 2000), { isDir: true }), q) && !M.answersQuestion(Object.assign(o("Sam", 2000), { other: true }), q), "attachments ignored");
+  assert.ok(!M.answersQuestion(Object.assign(o("Sam", 2000), { side: "partner" }), q), "partner-side note never answers");
+});
+t("waiting box: QUESTION_DAYS expiry still applies; an old unanswered question is not listed", async () => {
+  const F = mkEx(); W(F.A, day(9) + "_Sam_stale-topic-question.md", "To: Alex. From: Sam.\n\nStill open?\n", 9 * DAY);
+  const r = await L(F.root, NOIRIS(F)); assert.strictEqual(r.questions.length, 0); rm(F.root);
+});
 t("no network and no write: modules do not require net/http/https/child_process and never write", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "fleetTimeline.js"), "utf8");
   assert.ok(!/require\(["'](net|http|https|dgram|tls|child_process)["']\)/.test(src)); assert.ok(!/writeFile|appendFile|unlink|rename|mkdir/.test(src));

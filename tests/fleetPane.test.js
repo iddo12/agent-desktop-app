@@ -50,8 +50,8 @@ t("newest first; folders and non-md files are listed as items", async () => {
   const r = await L(F.root), ds = r.items.map((i) => Math.max(i.date, i.mtimeMs)); for (let k = 1; k < ds.length; k++) assert.ok(ds[k - 1] >= ds[k]);
   assert.ok(r.items.some((i) => i.isDir)); assert.ok(r.items.some((i) => i.other));
 });
-t("unread is computed from the fixture files, not hard-coded", async () => {
-  const mer = fs.readdirSync(F.A).map((f) => fs.lstatSync(path.join(F.A, f)).mtimeMs);
+t("unread is computed from the fixture files, not hard-coded (an answered question note, redirect_plan, no longer counts)", async () => {
+  const mer = fs.readdirSync(F.A).filter((f) => !/redirect_plan/.test(f)).map((f) => fs.lstatSync(path.join(F.A, f)).mtimeMs);
   for (const cut of [0, Date.now() - 2.5 * DAY, Date.now() - 4.5 * DAY, Date.now()]) {
     const r = await L(F.root, { lastSeen: cut }); assert.strictEqual(r.unread, mer.filter((m) => m > cut).length, "cut " + cut);
   }

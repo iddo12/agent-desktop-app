@@ -222,6 +222,35 @@ function isNewer(later, n) {
   return later.mtimeMs > n.mtimeMs;
 }
 
+// Name comparison for "the same person": normalised (letters/digits, lower case); equal, one contains the other, or a shared non-filler word.
+const unknownName = (v) => !v || /^(unknown|me|this fleet|the other side)$/i.test(String(v).trim());
+function sameParty(a, b) {
+  const x = wordsOf(a), y = wordsOf(b);
+  if (!x.length || !y.length) return false;
+  if (x.join(" ") === y.join(" ") || x.join(" ").indexOf(y.join(" ")) >= 0 || y.join(" ").indexOf(x.join(" ")) >= 0) return true;
+  const ys = new Set(y.filter((w) => !STOP.has(w)));
+  return x.some((w) => !STOP.has(w) && ys.has(w));
+}
+// Is a partner-side note really addressed TO the owner side? Everything in the inbox folder is, unless the note itself says it was written
+// by the owner (misfiled copy) or names the partner as its recipient (a note to the other side's own agents).
+const mentions = (text, name) => { const w = wordsOf(name), t = new Set(wordsOf(text)); return w.length > 0 && w.every((x) => t.has(x)); };
+function toOwner(nm) {
+  if (nm.side !== "partner") return false;
+  if (mentions(nm.sender, NAMES.owner) && !mentions(nm.sender, NAMES.partner)) return false; // written by the owner side
+  if (mentions(nm.recipient, NAMES.partner) && !mentions(nm.recipient, NAMES.owner)) return false; // addressed to the other side's own agents
+  return true;
+}
+// Does owner-side note `o` answer partner-side question `q`? It must be LATER and go to the same sender: same thread key (a recipient that is
+// known and clearly names somebody else does not count), or - when either note has no thread key - the same sender by name.
+function answersQuestion(o, q) {
+  if (o.side !== "owner" || o.isDir || o.other || !isNewer(o, q)) return false;
+  const sameThread = !!(o.threadKey && q.threadKey && o.threadKey === q.threadKey);
+  const recipOk = unknownName(o.recipient) || unknownName(q.sender) || sameParty(o.recipient, q.sender);
+  if (sameThread) return recipOk;
+  if (o.threadKey && q.threadKey) return false;
+  return !unknownName(o.recipient) && !unknownName(q.sender) && sameParty(o.recipient, q.sender);
+}
+
 // Whole mailbox listing. opts: { lastSeen (ms), now (ms), force }. Never throws on a missing folder.
 async function listMailbox(root, opts) {
   opts = opts || {};
@@ -234,19 +263,21 @@ async function listMailbox(root, opts) {
   const { items } = base;
   const byId = new Map(items.map((i) => [i.id, i]));
   const threads = base.threads.map((t) => Object.assign({}, t, { count: t.items.length, unread: t.items.filter((id) => { const i = byId.get(id); return i.side === "partner" && i.mtimeMs > lastSeen; }).length }));
-  // open questions: EVERY incoming note of a thread that looks like a question, is under 7 days old and has no newer note from this fleet
-  const questions = [];
+    // open questions: EVERY incoming note of a thread that looks like a question, is addressed to the owner side, is under 7 days old and has no
+  // newer note from this fleet to the same sender (see answersQuestion). Answered question notes also leave the unread count.
+  const questions = [], answered = new Set();
   for (const t of threads) {
     const list = t.items.map((id) => byId.get(id)), owner = list.filter((i) => i.side === "owner" && !i.isDir && !i.other);
     for (const nm of list) {
-      if (nm.side !== "partner" || !nm.question || now - nm.date > QUESTION_DAYS * 86400000) continue;
-      if (owner.some((i) => isNewer(i, nm))) continue;
+      if (nm.side !== "partner" || !nm.question || !toOwner(nm)) continue;
+      if (owner.some((i) => answersQuestion(i, nm))) { answered.add(nm.id); continue; }
+      if (now - nm.date > QUESTION_DAYS * 86400000) continue;
       questions.push({ id: nm.id, threadKey: t.key, title: nm.title, sender: nm.sender, date: nm.date, preview: nm.preview });
     }
   }
   questions.sort((x, y) => y.date - x.date);
   const mer = items.filter((i) => i.side === "partner");
-  return { ok: true, found: true, dir: root, total: base.total, capped: base.total > items.length, items, threads, questions, unread: mer.filter((i) => i.mtimeMs > lastSeen).length, maxPartnerMtime: mer.reduce((m, i) => Math.max(m, i.mtimeMs), 0), fp };
+  return { ok: true, found: true, dir: root, total: base.total, capped: base.total > items.length, items, threads, questions, unread: mer.filter((i) => i.mtimeMs > lastSeen && !answered.has(i.id)).length, maxPartnerMtime: mer.reduce((m, i) => Math.max(m, i.mtimeMs), 0), fp };
 }
 
 const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
@@ -288,4 +319,4 @@ function writeReply(root, o) {
   return { ok: false, error: "too many files with that name" };
 }
 
-module.exports = { configure, settings, fleetDir, listMailbox, readMessage, writeReply, parseName, parseHead, looksLikeQuestion, dateFromName, SIDES, MAX_FILES, _readHead: readHead, _assignThreads: assignThreads, _resetCache: () => { cache = null; headCache.clear(); } };
+module.exports = { configure, settings, fleetDir, listMailbox, readMessage, writeReply, parseName, parseHead, looksLikeQuestion, dateFromName, toOwner, answersQuestion, SIDES, MAX_FILES, _readHead: readHead, _assignThreads: assignThreads, _resetCache: () => { cache = null; headCache.clear(); } };
