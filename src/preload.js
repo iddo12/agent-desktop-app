@@ -124,6 +124,14 @@ contextBridge.exposeInMainWorld("api", {
     consent: (featureId) => ipcRenderer.invoke("config-consent", { featureId }),
     agentInstructions: (featureId) => ipcRenderer.invoke("config-agent-instructions", featureId === undefined ? undefined : { featureId }),
   },
+  bugReport: { // v1.123.0 "Report a problem" (src/bugReportMain.js). Nothing here can send anything anywhere; the files are written where the person chooses.
+    info: () => ipcRenderer.invoke("bug-report-info"),
+    pickFolder: () => ipcRenderer.invoke("bug-report-pick-folder"),
+    pickScreenshot: (clear) => ipcRenderer.invoke("bug-report-pick-screenshot", clear ? { clear: true } : {}),
+    preview: (form) => ipcRenderer.invoke("bug-report-preview", form),
+    create: (form) => ipcRenderer.invoke("bug-report-create", form),
+    openFolder: () => ipcRenderer.invoke("bug-report-open-folder", {}),
+  },
   setUiFlag: (key, value) => ipcRenderer.invoke("ui-flag-set", { key, value }),
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
   // Update & restart (v1.58.0) - see src/app-update.js.

@@ -3,6 +3,8 @@
 const demo = require("./demo");
 const testGuard = require("./testGuard");
 testGuard.install();
+// v1.123.0: keeps the last ~400 console lines in memory only, for "Report a problem" (src/appLogRing.js)
+require("./appLogRing").install();
 // v1.121.0: where ARGUS, Memory, Keep working and the usage code find their files comes from the configuration layer (src/featureCtx.js)
 const featureCtx = require("./featureCtx").create({ cfg: require("./appConfig"), guard: testGuard });
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification } = require("electron");
@@ -426,6 +428,23 @@ try {
   appConfig.setProbe("claudeCode", () => { try { if (privateCliReady()) return true; const le = launchEnvx(); if (!le.primed()) return !!(le.explicit("claudeExe") || appConfig.get("claudeExe")); return !!le.claude({ legacy: claudeDesktopPackageCmd }).ok; } catch (e) { return false; } });
   require("./setupMain").register({ ipcMain, dialog, cfg: appConfig, features: require("./features"), getMainWindow: () => mainWindow, isTestMode: () => testMode.TEST_MODE, env: process.env });
 } catch (e) { console.error("[setup] configuration layer failed to start:", e && e.message); }
+
+// v1.123.0: "Report a problem" (src/bugReport.js + src/bugReportMain.js). Writes a scrubbed report folder + zip where the person chooses; sends nothing.
+try {
+  const appConfigBr = require("./appConfig"), featuresBr = require("./features");
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(""), ms))]);
+  require("./bugReportMain").register({
+    ipcMain, dialog, shell, getMainWindow: () => mainWindow, userDataDir: app.getPath("userData"), appVersion: app.getVersion(),
+    desktopDir: () => { try { return app.getPath("desktop"); } catch (e) { return app.getPath("home"); } },
+    listAgents: () => listAgents({ noAvatar: true }),
+    terminalTail: (agentPath) => String(dialogTails.get(agentPath) || ""),
+    featureStates: () => featuresBr.list().map((f) => { const st = appConfigBr.feature(f.id) || {}; return { id: f.id, title: f.title, state: st.state, reason: st.reason }; }),
+    appLog: () => require("./appLogRing").get(),
+    names: () => ["ownerName", "partnerName"].map((k) => { try { return appConfigBr.get(k); } catch (e) { return null; } }).filter(Boolean),
+    gitCommit: () => withTimeout(new Promise((resolve) => { execFile("git", ["-C", path.join(__dirname, ".."), "rev-parse", "--short", "HEAD"], { timeout: 4000, windowsHide: true }, (err, out) => resolve(err ? "" : String(out).trim())); }), 5000),
+    claudeVersion: () => withTimeout(runClaudeCommand(resolveClaudeExecutable(), ["--version"], { env: process.env }, 1, 0).then((o) => String((o && o.output != null ? o.output : o) || "").trim().slice(0, 100)).catch(() => ""), 6000),
+  });
+} catch (e) { console.error("[bug-report] failed to start:", e && e.message); }
 
 // v1.121.0: the agents folder (src/agentsRoot.js: environment > Setup's agentsRoot > the old "folder this program sits in" rule). Read once
 // here, after the configuration layer exists; the agent list, groups and create/delete read it afresh on every call, so a folder chosen in

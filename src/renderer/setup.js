@@ -54,7 +54,9 @@
       catch (e) { say(T("copyFail"), true); }
     });
     const close = el("button", "setup-btn", T("close")); close.type = "button"; close.addEventListener("click", closeView);
-    head.append(copy, close);
+    const report = el("button", "setup-btn setup-report", (window.BugReportStrings && window.BugReportStrings.pick(code).button) || "Report a problem"); report.type = "button";
+    report.addEventListener("click", () => { try { if (window.BugReport) window.BugReport.open(code); } catch (e) { say(T("copyFail"), true); } });
+    head.append(copy, report, close);
   }
 
   async function refresh() {

@@ -165,7 +165,7 @@ ok(L.validDate("2026-10-13") && !L.validDate("2026-13-01") && !L.validDate("26-1
   const pre = read("src/preload.js"); ok(/health-body-load/.test(pre) && /health-body-save/.test(pre), "preload bridge");
   ["src/renderer/health-body.js", "src/health/body-logic.js", "src/health/body-store.js"].forEach((f) => { const t = read(f); ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(t), f + ": no innerHTML"); ok(!/fetch\(|XMLHttpRequest|WebSocket|require\("https?"\)|sendBeacon/.test(t), f + ": no network"); ok(!/setInterval|setTimeout/.test(t), f + ": no timers"); });
   ok(!/require\(/.test(read("src/renderer/health-body.js")), "renderer file does not require anything");
-  ok(/^1\.(11[89]|12[012])\.\d+$/.test(JSON.parse(read("package.json")).version), "version is 1.118.x - 1.122.x");
+  ok(/^1\.(11[89]|12[0123])\.\d+$/.test(JSON.parse(read("package.json")).version), "version is 1.118.x - 1.123.x");
 }
 // ---- review fixes (v1.118.0): flagged + unfinished must save; better-mark keeps answeredAt; double-save / stale guards exist
 {

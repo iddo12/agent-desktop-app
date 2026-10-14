@@ -1,0 +1,28 @@
+/* "Report a problem" dialog (v1.123.0). Scoped under #bugreport-overlay / #bugreport-dialog. Logical properties only (Hebrew mirrors by itself). */
+#bugreport-overlay { position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+#bugreport-dialog { width: min(680px, 94vw); max-height: 90vh; overflow-y: auto; box-sizing: border-box; padding: 18px 22px; border-radius: 12px; background: var(--bg-panel, #fff); color: var(--text, #2b2a26); border: 1px solid rgba(127,127,127,.4); }
+#bugreport-overlay .hidden { display: none; }
+#bugreport-dialog h2 { margin: 0 0 6px; font-size: 20px; }
+#bugreport-dialog h3 { margin: 14px 0 6px; font-size: 14px; }
+#bugreport-dialog .br-intro { margin: 0 0 10px; line-height: 1.45; }
+#bugreport-dialog .br-lbl { display: block; font-weight: 600; margin: 8px 0 4px; }
+#bugreport-dialog textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; border: 1px solid rgba(127,127,127,.5); border-radius: 6px; background: transparent; color: inherit; resize: vertical; }
+#bugreport-dialog .br-hint { font-size: 12px; color: #66635a; }
+#bugreport-dialog .br-item { padding: 6px 0; border-bottom: 1px solid rgba(127,127,127,.2); }
+#bugreport-dialog .br-item-top { display: flex; align-items: center; gap: 8px; }
+#bugreport-dialog .br-item-name { flex: 1; font-weight: 600; }
+#bugreport-dialog .br-tag { font-size: 12px; color: #66635a; }
+#bugreport-dialog .br-item-why { font-size: 13px; color: #66635a; margin-inline-start: 26px; line-height: 1.4; }
+#bugreport-dialog .br-extra { margin-block-start: 6px; margin-inline-start: 26px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#bugreport-dialog .br-link { background: none; border: 0; padding: 0; color: #2f6fc0; text-decoration: underline; cursor: pointer; font: inherit; }
+#bugreport-dialog .br-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(127,127,127,.55); background: transparent; color: inherit; cursor: pointer; font: inherit; }
+#bugreport-dialog .br-primary { background: #a94f30; border-color: #a94f30; color: #fff; font-weight: 600; }
+#bugreport-dialog .br-btn:disabled { opacity: .6; cursor: default; }
+#bugreport-dialog .br-actions { display: flex; gap: 10px; margin-top: 12px; }
+#bugreport-dialog .br-preview { max-height: 220px; overflow: auto; margin: 8px 0; padding: 8px; border-radius: 6px; background: rgba(127,127,127,.12); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+#bugreport-dialog .br-pv-name { font-weight: 700; margin-top: 6px; }
+#bugreport-dialog code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; padding: 1px 6px; border-radius: 4px; background: rgba(127,127,127,.15); word-break: break-all; unicode-bidi: isolate; }
+#bugreport-dialog .br-dest-row, #bugreport-dialog .br-line { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#bugreport-dialog .br-msg { min-height: 20px; margin-top: 8px; }
+#bugreport-dialog .br-bad { color: #7e1f1b; }
+#bugreport-dialog :focus-visible { outline: 3px solid #2f6fc0; outline-offset: 2px; }
