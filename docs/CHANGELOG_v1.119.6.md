@@ -1,0 +1,6 @@
+## v1.119.6 - Systems tiles adapt to their own size (designed by UI/UX)
+
+the owner (2026-10-13): after 1.119.5 the Systems tiles broke when the sidebar was wide: badges (Argus lamps, My Daily, My Research, Library Docs) overflowed or collided with labels, "the partner's side" ran into the border, "My Finance" was overlapped.
+- Each Systems tile is now a size container (`container-type: inline-size`); label, sub-line, badge and Argus-lamp sizes follow the TILE width (clamp with cqw). The tile is a wrapping flex row (icon, name, badge): a badge that does not fit beside the name drops to its own line at the inline end; labels clamp to 2 lines with an ellipsis (the tooltip has the full text); Argus lamps wrap in their own row. Logical margins only, so Hebrew mirrors.
+- Column minimum 100 px (two columns still fit with the 15 px scrollbar, also at a 240 px sidebar); sidebar scrollbar thin. Scoped to the full-size Systems group, so the icon strip and the ARGUS-open chips are unchanged. CSS only, no JS, nothing polled. Numbers are not abbreviated (they wrap instead).
+- Verified by UI/UX in headless Edge (0 of 130 problem tiles, was 40) and by Security in the real Electron sandbox (5 sidebar widths, every badge forced to 1,284: no tile overflow; screenshot before/after). Patch: UI-UX Agent\docs\systems_tiles_adaptive_v1.119.6.patch.

@@ -1,0 +1,82 @@
+{
+ "note": "Copied read-only from shared_reports/research/2026-W41 on 2026-10-08 for the figures parser tests (v1.91.0).",
+ "findings": [
+  {
+   "agent": "Analytics Agent",
+   "id": "youtube-view-count-from-first-frame-2026-08-24",
+   "title": "YouTube counts views from first frame since 24 Aug 2026",
+   "whatChanged": "From 24 Aug 2026 YouTube counts a view when playback starts, for long-form, Shorts and live, replacing the roughly 30-second rule for long-form. The old engagement-based measure remains in Analytics Advanced Mode as Engaged Views. YouTube says earnings and Partner Program eligibility are unchanged. Confirmed by our own API data: engagedViews stayed flat (~20K/month Jul-Sep) while views rose to 39.5K in Sep.",
+   "soWhat": "Matches the step change we measured on 27 Aug (daily views 790 to 1,316 with flat watch time; Search and Subscriber sources). The Sep 2026 view jump is a measurement change, not growth. Use watch hours, engaged views and net subs as headline numbers and break the views trend line at 24 Aug."
+  },
+  {
+   "agent": "Analytics Agent",
+   "id": "review-publishers-ai-overviews-affiliate-drop",
+   "title": "Review/affiliate publishers lost 20-40% of affiliate revenue to AI Overviews",
+   "whatChanged": "Press Gazette reports 20-40% affiliate revenue drops at some publishers; a Growtika analysis says CNET, Wired, Verge and TechRadar lost 58% of Google traffic between early 2024 and Jan 2026.",
+   "soWhat": "Context for Acmeco's steady decline: it is part of an industry-wide slide, though our own organic search is flat (2,088 to 2,184 per 28 days), so Google is not the main driver of our loss; Direct bots and Amazon rate cuts are the bigger distortions."
+  },
+  {
+   "agent": "Analytics Agent",
+   "id": "amazon-associates-2026-rate-cuts-attribution",
+   "title": "Amazon cut Associates rates and narrowed halo attribution in 2026",
+   "whatChanged": "Adweek, eMarketer and AdExchanger report Amazon cut Associates commissions by up to 50% in some categories (US rollout around 9 Mar 2026, never publicly announced) and reduced reporting detail. The Operating Agreement effective 14 Apr 2026 narrows onsite commission to the promoted ASIN or its variants, so same-category 'halo' purchases no longer pay. The click window is still 24 hours (90 days once in the cart). Our own acmeco-20 US rate card (read 2026-10-06): Computers/Tablets/Components 2.5%, Headphones 3%, TV 2%, Echo/Fire/Kindle devices 4%, All Other (incl. cameras) 4%; no tier above 5% except Games 20% and a few niche lines.",
+   "soWhat": "Amazon US income already fell to about $52 last quarter plus UK about $29 (our baseline) against $146 the quarter before; part of that is the attribution change, not only traffic and bot clicks. Plan on lower Amazon revenue per click and weight B&H and direct brand programmes in affiliate decisions. We lack a dated before-rate card, so the size of our own cut is unproven."
+  },
+  {
+   "agent": "Analytics Agent",
+   "id": "ga4-ai-assistant-channel-may-2026",
+   "title": "GA4 added a native AI Assistant channel on 13 May 2026",
+   "whatChanged": "GA4's default channel group now classifies ChatGPT, Gemini, DeepSeek, Copilot and Grok referrals as AI Assistant. Perplexity still lands in Referral, and 35-70% of AI sessions arrive without a referrer and sit in Direct, so the channel undercounts. Sources are secondary.",
+   "soWhat": "acmeco.com shows 156 AI Assistant sessions in 28 days (0.7%, 40% engaged), which is the best-quality small segment after Organic Search. Add a custom channel group with a regex for perplexity.ai, claude.ai and others when reporting it; history before May is missing."
+  },
+  {
+   "agent": "Analytics Agent",
+   "id": "meta-fb-insights-views-replace-reach-2026-06-15",
+   "title": "Meta replaced Facebook Reach/Impressions with Views/Unique views on 15 Jun 2026",
+   "whatChanged": "Graph API v25 deprecated page_impressions, reach and page-fan metrics on 15 Jun 2026: Impressions become Views (repeat views counted), Reach becomes Unique views (industry estimates 20-40% lower than old Reach), Likes become Followers.",
+   "soWhat": "Our social baseline and the Social Media Agent's 2x-reach decision rule use 'reach'. Define it as Unique views from now on and do not compare it with pre-June Reach. Tracker and playbook need the same wording."
+  },
+  {
+   "agent": "YouTube Agent",
+   "id": "yt-view-count-first-frame-2026-08-24",
+   "title": "YouTube counts views from first frame since 24 Aug 2026; Engaged Views keeps old metric",
+   "whatChanged": "From 24 Aug 2026 a view counts at first frame, no minimum watch time. The old stricter measure remains as Engaged Views (Studio Advanced Mode, API metric engagedViews) and still governs earnings and YPP eligibility. Our API data shows daily views stepping from ~790 to ~1,300 on 27 Aug while engagedViews stayed flat (~680).",
+   "soWhat": "Acmeco's Sep 2026 views jump (26.4K to 39.5K) is not growth; engaged views are 20.2K vs 20.7K in Aug, down from 53K in Oct 2024. Reports and RPM must use engagedViews from Aug 24."
+  },
+  {
+   "agent": "YouTube Agent",
+   "id": "ypp-thresholds-double-2027-02-01",
+   "title": "YPP entry bar doubles for NEW applicants from 1 Feb 2027 (8,000 watch hours)",
+   "whatChanged": "Reported from 1 Feb 2027: new applicants need 1,000 subs plus 8,000 watch hours/365d (now 4,000) or 20M Shorts views/90d (now 10M); existing partners unaffected. Early-access tier (500 subs, 3,000 hrs) exists today.",
+   "soWhat": "Acmeco Talk and Gadgetry are not monetized and would be new applicants: whichever can reach 4,000 hrs/1,000 subs and apply before 1 Feb 2027 avoids the doubled bar. Needs a real check of each channel's 12-month hours (blocked on OAuth for the separate channels). Also Shorts-revenue eligibility reportedly needs 10M Shorts views/90d for all partners from that date."
+  },
+  {
+   "agent": "YouTube Agent",
+   "id": "made-on-youtube-2026-studio-ai",
+   "title": "Made on YouTube (23 Sep 2026): Studio AI draft feedback, dynamic thumbnails, Ask Studio",
+   "whatChanged": "Rolling out through late 2026: AI draft feedback on unpublished videos, auto-generated/tested thumbnails and titles, Ask Studio on mobile, free auto-dubbing, Views (Co-Viewed) metric in Advanced Mode.",
+   "soWhat": "Directly targets our low-CTR problem (2.2% vs ~6% history): dynamic thumbnail testing may be usable once it reaches our channel; check Studio for availability."
+  },
+  {
+   "agent": "Legal Agent",
+   "id": "anthropic-agent-sdk-public-tool-auth",
+   "title": "Anthropic: public tools must use API keys or the user's own login, not Pro/Max credentials",
+   "whatChanged": "Claude Code legal page (fetched) says developers building products with the Agent SDK should use API-key auth; Anthropic does not permit third-party developers to offer Claude.ai login or route requests through Free/Pro/Max credentials on behalf of users, nor to collect/store Claude.ai tokens. Customers may not pay for, resell or intermediate Claude usage for end users: each end user authenticates with their own key/plan. Claude Code binary must be unmodified; Anthropic/Claude Code names and logos may not be used in product names or to imply endorsement. Enforcement may be without notice. Commercial Terms (eff. 17 Jun 2025): no resale, no building competing products. Usage Policy (eff. 15 Sep 2025): consumer-facing agents must disclose they are AI; human review in high-risk domains (legal, finance, health etc.).",
+   "soWhat": "Directly shapes how COPIER/CUTTER/Agent Desktop can be shipped publicly: if any of them runs on Alex's own subscription login or his paid key for other people, that breaks the terms. Design must be bring-your-own-key / user's own sign-in, with AI disclosure and a not-legal-advice style disclaimer. I fetched the pages but did not check page history; confirm no newer version before launch. Ask Software Engineering which auth path each tool uses."
+  },
+  {
+   "agent": "Legal Agent",
+   "id": "disclosure-enforcement-ftc-cma-il",
+   "title": "Disclosure: FTC Consumer Review Rule enforcement begun; UK CMA/ASA tightening; Israel position unchanged",
+   "whatChanged": "FTC sent warning letters to 10 companies on 22 Dec 2025 (civil penalty up to $53,088 per violation), confirmed by two law-firm pieces. A claim of five settlements totalling $27.4M in Apr 2026 appeared in one secondary only and is UNVERIFIED (not found on ftc.gov). UK: CMA/ASA updated influencer guidance (affiliate links, gifted items, self-promotion must be labelled); CMA can now fine directly under the DMCC Act. Israel: AG position (Hebrew, visible without clicking) unchanged; no new Consumer Protection Authority guidance reached.",
+   "soWhat": "Confirms current practice: label affiliate links and gifted gear plainly, next to the claim; the UK is the strictest enforcement venue for UK readers."
+  },
+  {
+   "agent": "Security",
+   "id": "woocommerce-9-7-3-four-open-advisories",
+   "title": "WooCommerce 9.7.3 (greenery) is exposed to several published advisories; fixed in 10.5.3 to 11.1.0, latest 11.1.2",
+   "whatChanged": "Patchstack lists, for versions at or above ours: sensitive data exposure <= 10.4.2 (fixed 10.4.3, 2025-12-22); CVE-2026-3589 CSRF creating admin users via REST batch, 5.4.0-10.5.2, CVSS 7.5, fixed 10.5.3 (2026-03-10); CVE-2026-57777 authenticated Shop Manager+ SQLi <= 10.9.4, fixed 11.0 (2026-09-04); CVE-2026-48888 unauthenticated resource-exhaustion DoS, < 11.1.0, CVSS 7.5, fixed 11.1.0 (2026-09-07), Patchstack says it expects mass exploitation. The XSS <= 9.7.0 is already fixed in our 9.7.3. Latest is 11.1.2 (2026-09-22), tested to 7.1.3. None is in CISA KEV; EPSS for CVE-2026-3589 reported near 0%.",
+   "soWhat": "Only the CSRF (needs a logged-in admin to click a link) and the unauthenticated DoS are reachable by outsiders; the DoS takes greenery down rather than leaking data, and Cloudflare in front limits it. One fix covers all: 11.1.2, a two-major jump (9.7 to 11.1) with the Bit gateway (woo-bit-payment-gateway 2.0, premium, compatibility unverified) and Soledad template overrides to test on staging with a Sarah test order. Interim: admins should not click unknown links while logged in to greenery. I did not find the DoS request path, so no targeted Cloudflare rule is proposed."
+  }
+ ]
+}

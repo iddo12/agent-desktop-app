@@ -1,0 +1,5 @@
+## v1.119.3 - Component install no longer touches Electron (the partner's update failed with EBUSY)
+
+the partner's 1.119.2 update was undone with "npm could not install imapflow, libmime (EBUSY: resource busy or locked, rename ...node_modules\electron\dist\icudtl.dat)". Cause: dep-doctor ran npm inside the app folder; npm re-checked the whole tree and tried to rewrite Electron's files, which are locked while the app runs.
+- `src/dep-doctor.js`: npm now runs in a scratch folder under the temp directory (own empty package.json); when it succeeds, only the packages the app folder does not have yet are copied into `node_modules` (installed ones are kept untouched), then the scratch folder is deleted. Electron and every installed package are never touched. A failed copy counts as a failed install and is rolled back as before.
+- Test added in `tests/depDoctor.test.js` (scratch cwd, copy-in, existing package kept); checked with the real npm on a temp repo that has an `electron` folder: installed mailsplit plus 5 dependencies, electron untouched.

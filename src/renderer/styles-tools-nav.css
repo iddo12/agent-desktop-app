@@ -1,0 +1,15 @@
+/* Tools sidebar entry (v1.83.0). Same look as the My Health entry. The view's own styles are in styles-tools.css, loaded on first open. */
+.tools-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.tools-nav:hover { background: var(--bg-hover); }
+.tools-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.tools-nav-name { flex: 1; min-width: 0; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+body:not(.lp-on).argus-open .tools-nav, body:not(.lp-on).iris-open .tools-nav { display: none; }
+body.lp-f #systems-group .tools-nav-name { flex: 1; min-width: 0; font-size: 13px; }
+body.lp-c #systems-group .tools-nav-name { flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* an opened Tools view hides the other views, exactly as My Health does */
+body.tools-open #chat-view, body.tools-open #empty-state, body.tools-open #library-view, body.tools-open #argus-view,
+body.tools-open #iris-view, body.tools-open #memory-view, body.tools-open #daily-view, body.tools-open #health-view, body.tools-open #xp-panel { display: none !important; }

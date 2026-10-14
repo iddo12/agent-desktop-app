@@ -1,0 +1,162 @@
+/* Agent documents side panel - v1.92.0 rebuild to the approved UI-UX mockups (2026-10-05).
+   Visual language = the v1.88.2 polish rules (styles-research.css): weights 400/600/700 only, 1 px hairlines,
+   nothing under 12 px, colour never alone (every dot/tile/chip also has a word or a shape).
+   Layout: beside the chat when there is room ("side": chat shrinks), floating over it when not ("overlay":
+   window < 1100 px or the chat would drop under 360 px). "Open here" widens the panel to 560 px. */
+
+:root {
+  --adp-w: 380px;
+  --adp-vw: 560px;
+  --adp-hair: var(--rs-hair, #e2dcd2);
+  --adp-sel: var(--bg-hover, #efece3);
+  --adp-new: #2f6db5;            /* unread dot + "N new" chip (blue = new, as in the mockup) */
+  --adp-new-fg: #ffffff;
+  --adp-k-pdf: #c0443b; --adp-k-word: #2f6db5; --adp-k-sheet: #2e7d4f; --adp-k-image: #2a7f86; --adp-k-video: #6b52a8; --adp-k-other: #6f6b61;
+  --adp-ok-bg: var(--rs-t-lo-bg, #e3f2ea); --adp-ok-fg: var(--rs-t-lo-fg, #1b5e3f); --adp-ok-bd: var(--rs-t-lo-bd, #a9d3bc);
+  --adp-warn-bg: var(--rs-t-no-bg, #fdf1d6); --adp-warn-fg: var(--rs-t-no-fg, #7a4d00); --adp-warn-bd: var(--rs-t-no-bd, #ecd28f);
+  --adp-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+}
+body.dark, html[data-theme="dark"] body {
+  --adp-sel: rgba(255, 255, 255, 0.07);
+  --adp-new: #7fb0ff;
+  --adp-new-fg: #10203a;
+  --adp-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- header toggle ---- */
+.agent-docs-btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.agent-docs-btn svg { flex: none; }
+.agent-docs-btn.active { border-color: var(--accent); color: var(--text); background: var(--bg-panel); box-shadow: inset 0 0 0 1px var(--accent); }
+.adp-btn-label { font-weight: 400; }
+/* In the two-row top bar: the same control as Tasks / Session beside it. */
+.agent-docs-btn.xp-docs-btn { height: var(--control-h, 30px); padding: 0 var(--control-pad-x, 10px); border: 1px solid var(--border); border-radius: var(--radius-control, 8px); background: var(--bg-panel); color: var(--text); font-size: 0.78rem; cursor: pointer; }
+.agent-docs-btn.xp-docs-btn:hover { background: var(--bg-hover); }
+.agent-docs-btn.xp-docs-btn.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+@container topbar (max-width: 900px) { .agent-docs-btn .xp-lbl { display: none; } }
+.adp-btn-count, .adp-btn-new { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.adp-btn-count { background: var(--accent); color: #fff; }
+.adp-btn-new { background: var(--adp-new); color: var(--adp-new-fg); }
+
+/* ---- the panel and how the chat makes room ---- */
+#chat-view { position: relative; }
+#chat-view.agent-docs-side #chat-body, #chat-view.agent-docs-side #chat-input-bar { margin-right: var(--adp-w); }
+#chat-view.agent-docs-side.agent-docs-viewing #chat-body, #chat-view.agent-docs-side.agent-docs-viewing #chat-input-bar { margin-right: var(--adp-vw); }
+.agent-docs-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--adp-w); max-width: 100%;
+  display: flex; flex-direction: column; box-sizing: border-box; z-index: 20; overflow: hidden;
+  background: var(--bg-panel); color: var(--text); border-left: 1px solid var(--adp-hair);
+  font-size: 14px; font-weight: 400;
+}
+#chat-view.agent-docs-viewing .agent-docs-panel { width: var(--adp-vw); }
+#chat-view.agent-docs-overlay .agent-docs-panel { box-shadow: var(--adp-shadow); width: min(var(--adp-w), 100%); }
+#chat-view.agent-docs-overlay.agent-docs-viewing .agent-docs-panel { width: 100%; border-left: 0; }
+.agent-docs-panel.hidden { display: none; }
+.adp-listview { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+
+.adp-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px 14px; }
+.adp-avatar { width: 24px; height: 24px; border-radius: 50%; overflow: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; background: var(--bg-active); font-size: 12px; font-weight: 600; }
+.adp-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.adp-title { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--rs-head, var(--text)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adp-tools { display: flex; gap: 4px; flex: none; }
+.adp-iconbtn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--adp-hair); border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.adp-iconbtn:hover { background: var(--bg-hover); color: var(--text); }
+
+.adp-search { display: flex; align-items: center; gap: 8px; margin: 0 14px 10px; padding: 0 10px; height: 34px; border: 1px solid var(--adp-hair); border-radius: 8px; background: var(--bg-app); color: var(--text-muted); }
+.adp-search:focus-within { border-color: var(--accent); }
+.adp-search-input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.adp-search-input::placeholder { color: var(--text-muted); }
+
+.adp-pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 8px; }
+.adp-pill { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 1px solid var(--adp-hair); border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 400; cursor: pointer; }
+.adp-pill:hover { background: var(--bg-hover); }
+.adp-pill-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.adp-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.adp-pill.active .adp-pill-n { color: #fff; }
+
+.adp-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 8px; border-bottom: 1px solid var(--adp-hair); }
+.adp-sort { border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; padding: 2px 0; cursor: pointer; }
+.adp-count { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.adp-status { font-size: 13px; color: var(--text-muted); padding: 0 14px; }
+.adp-status:empty { display: none; }
+.adp-status:not(:empty) { padding-top: 6px; }
+
+/* ---- the list ---- */
+.adp-list { flex: 1; min-height: 0; overflow-y: auto; outline: none; padding-bottom: 12px; }
+.adp-list:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.adp-list:focus-visible:has(.adp-row.sel) { box-shadow: none; } /* the selected row's accent bar already shows where the keyboard is */
+.adp-group { padding: 12px 14px 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); grid-column: 1 / -1; }
+.adp-row { position: relative; display: grid; grid-template-columns: 10px 36px 1fr; column-gap: 10px; align-items: start; padding: 9px 14px 9px 12px; border-bottom: 1px solid var(--adp-hair); border-left: 3px solid transparent; cursor: pointer; }
+.adp-row:hover { background: var(--adp-sel); }
+.adp-row.sel { background: var(--adp-sel); border-left-color: var(--accent); }
+.adp-row.older { padding-left: 34px; background: transparent; }
+.adp-dot { width: 9px; height: 9px; margin-top: 7px; border-radius: 50%; box-sizing: border-box; }
+.adp-dot.is-unread { background: var(--adp-new); }
+.adp-dot.is-read { border: 1.5px solid var(--text-muted); background: transparent; }
+.adp-tile { position: relative; width: 36px; height: 40px; border-radius: 6px; overflow: hidden; display: flex; align-items: flex-end; justify-content: center; color: #fff; background: var(--adp-k-other); }
+.adp-tile.k-pdf { background: var(--adp-k-pdf); }
+.adp-tile.k-word { background: var(--adp-k-word); }
+.adp-tile.k-sheet { background: var(--adp-k-sheet); }
+.adp-tile.k-image { background: var(--adp-k-image); }
+.adp-tile.k-video { background: var(--adp-k-video); }
+.adp-tile-k { position: relative; z-index: 1; font-size: 12px; font-weight: 700; line-height: 1; padding-bottom: 5px; letter-spacing: 0.02em; }
+.adp-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--bg-panel); }
+.adp-tile.has-img .adp-tile-k { position: absolute; left: 2px; bottom: 2px; padding: 2px 3px; border-radius: 3px; background: rgba(0, 0, 0, 0.62); font-size: 12px; }
+.adp-row:not(.sel) .adp-tile.has-img .adp-tile-k { display: none; } /* list rows: the thumbnail speaks; the word comes back when selected */
+.adp-list.grid .adp-tile.has-img .adp-tile-k { display: block; }
+.adp-main { min-width: 0; }
+.adp-name { font-size: 14px; font-weight: 400; line-height: 1.35; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adp-row.unread .adp-name { font-weight: 600; }
+.adp-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.adp-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border: 1px solid var(--adp-hair); border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1; }
+.adp-chip.ok { background: var(--adp-ok-bg); color: var(--adp-ok-fg); border-color: var(--adp-ok-bd); }
+.adp-chip.warn { background: var(--adp-warn-bg); color: var(--adp-warn-fg); border-color: var(--adp-warn-bd); }
+.adp-chip.old { color: var(--text-muted); text-decoration: line-through; }
+.adp-fold { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.adp-acts { grid-column: 3; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.adp-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid var(--adp-hair); border-radius: 8px; background: var(--bg-panel); color: var(--text); font: inherit; font-size: 13px; font-weight: 400; cursor: pointer; white-space: nowrap; }
+.adp-btn:hover { background: var(--bg-hover); }
+.adp-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.adp-btn.primary:hover { filter: brightness(0.95); }
+.adp-btn:disabled { opacity: 0.6; cursor: default; }
+.adp-btn:focus-visible, .adp-pill:focus-visible, .adp-iconbtn:focus-visible, .adp-sort:focus-visible, .adp-fold:focus-visible, .agent-docs-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.adp-more { display: block; margin: 10px auto 0; height: 30px; padding: 0 14px; border: 1px solid var(--adp-hair); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+
+.adp-comment { grid-column: 3; display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 10px; border: 1px solid var(--adp-hair); border-radius: 8px; background: var(--bg-panel); cursor: default; }
+.adp-comment-t { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; padding: 6px 8px; border: 1px solid var(--adp-hair); border-radius: 6px; background: var(--bg-app); color: var(--text); font: inherit; font-size: 14px; line-height: 1.45; }
+.adp-comment-t:focus { outline: none; border-color: var(--accent); }
+.adp-comment-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.adp-comment-note { font-size: 12px; color: var(--text-muted); }
+.adp-vcomment .adp-comment { margin: 0 14px 10px; }
+
+/* grid (image-heavy agents, or by choice) */
+.adp-list.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 12px 12px; align-content: start; }
+.adp-list.grid .adp-group { padding-left: 2px; }
+.adp-list.grid .adp-row { grid-template-columns: 10px 1fr; padding: 6px; border: 1px solid var(--adp-hair); border-radius: 8px; }
+.adp-list.grid .adp-row.sel { box-shadow: inset 0 0 0 2px var(--accent); }
+.adp-list.grid .adp-tile { grid-column: 1 / -1; width: 100%; height: 110px; margin-bottom: 6px; }
+.adp-list.grid .adp-dot { margin-top: 5px; }
+.adp-list.grid .adp-acts, .adp-list.grid .adp-comment { grid-column: 1 / -1; }
+.adp-list.grid .adp-more { grid-column: 1 / -1; }
+
+/* empty / no match */
+.adp-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; }
+.adp-empty-icon { color: var(--text-muted); }
+.adp-empty-title { font-size: 15px; font-weight: 600; color: var(--rs-head, var(--text)); }
+.adp-empty-text { max-width: 280px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+
+/* ---- the in-panel viewer ---- */
+.adp-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-panel); }
+.adp-vbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px 8px; }
+.adp-vbar2 { flex-wrap: wrap; gap: 6px; padding-top: 0; border-bottom: 1px solid var(--adp-hair); padding-bottom: 10px; }
+.adp-vtitle { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adp-vstage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-active); }
+.adp-vframe { width: 100%; height: 100%; border: 0; background: var(--bg-panel); }
+.adp-vmedia { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* weak PCs (body.weak-pc): no thumbnails, type tiles only */
+.weak-pc .adp-tile img { display: none; }
+.weak-pc .adp-tile.has-img .adp-tile-k { display: block; position: relative; background: none; }
+
+@media (max-width: 520px) {
+  .adp-list.grid { grid-template-columns: minmax(0, 1fr); }
+}

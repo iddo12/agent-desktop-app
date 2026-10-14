@@ -1,0 +1,62 @@
+/* WAITING FOR YOU bar + queue (prototype, 2026-10-12). Only active when renderer/waiting-queue.js runs (localStorage flag). Tokens only.
+   Red is used ONLY for "blocked"; "can wait" is orange; nobody waiting is grey (never colour alone: glyph + words). */
+.wq-bar { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 6px 8px; padding: 7px 10px; box-sizing: border-box; text-align: left;
+  background: var(--bg-panel, #fff); color: var(--text, #222); border: 2px solid var(--border, #ccc); border-radius: 10px; cursor: pointer; font: inherit; }
+.wq-bar:focus-visible { outline: 3px solid #1d6fd6; outline-offset: 2px; }
+.wq-bar.wq-red { border-color: #b3261e; } .wq-bar.wq-orange { border-color: #c77700; } .wq-bar.wq-grey { border-color: var(--border, #ccc); color: var(--text-muted, #777); }
+.wq-ico { width: 24px; height: 24px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; font-weight: 800; font-size: 15px; color: #fff; }
+.wq-red .wq-ico { background: #b3261e; } .wq-orange .wq-ico { background: #c77700; border-radius: 50%; } .wq-grey .wq-ico { background: #8a8a8a; border-radius: 50%; }
+.wq-txt { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.15; } .wq-txt b { font-size: 13px; } .wq-txt small { font-size: 11px; color: var(--text-muted, #777); }
+.wq-caret { flex: none; font-size: 11px; color: var(--text-muted, #777); }
+.wq-pulse { animation: wqpulse 1.2s ease-in-out infinite; } @keyframes wqpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(29,111,214,.0); } 50% { box-shadow: 0 0 0 7px rgba(29,111,214,.35); } }
+@media (prefers-reduced-motion: reduce) { .wq-pulse { animation: none; box-shadow: 0 0 0 4px rgba(29,111,214,.45); } }
+
+.wq-av { position: relative; width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--bg-hover, #e6e6e6); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+.wq-av img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.wq-mark { position: absolute; top: -4px; right: -4px; width: 15px; height: 15px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; border: 1.5px solid var(--bg-panel, #fff); }
+.wq-mark.wq-red { background: #b3261e; } .wq-mark.wq-orange { background: #c77700; }
+
+.wq-panel { z-index: 9000; background: var(--bg-panel, #fff); color: var(--text, #222); border: 1px solid var(--border, #ccc); border-radius: 12px; box-shadow: 0 10px 34px rgba(0,0,0,.28); box-sizing: border-box; }
+.wq-pB { position: fixed; width: 440px; max-height: 80vh; overflow: auto; padding: 8px; }
+.wq-pA { margin: 0 8px 8px; padding: 10px; box-shadow: none; }
+.wq-pC.wq-focus { position: fixed; left: 300px; right: 24px; top: 24px; bottom: 24px; padding: 28px 36px; display: flex; flex-direction: column; gap: 14px; overflow: auto; z-index: 9000; }
+.wq-empty-panel { position: fixed; padding: 14px 18px; }
+.wq-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 8px; } .wq-keys { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.wq-keys kbd { font: 11px system-ui; padding: 1px 6px; border: 1px solid var(--border, #ccc); border-radius: 5px; background: var(--bg-hover, #f2f2f2); color: var(--text-muted, #666); }
+.wq-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.wq-row:hover, .wq-row.cur { background: var(--bg-hover, #eee); } .wq-rt { display: flex; flex-direction: column; min-width: 0; flex: 1; } .wq-rt small { color: var(--text-muted, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wq-age { font-size: 11px; color: var(--text-muted, #777); flex: none; }
+.wq-partner { font-style: normal; font-size: 9px; font-weight: 800; letter-spacing: .06em; margin-left: 6px; padding: 1px 5px; border-radius: 4px; background: #5b3fa8; color: #fff; }
+.wq-answer { margin: 4px 4px 8px; padding: 10px; border: 1px solid var(--border, #ccc); border-radius: 10px; background: var(--bg-panel, #fff); }
+.wq-q { font-size: 13.5px; font-weight: 600; margin-bottom: 8px; } .wq-pC .wq-q { font-size: 20px; }
+.wq-quick { display: flex; gap: 6px; margin-bottom: 8px; } .wq-ta { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 2px solid #1d6fd6; border-radius: 8px; font: inherit; background: var(--bg-panel, #fff); color: var(--text, #222); resize: vertical; }
+.wq-actions { display: flex; gap: 6px; margin-top: 8px; } .wq-actions .wq-primary { margin-left: auto; }
+.wq-btn { padding: 5px 12px; border: 1px solid var(--border, #bbb); border-radius: 8px; background: var(--bg-panel, #fff); color: var(--text, #222); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.wq-btn:hover { background: var(--bg-hover, #eee); } .wq-btn:focus-visible, .wq-row:focus-visible, .wq-sw:focus-visible, .wq-dot:focus-visible { outline: 3px solid #1d6fd6; outline-offset: 2px; }
+.wq-primary { background: #c4572f; color: #fff; border-color: #c4572f; } .wq-primary:hover { background: #a94722; }
+.wq-foot { display: flex; justify-content: space-between; padding: 6px 8px 2px; font-size: 11px; color: var(--text-muted, #777); }
+.wq-count { font-size: 12px; font-weight: 700; color: var(--text-muted, #777); margin-bottom: 6px; }
+.wq-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; } .wq-who { display: flex; align-items: center; gap: 8px; flex: 1; justify-content: center; } .wq-who.big { font-size: 22px; justify-content: flex-start; gap: 14px; } .wq-who.big .wq-av { width: 48px; height: 48px; }
+.wq-dots { display: flex; gap: 8px; margin-top: auto; } .wq-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--text-muted, #888); background: transparent; padding: 0; cursor: pointer; } .wq-dot.cur { background: #c4572f; border-color: #c4572f; }
+.wq-closebtn { align-self: flex-end; }
+
+/* D: filter the left pane */
+body.wq-filter #agent-list .agent-item:not(.wq-waiting) { display: none !important; }
+.wq-inline { margin: 0 6px 6px; } .wq-d-extra { position: fixed; width: min(560px, calc(100vw - 340px)); max-height: calc(100vh - 32px); overflow: auto; padding: 10px; } .wq-dx { display: flex; gap: 8px; margin-top: 8px; align-items: flex-start; }
+
+/* demo controls + guide + toast */
+.wq-ctl { position: fixed; right: 16px; bottom: 16px; z-index: 9100; display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--bg-panel, #fff); color: var(--text, #222); border: 1px solid var(--border, #bbb); border-radius: 12px; box-shadow: 0 6px 22px rgba(0,0,0,.25); }
+.wq-sw { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border, #bbb); background: var(--bg-panel, #fff); color: inherit; font-weight: 800; cursor: pointer; } .wq-sw.on { background: #1d6fd6; color: #fff; border-color: #1d6fd6; }
+.wq-guide { position: fixed; z-index: 9200; width: 270px; padding: 12px 14px; background: #fffbe6; color: #222; border: 2px solid #1d6fd6; border-radius: 10px; box-shadow: 0 8px 26px rgba(0,0,0,.3); }
+.wq-guide::before { content: ""; position: absolute; left: -10px; top: 18px; border: 8px solid transparent; border-right-color: #1d6fd6; border-left: 0; } .wq-guide p { margin: 6px 0 10px; font-size: 13px; }
+.wq-toast { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 9300; max-width: 80vw; padding: 9px 16px; background: #222; color: #fff; border-radius: 10px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s; } .wq-toast.on { opacity: 1; }
+
+/* v2 (2026-10-12): the owner wants the agent's own picture + first name, longer background, and a short back-and-forth */
+.wq-boxhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .wq-boxname { display: flex; flex-direction: column; flex: 1; font-size: 14px; } .wq-boxhead .wq-av { width: 40px; height: 40px; }
+.wq-ctx { font-size: 12.5px; color: var(--text-muted, #666); line-height: 1.45; margin-bottom: 4px; } .wq-ctx.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.wq-sugg { display: block; width: 100%; text-align: start; margin: 0 0 6px; padding: 6px 10px; border: 1px dashed var(--border, #bbb); border-radius: 8px; background: transparent; color: var(--text, #222); font: inherit; font-size: 12.5px; cursor: pointer; }
+.wq-sugg:hover { background: rgba(120,120,120,.12); }
+.wq-more { background: none; border: 0; padding: 0 0 8px; font-size: 11.5px; color: #1d6fd6; cursor: pointer; text-decoration: underline; font-family: inherit; }
+.wq-thread { display: flex; flex-direction: column; gap: 5px; margin: 6px 0; } .wq-msg { padding: 6px 9px; border-radius: 9px; font-size: 12.5px; max-width: 92%; } .wq-msg.you { background: #e4eefb; align-self: flex-end; color: #1b2a41; } .wq-msg.agent { background: var(--bg-hover, #eee); }
+.wq-actions { flex-wrap: wrap; }
+.wq-hint { font-size: 11.5px; color: var(--text-muted, #777); margin: 2px 0 4px; } .wq-mirror { font-size: 11px; color: var(--text-muted, #777); margin-top: 6px; }

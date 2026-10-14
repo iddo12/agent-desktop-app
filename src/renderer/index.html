@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- v1.82.1 (My Health review F15): no inline script, no remote script or connection; local files for images, frames and media only. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob: data: file:; frame-src 'self' file: blob: data:; worker-src 'self' blob:; base-uri 'none'; form-action 'none'">
+<title>Agent Desktop</title>
+<link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles-header-tasks.css">
+<link rel="stylesheet" href="styles-library.css">
+<link rel="stylesheet" href="styles-agent-docs.css">
+<link rel="stylesheet" href="styles-argus.css">
+<link rel="stylesheet" href="styles-memory.css">
+<link rel="stylesheet" href="styles-startup.css">
+<link rel="stylesheet" href="styles-trust.css">
+<link rel="stylesheet" href="styles-cpuguard.css">
+<link rel="stylesheet" href="styles-update.css">
+<link rel="stylesheet" href="styles-connection.css">
+<link rel="stylesheet" href="styles-keepgoing.css">
+<link rel="stylesheet" href="styles-iris.css">
+<link rel="stylesheet" href="styles-daily.css">
+<link rel="stylesheet" href="styles-health-nav.css">
+<link rel="stylesheet" href="styles-tools-nav.css">
+<link rel="stylesheet" href="styles-research-nav.css">
+<link rel="stylesheet" href="styles-finance-nav.css">
+<link rel="stylesheet" href="styles-rtl.css">
+<link rel="stylesheet" href="styles-loading.css">
+<link rel="stylesheet" href="styles-topbar.css">
+<link rel="stylesheet" href="styles-pchealth.css">
+<link rel="stylesheet" href="styles-leftpane.css">
+  <link rel="stylesheet" href="styles-waiting-queue.css">
+  <link rel="stylesheet" href="styles-fleet-pane.css">
+  <link rel="stylesheet" href="styles-setup.css">
+  <link rel="stylesheet" href="styles-needs-setup.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <span id="app-title">Agents</span>
+        <div id="sidebar-header-actions">
+          <button id="new-group-btn" title="Create a group to organize agents in the sidebar">+ Group</button>
+          <button id="new-agent-btn" title="Create new agent">+ Agent</button>
+        </div>
+      </div>
+      <button id="restart-all-btn" title="Restart every agent's background process (or a chosen subset) - keeps each conversation, re-reads its settings and CLAUDE.md. Agents that are busy or paused are skipped automatically."><span id="restart-all-btn-icon">&#8635;</span> Restart agents&hellip;</button>
+      <button id="app-update-btn" class="hidden"></button>
+      <button id="update-available-btn" class="hidden"></button>
+      <div id="interfering-service-warning" class="hidden"></div>
+      <div id="claude-cli-warning" class="hidden"></div>
+      <div id="agent-groups-note" class="hidden">
+        <div class="note-body">
+          Groups are a <strong>visual aid only</strong>. They don't set which agent
+          reports to which, or which agent is a "manager" &mdash; that lives in each
+          agent's own instructions. Grouping here just organizes the sidebar.
+        </div>
+        <button id="agent-groups-note-dismiss" class="dismiss-btn">Got it, don't show again</button>
+      </div>
+      <div id="agent-list"></div>
+      <button id="setup-nav" class="setup-nav" data-system-nav="setup" type="button" title="Setup - choose the folders and features for this computer"><span class="setup-nav-name">Setup</span><span class="setup-nav-badge hidden"></span></button>
+      <div id="plan-selector-row">
+        <label for="plan-select">Plan</label>
+        <select id="plan-select" title="Which Claude subscription plan you're on - used to estimate the 5h usage badge when Anthropic's own real rate_limits figure isn't available yet"></select>
+      </div>
+      <div id="predict-pref-row" title="After an agent finishes, a likely reply appears as dim text in the message box. Tab (or Right-arrow) puts it in the box, Esc hides it. Nothing is ever sent for you. Uses a few Haiku tokens per suggestion; turn this off to stop all of it."><label><input type="checkbox" id="predict-pref-cb" checked> Predicted replies</label></div>
+      <div id="app-version"></div>
+      <div id="claude-cli-version"></div>
+    </aside>
+    <div id="sidebar-resize-handle" title="Drag to resize"></div>
+
+    <main id="main-panel">
+      <div id="empty-state">
+        <p>Select an agent on the left, or create a new one.</p>
+      </div>
+      <div id="chat-view" class="hidden">
+        <div id="chat-header">
+          <div id="chat-avatar-slot"></div>
+          <div id="chat-header-text">
+            <div id="chat-name"></div>
+            <div id="chat-role"></div>
+          </div>
+          <div id="five-hour-usage" class="hidden" title=""></div>
+          <div id="weekly-usage" class="hidden" title=""></div>
+          <div id="monthly-usage" class="hidden" title=""></div>
+          <div id="context-usage" class="hidden" title=""></div>
+          <div id="model-badge" class="hidden" title=""></div>
+          <div id="cache-status" class="hidden" title=""></div>
+          <button id="reset-session-btn" title="WIPES this agent's current conversation and starts a brand-new one (like /clear) - the old conversation isn't deleted, it stays viewable under History. Use this to start over from nothing.">Reset Session</button>
+          <button id="restart-session-btn" title="Restarts this agent's background process WITHOUT losing the conversation - use it after editing the agent's CLAUDE.md or settings.local.json so the change actually takes effect. Nothing is cleared.">Restart Session</button>
+          <button id="pause-agent-btn" title="Stops this agent's background process until you click Resume. While paused, the always-on keep-alive won't bring it back on its own - opening its chat tab still works and starts it again.">Pause Agent</button>
+          <button id="raw-terminal-toggle-btn" title="Switch from the normal chat bubbles to the plain text terminal Claude Code actually runs in - needed for a few things the chat view can't do, like using arrow keys in the Model picker below.">Raw Terminal</button>
+          <button id="model-picker-btn" title="Choose which Claude model (e.g. Sonnet, Opus) this agent uses for its replies.">Model</button>
+          <button id="chats-toggle-btn" title="See this agent's other past/parallel conversations (from Reset Session or /clear), switch to one, start a new one, or rename them.">Chats</button>
+          <button id="history-toggle-btn" title="Browse this agent's full message history day by day, including anything wiped by a past Reset Session.">History</button>
+          <button id="save-to-master-btn" title="Puts a ready-made reminder in the message box asking this agent to save its findings to the shared master file - saves you typing it out yourself.">Save to master file</button>
+        </div>
+
+        <div id="no-instructions-banner" class="hidden">
+          <span>This agent has no instructions yet.</span>
+          <button id="add-instructions-btn">Add instructions</button>
+          <button id="dismiss-instructions-banner-btn" class="dismiss-btn" title="Hide">&times;</button>
+        </div>
+
+        <div id="restart-status-banner" class="hidden"></div>
+
+        <div id="chat-body">
+          <div id="chat-messages-view"></div>
+          <div id="terminal-wrapper" class="view-hidden">
+            <div id="terminal-container"></div>
+            <div id="terminal-bottom-mask"></div>
+          </div>
+        </div>
+        <div id="chat-input-bar">
+          <div id="chat-input-resize-handle"></div>
+          <div id="chat-thinking-indicator" class="hidden"></div>
+          <div id="chat-attachments" class="hidden"></div>
+          <div id="chat-queue" class="hidden"></div>
+          <div id="chat-input-row">
+            <textarea id="chat-input" placeholder="Message this agent... (Enter to send, Shift+Enter for a new line)"></textarea>
+            <div id="chat-input-actions">
+              <button id="voice-input-btn" title="Click to start recording, click again to stop - the transcript appears in the message box for you to review and send (speech to text)" aria-label="Toggle voice input">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="23"></line>
+                  <line x1="8" y1="23" x2="16" y2="23"></line>
+                </svg>
+              </button>
+              <button id="send-input-btn" title="Send">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="history-view" class="hidden">
+          <div id="history-day-list"></div>
+          <div id="history-content"></div>
+        </div>
+
+        <div id="conversations-view" class="hidden">
+          <div id="conversations-toolbar">
+            <button id="new-conversation-btn" title="Start a brand-new conversation for this agent (the current one stays saved)">+ New chat</button>
+            <span id="conversations-hint">Resume any past conversation, or start a new one. Renaming here also updates the name shown on claude.ai/code.</span>
+          </div>
+          <div id="conversations-list"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="new-agent-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="agent-modal-title">Create New Agent</h2>
+      <label>Name</label>
+      <input id="new-agent-name" type="text" placeholder="e.g. Marketing Agent" />
+      <label>Role description</label>
+      <textarea id="new-agent-role" rows="2" placeholder="One line for the sidebar"></textarea>
+      <label>Instructions (optional)</label>
+      <p class="field-hint">The agent's <code>CLAUDE.md</code> &mdash; its full standing instructions, loaded every session. Also editable later from the agent's &#8942; menu.</p>
+      <textarea id="new-agent-instructions" rows="6" spellcheck="false" placeholder="# Agent name&#10;&#10;What it owns, who it reports to, how it should behave, what it produces and when..."></textarea>
+      <label>Group (optional)</label>
+      <select id="new-agent-group"></select>
+      <label>Avatar (optional)</label>
+      <div id="avatar-picker">
+        <img id="avatar-preview" class="avatar" />
+        <button id="pick-avatar-btn">Choose image...</button>
+      </div>
+      <div class="modal-actions">
+        <button id="cancel-agent-btn" class="secondary">Cancel</button>
+        <button id="create-agent-btn" class="primary">Create Agent</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="instructions-modal" class="modal hidden">
+    <div class="modal-box modal-box-wide">
+      <h2 id="instructions-modal-title">Instructions</h2>
+      <p class="modal-hint">
+        This agent's standing instructions &mdash; the <code>CLAUDE.md</code> file Claude
+        Code loads at the start of every session. This is what actually drives the agent
+        (the "Role description" is only the sidebar blurb). Workspace-wide rules from a
+        parent <code>CLAUDE.md</code> apply on top of this. Changes take effect on the
+        agent's next session &mdash; use <strong>Reset Session</strong>, or reopen the
+        agent, to apply now.
+      </p>
+      <textarea id="instructions-textarea" spellcheck="false" placeholder="# Agent name&#10;&#10;What this agent is responsible for, what it owns, who it reports to, how it should behave, what it produces and when..."></textarea>
+      <div id="instructions-meta">
+        <button id="instructions-template-btn" class="secondary" type="button">Start from template</button>
+        <span id="instructions-count"></span>
+      </div>
+      <div class="modal-actions">
+        <button id="cancel-instructions-btn" class="secondary">Cancel</button>
+        <button id="save-instructions-btn" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="group-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="group-modal-title">New Group</h2>
+      <label>Name</label>
+      <input id="group-name-input" type="text" placeholder="e.g. Editorial &amp; Content" autocomplete="off" />
+      <label>Color</label>
+      <div id="group-color-picker">
+        <input id="group-color-input" type="color" value="#6366f1" />
+        <div id="group-color-swatches"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="cancel-group-btn" class="secondary">Cancel</button>
+        <button id="save-group-btn" class="primary">Create Group</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-group-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Delete group</h2>
+      <p id="delete-group-warning" class="modal-warning"></p>
+      <div class="modal-actions">
+        <button id="cancel-delete-group-btn" class="secondary">Cancel</button>
+        <button id="confirm-delete-group-btn" class="danger">Delete group</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-agent-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Delete agent</h2>
+      <p id="delete-agent-warning" class="modal-warning"></p>
+      <label>Type the agent's name to confirm</label>
+      <input id="delete-agent-confirm-input" type="text" autocomplete="off" />
+      <div class="modal-actions">
+        <button id="cancel-delete-agent-btn" class="secondary">Cancel</button>
+        <button id="confirm-delete-agent-btn" class="danger" disabled>Delete permanently</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="restart-all-modal" class="modal hidden">
+    <div class="modal-box modal-box-wide">
+      <h2>Restart agents</h2>
+      <p class="modal-hint">
+        Restarts each checked agent's background process without losing its conversation -
+        same as that agent's own "Restart Session" button, run fleet-wide. An agent that's
+        currently busy (mid-turn, checked right before its own turn) is skipped automatically
+        rather than interrupted; paused agents are unchecked by default so restarting the
+        fleet doesn't wake them back up.
+      </p>
+      <div id="restart-all-select-row">
+        <label><input type="checkbox" id="restart-all-select-all-cb"> Select all</label>
+        <span id="restart-all-count"></span>
+      </div>
+      <div id="restart-all-list"></div>
+      <p id="restart-all-summary" class="modal-hint hidden"></p>
+      <div class="modal-actions">
+        <button id="cancel-restart-all-btn" class="secondary">Cancel</button>
+        <button id="retry-skipped-restart-all-btn" class="secondary hidden">Retry skipped</button>
+        <button id="confirm-restart-all-btn" class="primary" disabled>Restart agents</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- First, so the startup countdown is up before the heavier scripts run
+       and cannot be prevented by an error in one of them. -->
+  <script src="../legacyKeys.js"></script>
+  <script src="app-cfg.js"></script>
+  <script src="startup-overlay.js"></script>
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../leftpane.js"></script>
+  <script src="../pathLinks.js"></script>
+  <script src="path-links.js"></script>
+  <script src="renderer.js"></script>
+  <script src="predict.js"></script>
+  <script src="../handoffDelivery.js"></script>
+  <script src="../handoffLogic.js"></script>
+  <script src="../keepGoing.js"></script>
+  <script src="../unsentLedger.js"></script>
+  <script src="guards.js"></script>
+  <script src="unsent-ledger.js"></script>
+  <script src="approval-banner.js"></script>
+  <script src="header-tasks.js"></script>
+  <script src="../libraryFilter.js"></script>
+  <script src="library.js"></script>
+  <script src="../agentDocsLogic.js"></script>
+  <script src="agent-docs.js"></script>
+  <script src="argus.js"></script>
+  <script src="../pcHealthCore.js"></script>
+  <script src="pchealth.js"></script>
+  <script src="memory.js"></script>
+  <script src="trust-banner.js"></script>
+  <script src="cpuguard-banner.js"></script>
+  <script src="app-update-overlay.js"></script>
+  <script src="connection-health.js"></script>
+  <script src="../outbox.js"></script>
+  <script src="outbox.js"></script>
+  <script src="keepgoing.js"></script>
+  <script src="../daily/schedule.js"></script>
+  <script src="../daily/emaildismiss.js"></script>
+  <script src="../daily/voiceparse.js"></script>
+  <script src="daily-contract.js"></script>
+  <script src="daily-voice.js"></script>
+  <script src="daily-shipments.js"></script>
+  <script src="daily-decisions.js"></script>
+  <script src="daily-triage.js"></script>
+  <script src="daily.js"></script>
+  <script src="iris.js"></script>
+  <script src="health-nav.js"></script>
+  <script src="tools-nav.js"></script>
+  <script src="research-nav.js"></script>
+  <script src="finance-nav.js"></script>
+  <script src="fleet-pane.js"></script>
+  <script src="setup-strings.js"></script>
+  <script src="setup.js"></script>
+  <script src="needs-setup.js"></script>
+  <script src="leftpane.js"></script>
+  <script src="waiting-queue.js"></script>
+  <script src="viewmanager.js"></script>
+</body>
+</html>

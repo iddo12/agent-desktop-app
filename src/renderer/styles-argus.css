@@ -1,0 +1,379 @@
+/* ARGUS - the Bridge (v1.39.0). See argus.js for the display rules.
+   Alert colours are reserved for deviations and never used decoratively:
+   warning = red, caution = amber, advisory = cyan, "needs you" = blue-violet. */
+:root {
+  --argus-warn: #c62828; --argus-warn-bg: #fdecec;
+  --argus-caut: #a66300; --argus-caut-bg: #fff3dd;
+  --argus-adv: #0277a8;  --argus-adv-bg: #e7f4fa;
+  --argus-dec: #4b4fc4;  --argus-dec-bg: #eeeefd;
+  --argus-up: #2e7d32;   --argus-down: #c62828;
+}
+
+/* ---- sidebar entry ---- */
+.argus-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.argus-nav:hover { background: var(--bg-hover); }
+.argus-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.argus-nav-name { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.argus-nav-title { font-weight: 700; letter-spacing: .12em; font-size: 13px; }
+.argus-nav-sub { font-size: 11px; color: var(--text-muted); }
+.argus-nav-lamps { display: flex; gap: 4px; }
+.argus-dot { min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; color: #fff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.argus-dot.warn { background: var(--argus-warn); } .argus-dot.caut { background: var(--argus-caut); } .argus-dot.dec { background: var(--argus-dec); }
+
+/* ---- header badge in the chat header ---- */
+.argus-badge { border: 1px solid var(--argus-dec); color: var(--argus-dec); background: var(--argus-dec-bg);
+  border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.argus-badge.none { border-color: var(--border); color: var(--text-muted); background: transparent; font-weight: 400; }
+
+/* ---- Argus open: the sidebar narrows, but the user sets how far ----
+
+   Originally this was a hard 78px strip of avatars. Alex, 2026-09-23, on a
+   screenshot of that strip: "This can (and should) be wider with an option
+   to change its width." So the width is now a variable the same drag handle
+   the normal sidebar uses writes into (renderer.js keeps a SEPARATE
+   remembered width per mode, so widening the Bridge's sidebar doesn't
+   disturb the chat sidebar's own width and vice versa), and the strip is
+   just what you get at the narrow end of that range.
+
+   Two tiers, not one. Below ARGUS_SIDEBAR_WIDE_AT the sidebar is the avatar
+   strip it always was; at or above it, renderer.js adds .argus-sidebar-wide
+   and the things worth reading come back - agent names and roles, health
+   dots, the ARGUS nav's own label, group names. What never comes back at any
+   width is sidebar CHROME (+ Group / + Agent, the plan selector, the Claude
+   CLI version, the update button, the Library entry): those are for working in
+   an agent, and the whole point of the Bridge is that you are not.
+
+   The APP's own version is the exception, restored 2026-09-23 after Alex
+   marked the empty foot of the Bridge sidebar: "missing the version of the
+   agent desktop". It went out with the chrome, but it is not chrome - it is
+   how either of us answers "is the build on screen the build I just shipped",
+   which this project asks constantly and cannot answer any other way. */
+body.argus-open #chat-view,
+body.argus-open #empty-state,
+body.argus-open #library-view,
+body.argus-open #xp-panel { display: none !important; }
+body.argus-open #sidebar { width: var(--argus-sidebar-w, 190px) !important; }
+
+/* Hidden at every Argus width - chrome, not content. */
+body.argus-open #sidebar .agent-item-menu-btn,
+body:not(.lp-on).argus-open #sidebar #library-nav,
+body.argus-open #sidebar #sidebar-header-actions,
+body.argus-open #sidebar #plan-selector-row,
+body.argus-open #sidebar #claude-cli-version,
+body.argus-open #sidebar #update-available-btn,
+body.argus-open #sidebar .xp-legend { display: none !important; }
+
+/* Narrow tier only: collapse to centred avatars. */
+body.argus-open:not(.argus-sidebar-wide) #sidebar .agent-item-text,
+body.argus-open:not(.argus-sidebar-wide) #sidebar .health-dot,
+body.argus-open:not(.argus-sidebar-wide) #sidebar .group-empty,
+body.argus-open:not(.argus-sidebar-wide) #sidebar .group-name,
+body.argus-open:not(.argus-sidebar-wide) #sidebar .argus-nav-name { display: none !important; }
+body.argus-open:not(.argus-sidebar-wide) #sidebar #app-title { font-size: 0; }
+body.argus-open:not(.argus-sidebar-wide) #sidebar .agent-item { justify-content: center; padding-left: 0; padding-right: 0; }
+body.argus-open:not(.argus-sidebar-wide) .argus-nav { margin: 0 8px 8px; padding: 8px 4px; justify-content: center; }
+body.argus-open:not(.argus-sidebar-wide) .argus-nav-lamps { flex-direction: column; }
+
+/* The version sits at the foot of the sidebar (the agent list above it is the
+   flex:1 child, so it lands there on its own). On the narrow avatar strip the
+   full "Agent Desktop v1.49.0" would wrap to three lines, so the real text is
+   sized to zero and ::after prints "v1.49.0" from data-v - the text stays in
+   the DOM to be read, selected and inspected. */
+body.argus-open #sidebar #app-version { padding: 8px 10px 10px; text-align: center; }
+body.argus-open:not(.argus-sidebar-wide) #sidebar #app-version { font-size: 0; }
+body.argus-open:not(.argus-sidebar-wide) #sidebar #app-version::after {
+  content: "v" attr(data-v); font-size: 0.7rem; }
+
+/* Wide tier: keep the nav compact so it doesn't outweigh the agent list. */
+body.argus-open.argus-sidebar-wide .argus-nav { margin: 0 8px 8px; padding: 8px 10px; }
+body.argus-open.argus-sidebar-wide #sidebar #sidebar-header { padding: 16px 12px 10px; }
+
+/* ---- memory & starting context ----
+   Five small figures per agent, each with yesterday's value beside it. A grid
+   rather than five stacked rows: what matters is comparing agents, and
+   auto-fit keeps it readable when the panel is narrow. */
+.argus-ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px 14px; margin-top: 6px; }
+.argus-ctx-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.argus-ctx-val { font-size: 13px; font-variant-numeric: tabular-nums; }
+.argus-tag.bad { border-color: var(--argus-warn); color: var(--argus-warn); font-weight: 800; margin-left: 0; margin-right: 4px; }
+
+/* ---- the agent roster panel ----
+   One row per agent: avatar, name + coloured state pill, the agent's own
+   current-work line, and the timing on the right. Built as its own layout
+   because the generic label/value row gave the name a narrow column, which
+   broke every multi-word agent name one word per line and pushed the role off
+   the right edge - which is exactly what Alex saw and rejected. min-width: 0
+   on the middle column is what makes the ellipsis work at all inside a flex
+   row; without it the text refuses to shrink and overflows again. */
+.argus-roster { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.argus-roster-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; cursor: pointer;
+  border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--bg-panel); }
+.argus-roster-row:hover { background: var(--bg-hover); }
+.argus-roster-row.running { border-left-color: #22a06b; }
+.argus-roster-row.idle    { border-left-color: var(--border); }
+.argus-roster-row.paused  { border-left-color: var(--argus-caut); }
+.argus-roster-row.unknown { border-left-color: var(--argus-adv); }
+.argus-roster-av { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; flex-shrink: 0; }
+.argus-roster-av-none { display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
+  color: var(--text-muted); background: var(--bg-app); border: 1px solid var(--border); }
+.argus-roster-main { flex: 1; min-width: 0; }
+.argus-roster-name { display: flex; align-items: center; gap: 8px; }
+.argus-roster-nametext { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.argus-roster-doing { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.argus-roster-when { flex-shrink: 0; font-size: 12px; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.argus-roster-pill { font-size: 10px; font-weight: 800; letter-spacing: .07em; border-radius: 7px; padding: 1px 7px;
+  border: 1px solid var(--border); color: var(--text-muted); flex-shrink: 0; }
+.argus-roster-pill.running { background: #22a06b; border-color: #22a06b; color: #fff; }
+.argus-roster-pill.paused { border-color: var(--argus-caut); color: var(--argus-caut); }
+.argus-roster-pill.unknown { border-color: var(--argus-adv); color: var(--argus-adv); }
+.argus-roster-pill.health { border-color: var(--argus-caut); color: var(--argus-caut); }
+
+/* ---- the view ---- */
+#argus-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-app); position: relative; }
+#argus-view.hidden { display: none; }
+.argus-head { display: flex; align-items: center; gap: 14px; padding: 12px 22px; background: var(--bg-panel);
+  border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.argus-title { display: flex; align-items: baseline; gap: 10px; }
+.argus-title-main { font-weight: 800; letter-spacing: .18em; font-size: 18px; }
+.argus-title-sub { color: var(--text-muted); font-size: 13px; }
+.argus-stamp { color: var(--text-muted); font-size: 12px; }
+.argus-lamps { display: flex; gap: 8px; margin-left: auto; }
+.argus-lamp { border: 1px solid var(--border); border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+  letter-spacing: .08em; color: var(--text-muted); background: var(--bg-app); font-variant-numeric: tabular-nums; }
+.argus-lamp.on.warn { background: var(--argus-warn); border-color: var(--argus-warn); color: #fff; }
+.argus-lamp.on.caut { background: var(--argus-caut); border-color: var(--argus-caut); color: #fff; }
+.argus-lamp.on.dec  { background: var(--argus-dec);  border-color: var(--argus-dec);  color: #fff; }
+.argus-btn { border: 1px solid var(--border); background: var(--bg-panel); color: var(--text); border-radius: 7px;
+  padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+.argus-btn:hover { background: var(--bg-hover); }
+.argus-btn.primary { border-color: var(--argus-dec); color: var(--argus-dec); }
+.argus-close { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel);
+  color: var(--text-muted); font-size: 19px; line-height: 1; cursor: pointer; }
+.argus-close:hover { background: var(--bg-hover); color: var(--text); }
+
+.argus-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 22px 30px; }
+.argus-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.argus-kpi { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+.argus-kpi.clickable { cursor: pointer; }
+.argus-kpi.bad { border-color: var(--argus-caut); }
+.argus-kpi.bad .argus-kpi-val { color: var(--argus-caut); }
+.argus-kpi-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.argus-kpi-val { font-size: 28px; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.argus-cmp { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.argus-up { color: var(--argus-up); } .argus-down { color: var(--argus-down); }
+
+/* Three columns on a big monitor, two on a laptop, one on a small window. */
+.argus-grid { display: grid; grid-template-columns: 1.05fr 1.05fr .9fr; gap: 16px; align-items: start; }
+.argus-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (max-width: 1500px) {
+  .argus-grid { grid-template-columns: 1fr 1fr; }
+  .argus-grid .argus-col:nth-child(3) { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+}
+@media (max-width: 1050px) {
+  .argus-grid { grid-template-columns: 1fr; }
+  .argus-grid .argus-col:nth-child(3) { display: flex; }
+  .argus-kpi-val { font-size: 22px; }
+  .argus-head, .argus-scroll { padding-left: 12px; padding-right: 12px; }
+}
+
+.argus-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.argus-card-head { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin: 0 0 10px; font-weight: 600; }
+.argus-brief { font-size: 16px; line-height: 1.5; margin: 0; }
+.argus-note { font-size: 11px; color: var(--text-muted); margin: 10px 0 0; }
+.argus-quiet { color: var(--text-muted); font-size: 13px; margin: 2px 0; }
+.argus-group { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin: 12px 0 4px; }
+.argus-group:first-of-type { margin-top: 2px; }
+
+.argus-item { border-left: 4px solid var(--border); border-radius: 6px; padding: 7px 10px; margin: 5px 0; cursor: pointer; }
+.argus-item:hover { background: var(--bg-hover); }
+.argus-item.decision { border-left-color: var(--argus-dec); background: var(--argus-dec-bg); }
+.argus-item.warning { border-left-color: var(--argus-warn); background: var(--argus-warn-bg); }
+.argus-item.caution { border-left-color: var(--argus-caut); background: var(--argus-caut-bg); }
+.argus-item.advisory { border-left-color: var(--argus-adv); }
+.argus-item.idea { border-left-color: var(--accent); }
+/* Parked: still listed, deliberately not coloured like something to act on. */
+.argus-item.parked { border-left-color: var(--border); background: transparent; opacity: .78; }
+.parked .argus-lvl { color: var(--text-muted); }
+.argus-parked-note { font-style: italic; margin-top: 4px; }
+.argus-item-title { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.argus-item-meta { font-size: 12px; color: var(--text-muted); }
+.argus-item-more { display: none; margin-top: 6px; }
+.argus-item.open .argus-item-more { display: block; }
+.argus-item-detail { font-size: 13px; line-height: 1.45; margin-bottom: 6px; overflow-wrap: anywhere; }
+.argus-lvl { font-size: 10px; font-weight: 800; letter-spacing: .08em; margin-right: 7px; }
+.warning .argus-lvl { color: var(--argus-warn); } .caution .argus-lvl { color: var(--argus-caut); } .advisory .argus-lvl { color: var(--argus-adv); }
+.argus-tag { font-size: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; margin-left: 6px; }
+.argus-more summary { cursor: pointer; font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+.argus-idea-headline { font-size: 13px; font-weight: 600; margin: 2px 0 4px; }
+.argus-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 4px 0;
+  border-bottom: 1px dashed var(--border); font-variant-numeric: tabular-nums; }
+.argus-row:last-child { border-bottom: 0; }
+.argus-row-val { white-space: nowrap; }
+
+/* Deltas are grey with an arrow: red and amber are reserved for warning and
+   caution (aviation practice - non-alert use of alert colours blunts them). */
+.argus-delta { color: var(--text-muted); }
+.argus-tag.new { border-color: var(--argus-dec); color: var(--argus-dec); font-weight: 600; }
+.argus-tag.stale { border-color: var(--argus-caut); color: var(--argus-caut); }
+
+/* ---------------------------------------------------------------------------
+   Drill-down (v1.42.0). Alex, after using the Bridge: "most of the info is not
+   clickable... wasn't the whole idea that almost all the info points click to
+   present more information?" Two separate problems were behind that: the
+   number strip and the department cards genuinely did nothing, and the rows
+   that DID expand gave no sign of it. This file fixes the second half - the
+   affordance - and styles the panel that answers the first.
+   --------------------------------------------------------------------------- */
+
+/* Anything that opens something says so: pointer, a hover lift, and a chevron. */
+.argus-row.clickable,
+.argus-card-head.clickable,
+.argus-item.expandable { cursor: pointer; }
+
+.argus-row.clickable:hover,
+.argus-item.expandable:hover { background: var(--hover-bg, rgba(127, 127, 127, 0.07)); }
+
+.argus-card-head.clickable::after {
+  content: "›";
+  float: right;
+  color: var(--text-muted);
+  font-weight: 400;
+  transition: transform 0.12s ease;
+}
+.argus-card-head.clickable:hover::after { transform: translateX(2px); }
+
+.argus-item.expandable > .argus-item-title::after {
+  content: "⌄";
+  float: right;
+  margin-left: 6px;
+  color: var(--text-muted);
+  transition: transform 0.12s ease;
+}
+.argus-item.expandable.open > .argus-item-title::after { transform: rotate(180deg); }
+
+.argus-row.clickable::after {
+  content: "›";
+  color: var(--text-muted);
+  margin-left: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.argus-row.clickable:hover::after { opacity: 1; }
+
+/* The panel itself: a sheet over the right-hand side, wide enough for a real
+   table of findings but never the whole screen - the numbers that led here
+   stay visible on the left, which is the point of drilling down rather than
+   navigating away. One column below 1050px, where there is no room to split. */
+.argus-detail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 46%);
+  background: var(--panel-bg, #fff);
+  border-left: 1px solid var(--border, #e3e3e3);
+  box-shadow: -12px 0 28px rgba(0, 0, 0, 0.10);
+  overflow-y: auto;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+}
+.argus-detail.hidden { display: none; }
+
+.argus-detail-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  background: var(--panel-bg, #fff);
+  border-bottom: 1px solid var(--border, #e3e3e3);
+}
+.argus-detail-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  flex: 1;
+  letter-spacing: 0.01em;
+}
+.argus-detail-body { padding: 12px 16px 28px; }
+.argus-detail-body .argus-group:first-child { margin-top: 0; }
+
+.argus-detail-text {
+  margin: 4px 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text, #222);
+}
+.argus-detail-body .argus-item { cursor: default; }
+.argus-detail-body .argus-item:hover { background: none; }
+
+.argus-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, #e3e3e3);
+}
+
+@media (max-width: 1050px) {
+  .argus-detail { width: 100%; border-left: 0; }
+}
+
+/* Lamps and in-panel rows are pressable too (v1.42.2). The master lamps carry
+   the three biggest numbers on the screen and did nothing at all until Alex
+   pointed at a third inert figure - the rule is now "every non-zero number
+   opens what it counts", so the affordance has to follow it everywhere. */
+/* The fourth lamp is a readout, not an alarm: it must never look like
+   something is wrong, so it keeps the neutral base and only gains a green
+   pip while at least one agent is actually working. */
+.argus-lamp.agents { color: var(--text); letter-spacing: .06em; }
+.argus-lamp.agents.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: #22a06b; margin-right: 7px; vertical-align: middle; }
+.argus-lamp.clickable { cursor: pointer; }
+.argus-lamp.clickable:hover { filter: brightness(1.08); }
+
+/* Jumping from a figure to the list that explains it: a brief tint, so the eye
+   lands on the answer rather than hunting for what changed. */
+.argus-group.flash {
+  background: var(--argus-flash, rgba(120, 140, 255, 0.16));
+  border-radius: 4px;
+  transition: background 0.5s ease;
+}
+
+/* A way into the agent's chat on every row, not only at the foot of the panel
+   (Alex, 2026-09-23: "I will always have an option to talk to the relevant
+   agent right from the info screen about any point"). Quiet until the row is
+   hovered, so 20 rows do not turn into 20 shouting buttons. */
+.argus-btn.discuss-inline {
+  margin-top: 6px;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.argus-item:hover .argus-btn.discuss-inline,
+.argus-row:hover .argus-btn.discuss-inline,
+.argus-btn.discuss-inline:focus-visible { opacity: 1; }
+.argus-row .argus-btn.discuss-inline { margin: 0 0 0 10px; }
+
+/* the owner's verdict on an idea (v1.44.0). Deliberately plain: three small words,
+   the chosen one filled in. This is the only control in Argus that writes
+   anything, and it is the feedback the whole research programme runs on. */
+.argus-verdict { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.argus-btn.verdict { font-size: 11.5px; padding: 3px 10px; }
+.argus-btn.verdict.on { background: var(--argus-dec, #4b5bd4); border-color: var(--argus-dec, #4b5bd4); color: #fff; }
+.argus-verdict-state { font-size: 11.5px; color: var(--text-muted); }
+
+/* Where an idea came from. Links open outside the app. */
+.argus-sources { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-top: 6px; }
+.argus-sources-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.argus-source-link { font-size: 11.5px; color: var(--link, #1a5fb4); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.argus-source-link:hover { border-bottom-style: solid; }

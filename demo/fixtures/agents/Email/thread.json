@@ -1,0 +1,31 @@
+{
+  "tail": "working",
+  "tool": "Read",
+  "contextTokens": 39000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Sort the inbox and tell me what needs a reply.",
+      "minsAgo": 90
+    },
+    {
+      "role": "agent",
+      "text": "Sorted 14 messages. Three need a reply: the venue about Saturday's access time, a client asking about print sizes, and a supplier invoice question. I've drafted answers to all three for you to review.",
+      "minsAgo": 80
+    },
+    {
+      "role": "user",
+      "text": "Show me the venue one first.",
+      "minsAgo": 15
+    },
+    {
+      "role": "agent",
+      "text": "Draft: \"Hello, thank you for the details. We will arrive at 14:00 to set up. Could you confirm that the terrace is free until 16:00? Best, Maya\"",
+      "minsAgo": 14,
+      "interim": true
+    }
+  ],
+  "replies": [
+    "Understood - I'll send it once you approve. (Demo workspace: no mail is touched.)"
+  ]
+}

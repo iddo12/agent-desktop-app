@@ -1,0 +1,58 @@
+{
+  "_why": {
+    "src/fleetMailbox.js": "maxPartnerMtime is a stored data field name (result key read by the renderer and tests), not wording; renaming needs a data migration",
+    "src/fleetTimeline.js": "maxPartnerMtime: same data field name",
+    "src/renderer/fleet-pane.js": "maxPartnerMtime: same data field name",
+    "src/overview.js": "needsOwner is the task store's wire-format field name (also written by tasks.py), not a name shown or sent to anyone; renaming it needs a contract change with the task tool.",
+    "src/daily/contract.js": "My Daily's STORED names (task field, calendar ids, appointment/settings keys, the tasks.py flag). Renaming them would stop existing data from loading, so they stay as contract constants in this one file; nothing else in My Daily spells them.",
+    "src/renderer/daily-contract.js": "The renderer's copy of the same stored ids and keys (appointment field, settings key, calendar ids). Same reason as src/daily/contract.js.",
+    "src/argus-data.js": "worthOwnerKnowing is a field NAME in the research digest files agents already wrote (data schema); the new name worthKnowing is accepted too. Remove when every writer has switched.",
+    "src/renderer/argus.js": "needsOwner is the task store's wire-format field name in the status files (also written by tasks.py), not a name shown to anyone.",
+    "src/dep-doctor.js": "Windows system fallbacks (Program Files npm.cmd, System32 cmd.exe) used only when ComSpec / PATH lookup finds nothing; these are the OS's own fixed locations, not a user's folders.",
+    "src/main.js": "ComSpec fallback to the Windows System32 cmd.exe (OS fixed location). Everything else in main.js code (strings, logic) is scanned with comments ignored.",
+    "src/research/service.js": "worthOwnerKnowing is a field NAME in the research digest files agents already wrote (data schema), read here; same reason as src/argus-data.js."
+  },
+  "src/fleetMailbox.js": [
+    "maxPartnerMtime"
+  ],
+  "src/fleetTimeline.js": [
+    "maxPartnerMtime"
+  ],
+  "src/renderer/fleet-pane.js": [
+    "maxPartnerMtime"
+  ],
+  "src/overview.js": [
+    "needsOwner"
+  ],
+  "src/daily/contract.js": [
+    "const NEEDS_KEY = ",
+    "const NEEDS_FLAG = ",
+    "const NEEDS_LABEL = ",
+    "const CAL_OWNER = ",
+    "const CAL_PARTNER = ",
+    "const SHARE_ITEM_KEY = ",
+    "const SHARE_SETTING_KEY = "
+  ],
+  "src/renderer/daily-contract.js": [
+    "CAL_OWNER: ",
+    "CAL_PARTNER: ",
+    "SHARE_ITEM_KEY: ",
+    "SHARE_SETTING_KEY: "
+  ],
+  "src/argus-data.js": [
+    "f.worthOwnerKnowing"
+  ],
+  "src/renderer/argus.js": [
+    "needsOwner"
+  ],
+  "src/dep-doctor.js": [
+    "C:\\\\Program Files\\\\nodejs\\\\npm.cmd",
+    "C:\\\\Windows\\\\System32\\\\cmd.exe"
+  ],
+  "src/main.js": [
+    "C:\\\\Windows\\\\System32\\\\cmd.exe"
+  ],
+  "src/research/service.js": [
+    "worthOwnerKnowing"
+  ]
+}

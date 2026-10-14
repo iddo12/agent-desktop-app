@@ -1,0 +1,31 @@
+{
+  "tail": "working",
+  "tool": "Calendar",
+  "contextTokens": 31000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Can you check next week for clashes and propose a schedule?",
+      "minsAgo": 70
+    },
+    {
+      "role": "agent",
+      "text": "Next week has one clash: the dentist on Tuesday overlaps the client call. I can move the dentist to Wednesday morning. Shall I?",
+      "minsAgo": 65
+    },
+    {
+      "role": "user",
+      "text": "Yes, move it.",
+      "minsAgo": 40
+    },
+    {
+      "role": "agent",
+      "text": "Done - the dentist is now Wednesday at 09:30. I'm building the rest of the week around Saturday's shoot.",
+      "minsAgo": 38,
+      "interim": true
+    }
+  ],
+  "replies": [
+    "Added to the plan for next week."
+  ]
+}

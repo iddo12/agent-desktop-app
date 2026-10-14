@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "id": "d1",
+      "title": "Studio anniversary",
+      "month": 0,
+      "day": 0,
+      "inDays": 17,
+      "kind": "date"
+    },
+    {
+      "id": "d2",
+      "title": "Mom's birthday",
+      "month": 0,
+      "day": 0,
+      "inDays": 26,
+      "kind": "birthday"
+    }
+  ]
+}

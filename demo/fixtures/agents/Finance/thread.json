@@ -1,0 +1,19 @@
+{
+  "tail": "idle",
+  "contextTokens": 24000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Send the March invoices and give me a Q1 summary.",
+      "minsAgo": 2900
+    },
+    {
+      "role": "agent",
+      "text": "All March invoices are sent. The Q1 summary is ready:\n\n{{REPORTS}}\\Q1 invoices summary.pdf\n\nInvoiced $18,420, received $15,960, two invoices still open.",
+      "minsAgo": 2890
+    }
+  ],
+  "replies": [
+    "Noted. I'll follow up on the two open invoices on Monday."
+  ]
+}

@@ -1,0 +1,335 @@
+﻿const fs = require("fs");
+const path = require("path");
+const { withFsRetry } = require("./fsRetry");
+const { readJsonFile } = require("./jsonfile");
+
+// Agents live as sibling folders next to agent-desktop itself, under one
+// shared parent directory. Defaults to that parent directory so it works
+// out of the box wherever you clone this repo; override with
+// AGENT_DESKTOP_ROOT if you want your agents to live somewhere else.
+// v1.121.0: the rule lives in agentsRoot.js (environment > Setup's agentsRoot > the old sibling-folder rule > none); read on every call.
+const agentsRoot = require("./agentsRoot");
+const rootNow = () => agentsRoot.getRoot() || null;
+const STATE_FILENAME = "master_state.md";
+const CONFIG_FILENAME = "agent_config.json";
+const AVATAR_FILENAME = "avatar.png";
+const SESSIONS_DIRNAME = "sessions";
+
+// "sessions" (root-level) holds shared handoff transcripts, not an agent -
+// each agent's OWN sessions/ subfolder (its archive, inside its own folder)
+// is a different thing and isn't affected by this exclusion. If ROOT
+// contains other non-agent folders (a shared reference doc, a legacy tool,
+// etc.), list them via AGENT_DESKTOP_EXTRA_EXCLUDE (comma-separated) rather
+// than hardcoding them here, so this stays generic across setups.
+const EXTRA_EXCLUDED = (process.env.AGENT_DESKTOP_EXTRA_EXCLUDE || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const EXCLUDED_FOLDERS = new Set(["agent-desktop", ".claude", "node_modules", "sessions", ...EXTRA_EXCLUDED]);
+
+const HEALTH_LABELS = {
+  healthy: "Healthy",
+  good: "Healthy",
+  ok: "Healthy",
+  green: "Healthy",
+  warning: "Warning",
+  degraded: "Warning",
+  "at risk": "Warning",
+  amber: "Warning",
+  yellow: "Warning",
+  critical: "Critical",
+  error: "Critical",
+  down: "Critical",
+  red: "Critical",
+  working: "Healthy",
+  fine: "Healthy",
+};
+
+// v1.58.1: agents don't all write a one-word Health section. Optimization
+// writes "- **Workstation:** good. All 3 NVMe SSDs Healthy; ...", Product
+// Development "Working. ExoCam ...", Trade Show "OK - this agent's ...". An
+// exact-match lookup turned all three into "Unknown" (grey dot) while the
+// agents were fine. So: exact match first, then the earliest health word in
+// the first sentence only - prose further on ("error counts", "went down")
+// must not flip the dot.
+function healthLabel(raw) {
+  const text = (raw || "").replace(/[*_`#]/g, "").trim().toLowerCase();
+  if (HEALTH_LABELS[text]) return HEALTH_LABELS[text];
+  const first = text.split(/(?<=[.;!?])\s|\n/)[0].slice(0, 160);
+  let best = null;
+  for (const [word, label] of Object.entries(HEALTH_LABELS)) {
+    const m = new RegExp(`\\b${escapeRegExp(word)}\\b`).exec(first);
+    if (m && (!best || m.index < best.index)) best = { index: m.index, label };
+  }
+  return best ? best.label : "Unknown";
+}
+
+function extractSection(text, names) {
+  for (const name of names) {
+    const pattern = new RegExp(`^#{1,6}\\s*${escapeRegExp(name)}\\s*$`, "im");
+    const m = pattern.exec(text);
+    if (!m) continue;
+    const rest = text.slice(m.index + m[0].length);
+    const nextHeading = /^#{1,6}\s/m.exec(rest);
+    const body = nextHeading ? rest.slice(0, nextHeading.index) : rest;
+    const lines = body
+      .split("\n")
+      .map((l) => l.trim().replace(/^[-*]\s*/, ""))
+      .filter((l) => l.length > 0 && l !== "---");
+    if (lines.length > 0) return lines;
+  }
+  return [];
+}
+
+function extractField(text, names) {
+  for (const name of names) {
+    const pattern = new RegExp(`^\\s*[-*]?\\s*\\*{0,2}${escapeRegExp(name)}\\*{0,2}\\s*:\\s*(.+)$`, "im");
+    const m = pattern.exec(text);
+    if (m) return m[1].trim().replace(/\*+$/, "").trim();
+  }
+  return null;
+}
+
+function extractFieldOrSection(text, names) {
+  const section = extractSection(text, names);
+  if (section.length > 0) return section.join(" ");
+  return extractField(text, names);
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseMasterState(text) {
+  return {
+    status: extractFieldOrSection(text, ["Status", "Current Status"]) || "No status field found",
+    health: extractFieldOrSection(text, ["Health"]) || "Unknown",
+    updated: extractFieldOrSection(text, ["Last Updated", "Updated"]),
+    tasks: extractSection(text, ["Recent Tasks", "Tasks", "Recent Activity"]),
+  };
+}
+
+function loadAgentConfig(agentDir) {
+  const cfgPath = path.join(agentDir, CONFIG_FILENAME);
+  if (fs.existsSync(cfgPath)) {
+    try {
+      return readJsonFile(cfgPath);
+    } catch (e) {
+      /* fall through to default */
+    }
+  }
+  return { display_name: path.basename(agentDir), role: "", avatar: null };
+}
+
+// 2026-09-20: added alongside the always-on background-agent sweep in
+// main.js (ensureAllAgentsBackgrounded), which keeps every configured
+// agent's `claude --bg` process dispatched and running at all times so
+// cross-agent SendMessage/ListAgents works without a chat tab ever having
+// been opened. That sweep would otherwise resurrect ANY stopped agent
+// within its own re-check interval - including one the owner deliberately
+// stopped (a runaway/looping agent, a project on hold, freeing up the
+// machine for something heavy) - since delete-agent was previously the
+// only way to stop a background process at all. `paused` is the escape
+// hatch: the sweep skips (and setPaused actively stops) any agent with
+// this flag set, and only an explicit Resume clears it - opening the
+// agent's chat tab manually still works as normal either way, since
+// start-terminal doesn't consult this flag.
+function setAgentPaused(agentPath, paused) {
+  if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
+  const config = loadAgentConfig(agentPath);
+  config.paused = !!paused;
+  withFsRetry(() => fs.writeFileSync(path.join(agentPath, CONFIG_FILENAME), JSON.stringify(config, null, 2), "utf-8"));
+  return config.paused;
+}
+
+// v1.68.0: avatars are ~340 KB each (6.4 MB across 19 agents). They used to be read from disk and base64-encoded
+// again on EVERY listAgents() call (every 10 s from the overview poll, on the main thread). Now one stat per call,
+// and the data URL is rebuilt only when the file's size/mtime changed.
+const avatarMemo = new Map(); // avatarPath -> { sig, url }
+function avatarDataUrl(agentDir, config) {
+  if (!config.avatar) return null;
+  const avatarPath = path.join(agentDir, config.avatar);
+  let st;
+  try { st = fs.statSync(avatarPath); } catch (e) { avatarMemo.delete(avatarPath); return null; }
+  const sig = st.size + ":" + st.mtimeMs;
+  const hit = avatarMemo.get(avatarPath);
+  if (hit && hit.sig === sig) return hit.url;
+  const buf = fs.readFileSync(avatarPath);
+  const url = `data:image/png;base64,${buf.toString("base64")}`;
+  avatarMemo.set(avatarPath, { sig, url });
+  return url;
+}
+
+// A denylist alone isn't enough - any folder ROOT happens to contain (a
+// saved document, a random project, anything not explicitly excluded)
+// showed up in the sidebar as if it were a real agent, confirmed live: a
+// folder holding nothing but a stray .docx rendered as "No work plan yet"
+// with a truncated folder name for a title. Requiring agent_config.json
+// alone was the first fix tried, but broke live: this app's own oldest
+// agents (Security among them) predate that file existing at all and have
+// never had one, relying only on master_state.md/sessions/.claude-session.
+// Any ONE of these four markers is what actually distinguishes a set-up
+// agent from an arbitrary folder - none of them being present is what a
+// stray folder (like the .docx one) actually looks like.
+function looksLikeAgentFolder(agentDir) {
+  return (
+    fs.existsSync(path.join(agentDir, CONFIG_FILENAME)) ||
+    fs.existsSync(path.join(agentDir, STATE_FILENAME)) ||
+    fs.existsSync(path.join(agentDir, SESSIONS_DIRNAME)) ||
+    fs.existsSync(path.join(agentDir, ".claude-session"))
+  );
+}
+
+// v1.77.3: per-agent memo of (parsed master_state.md, agent_config.json) keyed on both files' size/mtime, so the 10 s poll
+// stats two files per agent instead of reading, regex-parsing and JSON-parsing them every time.
+const agentMemo = new Map(); // agentDir -> { sig, hasState, parsed, config }
+function fileSig(p) {
+  try { const s = fs.statSync(p); return s.size + ":" + s.mtimeMs; } catch (e) { return "-"; }
+}
+function agentFiles(agentDir) {
+  const statePath = path.join(agentDir, STATE_FILENAME);
+  const sig = fileSig(statePath) + "|" + fileSig(path.join(agentDir, CONFIG_FILENAME));
+  const hit = agentMemo.get(agentDir);
+  if (hit && hit.sig === sig) return hit;
+  const hasState = sig.split("|")[0] !== "-";
+  let parsed = { status: "No work plan yet", health: "Unknown", updated: null, tasks: [] };
+  // an unreadable file throws exactly as before and is never memoized
+  if (hasState) parsed = parseMasterState(fs.readFileSync(statePath, "utf-8"));
+  const entry = { sig, hasState, parsed, config: loadAgentConfig(agentDir) };
+  agentMemo.set(agentDir, entry);
+  return entry;
+}
+
+// opts.noAvatar: callers that never draw the avatar (the 10 s overview poll) skip even the stat.
+function listAgents(opts) {
+  const ROOT = rootNow();
+  if (!ROOT || !fs.existsSync(ROOT)) return []; // no agents folder chosen yet: an empty list, never a made-up folder
+  const entries = fs
+    .readdirSync(ROOT, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !EXCLUDED_FOLDERS.has(e.name) && looksLikeAgentFolder(path.join(ROOT, e.name)))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return entries.map((entry) => {
+    const agentDir = path.join(ROOT, entry.name);
+    const { hasState, parsed, config } = agentFiles(agentDir);
+
+    return {
+      folderName: entry.name,
+      path: agentDir,
+      displayName: config.display_name || entry.name,
+      role: config.role || "",
+      avatar: opts && opts.noAvatar ? null : avatarDataUrl(agentDir, config),
+      healthLabel: healthLabel(parsed.health),
+      status: parsed.status,
+      tasks: parsed.tasks.slice(),
+      updated: parsed.updated,
+      hasState,
+      paused: !!config.paused,
+    };
+  });
+}
+
+function sanitizeFolderName(name) {
+  return name.replace(/[<>:"/\\|?*]/g, "").trim();
+}
+
+// Recurses looking for any actual file - a directory tree of only empty
+// subdirectories (e.g. a leftover empty .claude-session left behind after
+// deleting an agent - confirmed to actually happen, likely the cloud-sync client's own
+// background sync recreating a directory shortly after a delete finishes,
+// since it was a just-killed process's own working directory) counts as
+// nothing, not a real collision.
+function hasAnyFile(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) return true;
+    if (hasAnyFile(path.join(dir, entry.name))) return true;
+  }
+  return false;
+}
+
+function createAgent({ name, role, avatarBuffer, avatarExt }) {
+  const folderName = sanitizeFolderName(name);
+  if (!folderName) throw new Error("Agent name is required");
+
+  const ROOT = rootNow();
+  if (!ROOT) throw agentsRoot.needsSetupError();
+  const agentDir = path.join(ROOT, folderName);
+  if (fs.existsSync(agentDir) && hasAnyFile(agentDir)) {
+    throw new Error(`A folder named "${folderName}" already exists`);
+  }
+
+  withFsRetry(() => {
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(path.join(agentDir, SESSIONS_DIRNAME), { recursive: true });
+  });
+
+  const config = { display_name: name, role: role || "", avatar: null };
+
+  if (avatarBuffer) {
+    const avatarPath = path.join(agentDir, AVATAR_FILENAME);
+    withFsRetry(() => fs.writeFileSync(avatarPath, avatarBuffer));
+    config.avatar = AVATAR_FILENAME;
+  }
+
+  withFsRetry(() => fs.writeFileSync(path.join(agentDir, CONFIG_FILENAME), JSON.stringify(config, null, 2), "utf-8"));
+  withFsRetry(() =>
+    fs.writeFileSync(
+      path.join(agentDir, STATE_FILENAME),
+      "## Status\nJust created - no work plan set yet.\n\n## Health\nUnknown\n\n## Recent Tasks\n- (none logged yet)\n",
+      "utf-8"
+    )
+  );
+
+  return agentDir;
+}
+
+// Deliberately does NOT rename the agent's own folder even if the display
+// name changes - the folder name is tied to that agent's session identity
+// (.claude-session lives inside it, and its own Claude Code project bucket
+// in ~/.claude/projects/ is keyed off this exact path). Renaming it would
+// either orphan an active pty session or require coordinating a rename
+// across a running node-pty process, and cloud-sync (or any cloud-sync
+// tool) file operations can be flaky around exactly this kind of surgery -
+// renaming a folder with an active process's cwd inside it, mid-sync.
+// Editing only ever changes what's displayed, never the underlying path.
+function updateAgent(agentPath, { name, role, avatarBuffer }) {
+  if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
+  const config = loadAgentConfig(agentPath);
+  if (name && name.trim()) config.display_name = name.trim();
+  config.role = role || "";
+
+  if (avatarBuffer) {
+    withFsRetry(() => fs.writeFileSync(path.join(agentPath, AVATAR_FILENAME), avatarBuffer));
+    config.avatar = AVATAR_FILENAME;
+  }
+
+  withFsRetry(() => fs.writeFileSync(path.join(agentPath, CONFIG_FILENAME), JSON.stringify(config, null, 2), "utf-8"));
+  return agentPath;
+}
+
+// Only ever deletes a direct child of ROOT - refuses anything else outright
+// (a symlink, a path-traversal attempt, ROOT itself) rather than trusting
+// the caller's path. This is a real, permanent, unrecoverable delete of the
+// agent's entire folder (config, avatar, and its full sessions\ archive) -
+// the renderer gates this behind a type-the-name-to-confirm step before it
+// ever reaches here, precisely because there's no undo on this side.
+function deleteAgent(agentPath) {
+  const resolved = path.resolve(agentPath);
+  const ROOT = rootNow();
+  if (!ROOT) throw agentsRoot.needsSetupError();
+  if (path.dirname(resolved) !== path.resolve(ROOT)) {
+    throw new Error("Refusing to delete a path outside the agents root");
+  }
+  if (!fs.existsSync(resolved)) throw new Error("Agent folder not found");
+  fs.rmSync(resolved, { recursive: true, force: true });
+}
+
+// v1.110.0: what the DISK says right now (the outbox asks main right before an automatic re-send). null = unknown (fail closed).
+function isAgentPaused(agentPath) {
+  try {
+    if (!fs.existsSync(agentPath)) return null;
+    return loadAgentConfig(agentPath).paused === true;
+  } catch (e) { return null; }
+}
+
+module.exports = { isAgentPaused, get ROOT() { return rootNow(); }, getRoot: rootNow, __agentMemoSize: () => agentMemo.size, listAgents, createAgent, updateAgent, deleteAgent, setAgentPaused, SESSIONS_DIRNAME };

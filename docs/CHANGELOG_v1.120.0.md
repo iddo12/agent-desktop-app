@@ -1,0 +1,9 @@
+## v1.120.0 - Fleet timeline: one conversation view of the owner's agents and the partner's agents (files + IRIS)
+
+- The right-hand "the partner's side" pane is now a chat-style timeline: every message between our agents and the partner's agents in one place, grouped by conversation, our side on the right and the partner's side on the left. Each bubble shows who wrote to whom, the time and where it came from (File or IRIS tag).
+- IRIS messages are included now: sent messages show "delivered", "queued, not delivered yet", "waiting for your approval", "rejected" or "expired" (joined from the IRIS audit log); received ones show their text. The log read is bounded (last ~200 messages, tail of the newest log files, cached until the log changes).
+- Every message WE sent shows whether anybody answered: "answered <time> by <name> (best guess)" or "no reply yet (Xh)" (turns amber after 6 h). The guess = a later message from the other side in the same conversation (mailbox: the existing file-name/topic grouping; IRIS: the same peer).
+- Filter chips: All / Waiting for a reply (count) / From the partner's side. File notes show a short preview; "Show full note" loads the whole note on demand. Hebrew text is right-to-left (dir="auto").
+- Kept: unread badge, the "Waiting for your answer" box with "Send answer", Esc closes. New: the pane reopens on the next start if it was open, width 340-520 px (default 420) with a drag handle on its left edge, remembered.
+- Read-only, no new dependencies, same polling as before (60 s open / 5 min closed). The data carries source and thread key per message so a "write into the thread" box can be added later.
+- For tests and sandboxes: `AGENT_DESKTOP_FLEET_DIR` (mailbox) and the new `AGENT_DESKTOP_IRIS_DIR` (IRIS data folder containing log/ and peers.json) point the pane at fixture folders. New `src/fleetTimeline.js`, IPC `fleet-timeline`, `window.api.fleet.timeline`, `tests/fleetTimeline.test.js`.

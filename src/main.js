@@ -1,0 +1,5411 @@
+﻿// v1.77.2: test-mode isolation guard - must be the very first thing to run (wraps fs writes + child_process cwd in test mode only).
+// v1.86.0 demo mode: with AGENT_DESKTOP_DEMO=1 this builds the fictional demo world and redirects every location the app reads; otherwise it is { ON: false }.
+const demo = require("./demo");
+const testGuard = require("./testGuard");
+testGuard.install();
+// v1.121.0: where ARGUS, Memory, Keep working and the usage code find their files comes from the configuration layer (src/featureCtx.js)
+const featureCtx = require("./featureCtx").create({ cfg: require("./appConfig"), guard: testGuard });
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification } = require("electron");
+// v1.93.0: AD_PERF=1 only - per-IPC timing, event-loop stalls, memory, optional sync-fs accounting (src/perfLog.js).
+// Must wrap ipcMain before any handler below is registered. A no-op without the env var.
+const perfLog = require("./perfLog");
+perfLog.init({ app, ipcMain });
+const path = require("path");
+const fs = require("fs");
+const { readJsonFile } = require("./jsonfile");
+const https = require("https");
+const { execSync, execFileSync, execFile, spawn } = require("child_process");
+const pty = require("node-pty");
+const { listAgents, createAgent, updateAgent, deleteAgent, setAgentPaused: setAgentPausedRaw, isAgentPaused } = require("./agents");
+// v1.110.0: every pause/resume made in the main process (Pause button, the sandbox budget guard) is announced to the window,
+// so the renderer's agent list (and the message outbox) never goes on believing an agent is running when it is paused.
+function setAgentPaused(agentPath, paused) {
+  const state = setAgentPausedRaw(agentPath, paused);
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("agent-paused-changed", { agentPath, paused: !!state }); } catch (e) { /* cosmetic: the outbox also asks main before any re-send */ }
+  return state;
+}
+ipcMain.handle("agent-is-paused", (event, { agentPath }) => isAgentPaused(agentPath));
+const { readGroups, writeGroups } = require("./groups");
+const {
+  syncArchive,
+  listArchivedDays,
+  readArchivedDay,
+  encodeProjectPath,
+  getLatestUsage,
+  getUsageWindows,
+  getLiveTranscriptBlocks,
+  getSessionActivity,
+  getLatestTranscriptMtimeMs,
+  getLatestTranscriptSizeBytes,
+  getHaltInfo,
+  listConversations,
+  getCurrentConversation,
+  setConversationTitle,
+  repinAgentName,
+} = require("./archive");
+const { withFsRetryAsync } = require("./fsRetry");
+const testMode = require("./testMode");
+const overview = require("./overview");
+const registry = require("./registry");
+const argus = require("./argus-data");
+const memoryData = require("./memory-data");
+const workspaceTrust = require("./workspaceTrust");
+const appUpdate = require("./app-update");
+
+// Must run before ANY app.getPath("userData") call, including the module-scope
+// consts further down (UI_FLAGS_PATH, SENT_LOG_PATH, the watchdog logs) - they
+// are evaluated at require time, so redirecting later would leave half this
+// instance writing into the live instance's state.
+if (testMode.TEST_MODE) {
+  try {
+    // A distinct AppUserModelID keeps Windows from grouping the sandbox under
+    // the same taskbar button as the real app - without it the two share one
+    // button and the amber icon never gets shown separately.
+    app.setAppUserModelId("com.owner.agentdesktop.sandbox");
+    if (demo.ON) app.setPath("userData", demo.P.userData); // v1.86.0 demo mode: its own userData, inside the demo base folder
+    else app.setPath("userData", path.join(app.getPath("appData"), "agent-desktop-test" + String(process.env.AGENT_DESKTOP_TEST_SUFFIX || "").replace(/[^A-Za-z0-9_-]/g, "")));  // v1.68.0: a second sandbox instance (own userData) can run beside another agent's
+  } catch (e) {
+    // Better to refuse to start than to run a test instance that shares the live one's logs, sent-message history and UI flags.
+    // v1.121.0: but "appData cannot be resolved" (a bare or stripped environment) is not a reason to crash with a native error dialog:
+    // test mode only, fall back to a private folder in the temp directory (never the live userData), and say so on stderr.
+    try {
+      const fb = path.join(require("os").tmpdir(), "agent-desktop-test" + String(process.env.AGENT_DESKTOP_TEST_SUFFIX || "").replace(/[^A-Za-z0-9_-]/g, ""));
+      fs.mkdirSync(fb, { recursive: true });
+      app.setPath("userData", fb);
+      console.error("[test-mode] appData could not be resolved (" + e.message + "); userData is " + fb);
+    } catch (e2) {
+      throw new Error("Test mode could not redirect userData: " + e.message);
+    }
+  }
+}
+
+// Deliberately leads with the distinguishing word rather than appending it.
+// the owner's note on seeing the first sandbox launch: "call it something else - it
+// can be confusing". A title of "Agent Desktop - sandbox" is no help in a
+// taskbar or an alt-tab list, where both instances truncate to "Agent
+// Desktop...". Leading with SANDBOX survives truncation.
+const SANDBOX_WINDOW_TITLE = "SANDBOX - Agent Desktop test copy (not your real agents)";
+
+// Written on every startup so anyone (Claude, in practice) can answer "is it
+// running, which version, and has it been restarted since?" without asking
+// the owner. He asked for this directly after restarting for a fix and there being
+// no way to confirm which build was actually live - the source version in
+// package.json says what is on disk, not what is running.
+function writeRuntimeStamp() {
+  try {
+    const stamp = {
+      version: app.getVersion(),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      testMode: testMode.TEST_MODE,
+      electron: process.versions.electron,
+    };
+    fs.writeFileSync(path.join(app.getPath("userData"), "runtime.json"), JSON.stringify(stamp, null, 2), "utf-8");
+  } catch (e) {
+    /* never a reason to fail startup */
+  }
+}
+
+let mainWindow;
+const ptySessions = new Map(); // agentPath -> { proc, sessionCwd, archiveTimer }
+
+// node-pty (unlike child_process) does not do PATH lookup on Windows - it needs
+// the fully resolved executable path. Deliberately does NOT use fs.existsSync/
+// statSync/readdirSync to validate the path first: in this app's launch context
+// (via the hidden VBS wrapper), those calls reproducibly report ENOENT for a
+// file independently confirmed to exist on disk three separate ways - a real,
+// unexplained quirk isolated to Node's fs module in this specific process, not
+// an actual missing-file condition. node-pty's own spawn uses a different,
+// lower-level Windows API path than fs does, so it's used directly here without
+// a broken pre-check gate; if the path is genuinely wrong, spawn itself will
+// fail with its own clear error instead.
+// Root-caused live, 2026-08-23, the actual explanation behind every earlier
+// round of "File not found"/"is not recognized" theorized in this file
+// (updater races, Defender, ConPTY quirks - all real contributing factors
+// for OTHER incidents, but not the fundamental one): `%APPDATA%\npm\
+// claude.cmd` is not an independent file at all - `Get-Item` reveals it's a
+// reparse point (symlink) into Claude Desktop's own MSIX/UWP app-package
+// storage (`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\npm\
+// claude.cmd`), created by Claude Desktop's own installer as a convenience
+// shortcut. Confirmed directly, live, on the owner's machine: at the exact same
+// moment, `Test-Path` on the symlinked path returned `False` from a plain
+// PowerShell window (and independently, from Agent Desktop's own process
+// via the cmd-not-recognized.log diagnostics below), while `ls` from a
+// bash session with Claude Desktop's own package trust context saw it
+// fine, and `Test-Path` directly on the REAL target path (bypassing the
+// symlink entirely) returned `True`. Windows' AppContainer-style access
+// control for a packaged app's LocalCache folder is evidently NOT reliably
+// resolvable through that reparse point from every process/security
+// context - exactly the kind of intermittent, context-dependent failure
+// that made this so hard to pin down across three earlier rounds of fixes.
+// Fixed at the actual source: resolve the real target directly, skipping
+// the symlink entirely, rather than continuing to retry through it.
+// Agent Desktop keeps its OWN copy of the Claude Code CLI under userData,
+// installed/updated with `npm install -g --prefix <dir>` into a plain
+// directory it fully controls. Why (found live 2026-09-07): on a machine
+// where `claude` is Claude Desktop's *bundled* copy (%APPDATA%\npm\claude.cmd
+// is a symlink into the MSIX package store), `npm install -g` into the
+// default prefix cannot move that version - the write lands in a virtualized
+// package overlay the real binary never reads (npm reports success, the
+// version never changes). Installing into a normal private dir works and
+// gets the true `@latest`. Claude Desktop's bundled copy is left untouched
+// and stays the fallback until/unless the private one exists.
+function privateCliDir() {
+  return path.join(app.getPath("userData"), "cli");
+}
+function privateCliCmd() {
+  return path.join(privateCliDir(), "claude.cmd");
+}
+function privateCliPackageJson() {
+  return path.join(privateCliDir(), "node_modules", "@anthropic-ai", "claude-code", "package.json");
+}
+// Written only after a fresh install has verified (`claude --version` ran
+// clean), so a half-finished / interrupted install is never selected.
+function privateCliMarker() {
+  return path.join(privateCliDir(), "agent-desktop-cli.json");
+}
+function privateCliReady() {
+  // Deliberately reads actual bytes rather than fs.existsSync: existsSync
+  // has proven unreliable in this app's launch context for some paths (see
+  // resolveClaudeExecutable's history) - and a freshly npm-installed `cli`
+  // dir being scanned by Defender right at boot is exactly the kind of
+  // transient that would make existsSync lie. A successful JSON.parse of
+  // both the marker and the package's own package.json is the honest
+  // "it's really there and complete" check. BOM-tolerant: a marker written
+  // by PowerShell Set-Content -Encoding utf8 carries a UTF-8 BOM that plain
+  // JSON.parse chokes on.
+  try {
+    const readJson = (p) => JSON.parse(fs.readFileSync(p, "utf-8").replace(/^ï»¿/, ""));
+    const marker = readJson(privateCliMarker());
+    const pkg = readJson(privateCliPackageJson());
+    return !!(marker && marker.version && pkg && pkg.version);
+  } catch (e) {
+    return false;
+  }
+}
+
+// v1.121.0: where to find the programs Agent Desktop starts (Claude Code, Node, npm, git) lives in src/launchEnv.js: the person's own
+// setting (claudeExe / nodeExe / gitExe in Setup or app-config.json) first, then exactly what this file always tried, then the other
+// usual install places. Nothing is a fixed drive letter any more.
+let launchEnvInst = null;
+function launchEnvx() {
+  if (!launchEnvInst) launchEnvInst = require("./launchEnv").createLaunchEnv({ cfg: require("./appConfig") });
+  return launchEnvInst;
+}
+
+// The Claude Desktop package folder (the MSIX store): the old code's first public stop. Returns the claude.cmd inside it, or null.
+function claudeDesktopPackageCmd() {
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE && path.join(process.env.USERPROFILE, "AppData", "Local"));
+  if (localAppData) {
+    try {
+      const packagesDir = path.join(localAppData, "Packages");
+      const claudePkg = fs.readdirSync(packagesDir).find((name) => name.startsWith("Claude_"));
+      if (claudePkg) {
+        const direct = path.join(packagesDir, claudePkg, "LocalCache", "Roaming", "npm", "claude.cmd");
+        if (fs.existsSync(direct)) return direct;
+      }
+    } catch (e) {
+      /* Claude Desktop's package folder isn't where expected - fall back below */
+    }
+  }
+  return null;
+}
+
+// Order: Agent Desktop's own managed copy (see the block comment above) > the person's claudeExe setting > the Claude Desktop package
+// folder > `where claude.cmd` > the npm folder > other places (native installer, PATH claude.exe). Not found anywhere = a typed
+// CLAUDE_NOT_INSTALLED error whose message says in plain words what to do (the health banner and the start-agent error both show it).
+function resolveClaudeExecutable() {
+  if (privateCliReady()) return privateCliCmd();
+  const r = launchEnvx().claude({ legacy: claudeDesktopPackageCmd });
+  if (r.ok) return r.path;
+  throw require("./launchEnv").claudeNotInstalledError();
+}
+
+// npm itself lives alongside node.exe (wherever Node.js was installed), not
+// in the same folder as globally-installed packages like claude.cmd above -
+// same PATH-lookup-then-hardcoded-fallback pattern, since `where` can fail
+// silently in this app's own launch context the same way it does for
+// claude.cmd. `C:\Program Files\nodejs\npm.cmd` is the standard default
+// location for a Windows Node.js install (confirmed on this machine).
+function resolveNpmExecutable() {
+  const found = launchEnvx().npm();
+  if (found) return found;
+  throw new Error("npm was not found. Install Node.js from nodejs.org (it includes npm), or set the Node.js location in Setup > Claude Code.");
+}
+
+// npm-global claude.cmd calls out to plain `node` for various things, but
+// this app's own launch context has repeatedly proven that bare-command PATH
+// lookups (`where`, a bare `node`/`cmd` invocation via child_process) are not
+// reliable here - same reasoning as resolveClaudeExecutable() above, same
+// resolve-then-hardcoded-fallback pattern.
+function resolveNodeExecutable() {
+  return launchEnvx().node(); // a path, or null when Node.js cannot be found (the callers then skip what needs it)
+}
+
+// --------------------------------------------------- Rate-limit statusLine --
+//
+// Installs src/statusline.cjs as the owner's global Claude Code statusLine, once,
+// on first launch after this feature shipped - see that file's own comment
+// for the full design (it both renders a real status line for any
+// interactive `claude` session and feeds Agent Desktop's own rate-limit
+// badges real, Anthropic-reported figures instead of the message-count
+// heuristic archive.js otherwise has to fall back to). Deliberately
+// idempotent and non-destructive: if the owner (or a plugin) already has ANY
+// statusLine configured, this leaves it completely alone rather than
+// clobbering something he may have set up himself - the usage badges simply
+// keep using the heuristic in that case, same as before this feature existed.
+// the owner caught a real bug 2026-08-23: the 7-day badge read 69% while
+// Claude's own native app was already showing "Approaching weekly usage
+// limit" - not a wrong figure, a STALE one. Without this, the cache only
+// updates when an interactive session's own turn completes, which can
+// leave it many minutes behind at exactly the moment it matters most (near
+// the top of a window). refreshInterval is a real statusLine feature
+// (confirmed against the official docs before using it) that re-runs the
+// script on a fixed timer in addition to the normal event-driven updates.
+const RATE_LIMIT_REFRESH_INTERVAL_SECONDS = 60;
+
+// v1.121.0: the file edits live in src/claudeSettings.js (atomic write, one-time backup, grandfather rule) so they can be tested on a temp HOME.
+let claudeSettingsInst = null;
+function claudeSettingsx() {
+  if (!claudeSettingsInst) {
+    claudeSettingsInst = require("./claudeSettings").createClaudeSettings({
+      home: app.getPath("home"), scriptPath: path.join(__dirname, "statusline.cjs"), findNode: () => resolveNodeExecutable(),
+    });
+  }
+  return claudeSettingsInst;
+}
+function ensureRateLimitStatusLine() { return claudeSettingsx().ensureStatusLine(); }
+
+// Added 2026-08-23, asked for directly: the owner wants every agent this app
+// dispatches to be reachable from his phone (or any other device) without
+// a manual per-agent step. A background agent, on its own, never registers
+// with Anthropic's servers - it's a purely local process, invisible to
+// claude.ai/code, the Claude mobile app, or this Desktop app's own Code
+// tab, until something explicitly runs `/remote-control` inside it (real,
+// live-confirmed: the owner's own screenshot of Claude Desktop's Code tab showed
+// only the Security project, nothing for Testing agent or Acmeco, despite
+// both running the whole time). `remoteControlAtStartup: true` in the
+// user-level settings.json is the documented, official way to make every
+// future interactive Claude Code session auto-connect at launch
+// (https://code.claude.com/docs/en/remote-control#enable-remote-control-for-all-sessions)
+// - confirmed it has to be user-level specifically, not project/local
+// settings, which the docs say Claude Code only ever honors a `false` from,
+// never a `true`. Same idempotent, non-destructive pattern as
+// ensureRateLimitStatusLine() above: only ever sets this if the owner hasn't
+// already made an explicit choice either way, never overwrites a real
+// false he set on purpose.
+//
+// Scope worth being clear about: this is a genuinely global, user-level
+// setting - it affects every future interactive `claude` session on this
+// machine, including ones the owner starts in a plain terminal himself, not
+// just Agent Desktop's own dispatched agents. That's exactly what he asked
+// for ("every agent... reachable from anywhere"), not a side effect to
+// hide. Confirmed with him directly before making this change (auto mode's
+// own classifier flagged the first attempt as worth a real human okay on,
+// not just proceeding silently).
+//
+// Only covers sessions started AFTER this setting exists - an already-
+// running background agent (like Testing agent/Acmeco were at the moment
+// this was added) needs one manual `/remote-control` to register for the
+// first time, or a restart, since the setting is only read at a session's
+// own startup.
+function ensureRemoteControlEnabled() { return claudeSettingsx().ensureRemoteControl(); }
+
+// ---------------------------------------------------- Claude Code updates --
+//
+// Agent Desktop depends on a completely separate Claude Code CLI install
+// from the one the Claude Desktop app itself bundles/updates (confirmed
+// directly, live: two independent `claude.exe` installs on this machine,
+// different versions, different update mechanisms). resolveClaudeExecutable()
+// above always resolves to the npm-global one - this section checks whether
+// *that specific* install is behind the latest published version, and can
+// update it, since nothing else on this machine does that automatically.
+
+// The installed version is read directly from the package's own
+// package.json rather than via `claude --version` - no process spawn
+// needed at all for a simple version string, and avoids relying on
+// child_process/pty exec just to answer this one question.
+function getInstalledClaudeCodeVersion() {
+  try {
+    const claudeCmdPath = resolveClaudeExecutable();
+    const pkgPath = path.join(path.dirname(claudeCmdPath), "node_modules", "@anthropic-ai", "claude-code", "package.json");
+    const pkg = readJsonFile(pkgPath);
+    return pkg.version || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Queries the npm registry directly over HTTPS rather than shelling out to
+// `npm view` - a plain network request needs neither child_process (proven
+// unreliable in this app's launch context) nor node-pty, and is simpler for
+// a read-only version check than spawning a CLI process either way.
+function getLatestClaudeCodeVersion() {
+  return new Promise((resolve) => {
+    const req = https.get(
+      "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+      { headers: { "User-Agent": "agent-desktop" }, timeout: 8000 },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(body).version || null);
+          } catch (e) {
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+// Plain numeric x.y.z comparison - both versions here always come from real
+// npm-published semver (package.json / the registry's own "latest" tag), so
+// this doesn't need to handle prerelease tags or other semver edge cases.
+function isVersionNewer(latest, current) {
+  if (!latest || !current) return false;
+  const a = latest.split(".").map(Number);
+  const b = current.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff > 0;
+  }
+  return false;
+}
+
+// Requested directly, after a driver-launched test instance and the
+// user's own live instance showed different Claude Code update-available
+// banners at the same time - confusing without a visible way to tell
+// whether that's two different Agent Desktop builds or just two update
+// checks that happened to run minutes apart (it was the latter). Electron's
+// own app.getVersion() reads directly from package.json, so this always
+// reflects whatever's actually installed/running, not a hardcoded string
+// that could drift from the real version.
+ipcMain.handle("get-app-version", () => app.getVersion());
+
+// Small persistent "already shown / dismissed" flags for one-time UI notes. Kept in a plain JSON file
+// in userData (survives app updates, and unlike the renderer's localStorage it cannot be silently
+// lost - the groups note kept coming back after being dismissed, 2026-09-19/20).
+const UI_FLAGS_PATH = path.join(app.getPath("userData"), "ui-flags.json");
+function readUiFlags() {
+  try {
+    const v = readJsonFile(UI_FLAGS_PATH);
+    return v && typeof v === "object" ? v : {};
+  } catch (e) {
+    return {};
+  }
+}
+ipcMain.handle("ui-flags-get", () => readUiFlags());
+ipcMain.handle("ui-flag-set", (event, { key, value }) => {
+  try {
+    if (typeof key !== "string" || !key) return false;
+    const flags = readUiFlags();
+    flags[key] = value;
+    fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(flags, null, 2));
+    return true;
+  } catch (e) {
+    return false;
+  }
+});
+
+// v1.121.0: configuration layer + Setup panel (src/appConfig.js, src/features.js, src/setupMain.js). Reads userDatapp-config.json once;
+// nothing here changes how any existing feature finds its files (every feature is wired:false until converted).
+try {
+  const appConfig = require("./appConfig");
+  appConfig.init({ userDataDir: app.getPath("userData"), documentsDir: (() => { try { return app.getPath("documents"); } catch (e) { return null; } })() });
+  // Claude Code is "ready" when the real search (own copy, the person's setting, the Claude Desktop package, PATH, npm, the native installer) finds it
+  // a few seconds after start, warm the program-lookup memory in the background (async) so the first agent start / Setup read does not wait on a process
+  app.whenReady().then(() => { setTimeout(() => { try { launchEnvx().prime().catch(() => {}); } catch (e) { /* lookups just happen on demand */ } }, 1500); });
+  // (until the background lookups of the first seconds are done, it does not start a process just to answer: the setting or PATH answer is used)
+  appConfig.setProbe("claudeCode", () => { try { if (privateCliReady()) return true; const le = launchEnvx(); if (!le.primed()) return !!(le.explicit("claudeExe") || appConfig.get("claudeExe")); return !!le.claude({ legacy: claudeDesktopPackageCmd }).ok; } catch (e) { return false; } });
+  require("./setupMain").register({ ipcMain, dialog, cfg: appConfig, features: require("./features"), getMainWindow: () => mainWindow, isTestMode: () => testMode.TEST_MODE, env: process.env });
+} catch (e) { console.error("[setup] configuration layer failed to start:", e && e.message); }
+
+// v1.121.0: the agents folder (src/agentsRoot.js: environment > Setup's agentsRoot > the old "folder this program sits in" rule). Read once
+// here, after the configuration layer exists; the agent list, groups and create/delete read it afresh on every call, so a folder chosen in
+// Setup shows its agents at once, while the few modules below that were handed this value at start-up pick it up on the next start.
+// No folder chosen yet = a path that does not exist inside the app's own data folder (nothing is read or written elsewhere).
+const AGENTS_ROOT = require("./agentsRoot").getRoot() || path.join(app.getPath("userData"), "agents-folder-not-set");
+
+// v1.121.0: the two edits of ~/.claude/settings.json (usage status line, remote control at startup) used to run on every start without
+// asking. Now they run only when the person turned on "Claude Code integration" in Setup (appConfig consent record, written by the UI only;
+// the owner's migration config carries it so nothing changes there). Turning it on in Setup applies it at once.
+function claudeIntegrationAllowed() {
+  try { return require("./appConfig").isConsented("claudeIntegration"); } catch (e) { return false; }
+}
+function applyClaudeIntegration() {
+  if (!testGuard.flowsEnabled()) return;
+  // one-time rule: an install that already has our status line or remote control set keeps it (consent source "existing-install"); needs no click
+  try {
+    const gf = claudeSettingsx().grandfather(require("./appConfig"));
+    if (gf.granted) { try { logStuckWatchdog("claude integration: consent recorded from the existing install"); } catch (e) { /* log is best effort */ } }
+  } catch (e) { /* fails closed: no consent */ }
+  if (!claudeIntegrationAllowed()) { try { logStuckWatchdog("claude integration: not turned on in Setup, the Claude Code settings file is left alone"); } catch (e) { /* log is best effort */ } return; }
+  try { logStuckWatchdog("claude integration: turned on in Setup, checking the Claude Code settings file"); } catch (e) { /* log is best effort */ }
+  ensureRateLimitStatusLine();
+  ensureRemoteControlEnabled();
+}
+try {
+  require("./appConfig").onChange((ev) => {
+    if (ev && ev.feature === "claudeIntegration" && ev.consent === true) applyClaudeIntegration();
+    if (ev && Array.isArray(ev.keys) && ev.keys.indexOf("agentsRoot") >= 0) {
+      try { logStuckWatchdog("agentsRoot changed in Setup: the agent list uses it now; a restart applies it to the remaining start-up parts"); } catch (e2) { /* log is best effort */ }
+    }
+  });
+} catch (e) { console.error("[setup] onChange hook failed:", e && e.message); }
+
+// v1.66.0: start limiter + CPU guard install/consent + banner state (src/cpuGuardGlue.js).
+const cpuGuard = require("./cpuGuardGlue").init({
+  app,
+  ipcMain,
+  dialog,
+  testMode,
+  getMainWindow: () => mainWindow,
+  readUiFlags,
+  setUiFlag: (key, value) => {
+    try {
+      const f = readUiFlags();
+      f[key] = value;
+      fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(f, null, 2));
+    } catch (e) {}
+  },
+  log: (m) => logStuckWatchdog(m),
+});
+
+ipcMain.handle("check-claude-code-update", async () => {
+  const current = getInstalledClaudeCodeVersion();
+  const latest = await getLatestClaudeCodeVersion();
+  return { current, latest, updateAvailable: isVersionNewer(latest, current) };
+});
+
+// Diagnosed live, 2026-08-23: clicking "Update" can report success while
+// actually leaving the CLI broken. npm's own install process extracts the
+// new version into a randomly-named staging folder, then renames it into
+// place and deletes the old one - if any of the many claude.exe processes
+// this app deliberately keeps alive as background agents happens to have
+// a file handle open in that old folder at that exact moment, the delete
+// step throws EPERM. npm treats this as a non-fatal warning ("npm warn
+// cleanup...") and still exits 0 - but the rename into place can fail
+// along with it, leaving the real package.json missing entirely at the
+// resolved path while the old shim files got overwritten. The result:
+// every future agent dispatch fails with a confusing "not recognized" -
+// confirmed to have actually happened on the owner's own machine, requiring a
+// manual repair (copying a known-good install over the broken one) to fix.
+async function updateClaudeCodeOnce(npmPath, shell) {
+  await runClaudeCommand(npmPath, ["install", "-g", "@anthropic-ai/claude-code@latest"], { env: process.env });
+  // Verify rather than trust npm's exit code - a real `claude --version`
+  // run is the only thing that actually proves the install is usable.
+  try {
+    const output = await runClaudeCommand(shell, ["--version"], { env: process.env }, 3, 500);
+    return /\(Claude Code\)/.test(output) || /^\d+\.\d+\.\d+/.test(output.trim());
+  } catch (e) {
+    return false;
+  }
+}
+
+ipcMain.handle("update-claude-code", async () => {
+  const npmPath = process.platform === "win32" ? resolveNpmExecutable() : "npm";
+  const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+  // Routed through the same pty-based runner as the native-agent backend
+  // calls below rather than child_process directly, for the same reason:
+  // execFileSync/spawnSync are confirmed unreliable in this app's launch
+  // context on Windows.
+  let verified = await updateClaudeCodeOnce(npmPath, shell);
+  // One retry - the same transient-file-lock hedge already used elsewhere
+  // in this file (spawnPtyWithRetry, runClaudeCommand). A second attempt
+  // gives whichever background agent process held the lock a chance to
+  // have released it by the time this runs again.
+  if (!verified) {
+    verified = await updateClaudeCodeOnce(npmPath, shell);
+  }
+  const current = getInstalledClaudeCodeVersion();
+  if (!verified || !current) {
+    throw new Error(
+      "The update ran, but the install couldn't be verified as working afterward - this can happen if a running " +
+      "Claude Code process locked a file mid-update. The CLI may now be broken. Try closing every open agent, " +
+      "fully closing and reopening Agent Desktop, then retrying the update."
+    );
+  }
+  return { current };
+});
+
+// Install / update Agent Desktop's OWN private copy of the Claude Code CLI
+// (see the privateCli* block near resolveClaudeExecutable for why a private
+// copy is the only thing this app can reliably keep current on a
+// bundled-CLI machine).
+//
+// History that led here (2026-09-07): a first attempt updated the shared
+// npm-global in place, risking an EPERM folder-swap race against live
+// agents. A second attempt quit the whole app and ran a detached updater
+// that (a) force-killed every `claude.exe` on the machine by name -
+// including the user's own interactive session - and (b) still couldn't
+// move the bundled copy's version. Both abandoned. This approach avoids
+// all of it: install into a fresh private dir, and only ever stop THIS
+// app's own background agents (by the cwds it dispatched), never anything
+// matched by process name, and never the app itself.
+ipcMain.handle("update-claude-cli", async () => {
+  if (process.platform !== "win32") {
+    throw new Error("Managed CLI update is implemented for Windows only.");
+  }
+  // v1.83.4: this stops EVERY agent, swaps the CLI and restarts the app (2026-10-07 13:42 it killed 22 agents mid-flight,
+  // then re-dispatched all of them at once while the machine was in use). Make it a deliberate choice, default = Cancel.
+  if (!testMode.TEST_MODE) {
+    let nAgents = 0;
+    try { nAgents = listAgents().length; } catch (e) {}
+    const { response } = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: "warning",
+      buttons: ["Cancel", "Stop all agents and update"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Update Claude Code?",
+      message: `This stops all ${nAgents} agents, installs the new Claude Code and restarts Agent Desktop (about 2-3 minutes; the app is busy meanwhile).`,
+      detail: "Anything an agent is writing right now is cut off. Do this only when no agent is mid-task and you are not in the middle of other work.",
+    });
+    if (response !== 1) throw new Error("Update cancelled by the user.");
+  }
+  const dir = privateCliDir();
+  fs.mkdirSync(dir, { recursive: true });
+
+  // 1. Stop only OUR background agents + live attach ptys, so nothing from
+  //    the private dir holds a file handle during npm's swap. They
+  //    re-dispatch (on the new CLI) the next time the renderer reattaches.
+  const cliProg = (stage) => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("cli-update-progress", { stage }); } catch (e) {} };
+  try {
+    const all = listAgents();
+    let n = 0;
+    for (const agent of all) {
+      cliProg(`stopping agents (${++n} of ${all.length})`);
+      await stopBackgroundAgentForCwd(sessionCwdFor(agent.path));
+    }
+  } catch (e) {
+    /* best-effort */
+  }
+  for (const [, session] of ptySessions) {
+    try {
+      if (session.archiveTimer) clearInterval(session.archiveTimer);
+      if (session.proc) session.proc.kill();
+    } catch (e) {}
+  }
+  ptySessions.clear();
+
+  // 2. Install @latest into the private prefix (works where a default-prefix
+  //    -g install silently no-ops against the bundled copy).
+  cliProg("downloading and installing the new version");
+  const npmPath = resolveNpmExecutable();
+  const env = { ...process.env, DISABLE_AUTOUPDATER: "1" };
+  await runClaudeCommand(
+    npmPath,
+    ["install", "-g", "--prefix", dir, "@anthropic-ai/claude-code@latest", "--no-audit", "--no-fund"],
+    { env, cwd: dir },
+    3,
+    800
+  );
+
+  // 3. Verify against the freshly-installed binary itself.
+  cliProg("checking the new version works");
+  let version = null;
+  try {
+    const out = await runClaudeCommand(privateCliCmd(), ["--version"], { env }, 3, 500);
+    const m = String(out).trim().match(/(\d+\.\d+\.\d+)/);
+    if (m) version = m[1];
+  } catch (e) {
+    /* falls through to the throw below */
+  }
+  if (!version || !fs.existsSync(privateCliPackageJson())) {
+    throw new Error(
+      "The CLI install ran but couldn't be verified. Agent Desktop is still using its previous Claude Code - " +
+        "try again, or run 'npm install -g @anthropic-ai/claude-code@latest' in a terminal."
+    );
+  }
+
+  // 4. Only now mark it ready, so resolveClaudeExecutable() switches over.
+  fs.writeFileSync(
+    privateCliMarker(),
+    JSON.stringify({ version, installedAt: new Date().toISOString() }, null, 2),
+    "utf-8"
+  );
+
+  // 5. Restart the app so every agent comes back fresh on the new CLI and
+  //    the version line updates. The update itself is already fully done
+  //    and verified on disk at this point - the relaunch does no real work,
+  //    so it can't half-fail the way the abandoned "quit then run an
+  //    external updater" flow could.
+  await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Restart now"],
+    defaultId: 0,
+    title: "Claude Code updated",
+    message: "Updated to Claude Code " + version + ".",
+    detail: "Agent Desktop will restart now so your agents reconnect on the new version.",
+  });
+  relaunchApp();
+  return { version, restarting: true };
+});
+
+// Restart Agent Desktop. Two mechanisms fired together, which is safe
+// because requestSingleInstanceLock() (see further down) means a second
+// launch just focuses the first window rather than opening another:
+//  - app.relaunch(): Electron's own detached wait-for-exit-then-start
+//    helper. The normal path.
+//  - a tiny detached .vbs that sleeps a few seconds then runs Launch.vbs
+//    (the exact chain Start_Agents_Dashboard.bat uses). Backup, in case
+//    app.relaunch() misbehaves for this non-packaged `electron .` setup.
+// If somehow neither takes, the app just closes and the user reopens it -
+// and the update is already applied, so nothing is lost.
+function relaunchApp() {
+  try {
+    app.relaunch();
+  } catch (e) {
+    /* fall through to the vbs backup */
+  }
+  try {
+    if (process.platform === "win32") {
+      const launchVbs = path.join(__dirname, "..", "Launch.vbs");
+      const relaunchVbs = path.join(app.getPath("userData"), "relaunch.vbs");
+      fs.writeFileSync(
+        relaunchVbs,
+        'WScript.Sleep 4000\r\n' +
+          'CreateObject("WScript.Shell").Run "wscript.exe //B ""' + launchVbs + '""", 0, False\r\n',
+        "utf-8"
+      );
+      spawn("wscript.exe", ["//B", relaunchVbs], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    }
+  } catch (e) {
+    /* best-effort backup only */
+  }
+  setTimeout(() => app.quit(), 500);
+}
+
+// ------------------------------------------------ Update & restart (v1.58.0) --
+// See src/app-update.js for what counts as "newer" and what is refused. Here:
+// the IPC, and the restart. Agents are `claude --bg` processes that survive
+// the app quitting and are reattached on start, so a restart costs them
+// nothing - the renderer's overlay still waits for them to be idle first, so
+// no reply is mid-stream on screen when the window goes away.
+appUpdate.init({
+  app, runClaudeCommand, testMode, isVersionNewer,
+  // v1.119.1: dep-doctor progress ("Installing components for e-mail..." / "Ready - restart") goes to the update banner area.
+  onDepStatus: (st) => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("dep-doctor-status", st); } catch (e) {} },
+});
+
+ipcMain.handle("app-dep-status", () => appUpdate.depStatus());
+
+// "Ready - restart to finish" after the start-up dependency check installed something.
+let restartNowScheduled = false; // a double click must schedule ONE relaunch
+ipcMain.handle("app-restart-now", async () => {
+  if (testMode.TEST_MODE) return { ok: true, restarting: false, testMode: true };
+  if (restartNowScheduled) return { ok: true, restarting: true, already: true };
+  restartNowScheduled = true;
+  for (const [agentPath, session] of ptySessions) {
+    try { syncArchive(agentPath, session.sessionCwd); } catch (e) {}
+  }
+  logStuckWatchdog(`restart after installing components: v${app.getVersion()}`);
+  setTimeout(relaunchApp, 300);
+  return { ok: true, restarting: true };
+});
+
+ipcMain.handle("app-update-status", (event, opts) => appUpdate.getStatus(opts || {}));
+
+ipcMain.handle("app-update-apply", async () => {
+  const r = await appUpdate.apply();
+  if (!r.ok) return r;
+  if (r.testMode) return { ...r, restarting: false }; // never relaunch the live app from the sandbox
+  // app.quit() does not fire window-all-closed, so flush the chat archive here.
+  for (const [agentPath, session] of ptySessions) {
+    try {
+      syncArchive(agentPath, session.sessionCwd);
+    } catch (e) {}
+  }
+  logStuckWatchdog(`update & restart: v${app.getVersion()} -> v${r.version || "?"}`);
+  setTimeout(relaunchApp, 300); // let this reply reach the renderer first
+  return { ...r, restarting: true };
+});
+
+ipcMain.handle("app-update-open-release", (event, url) => {
+  if (typeof url === "string" && url.startsWith(`https://github.com/${appUpdate.RELEASES_REPO}/`)) shell.openExternal(url);
+});
+
+// -------------------------------------------- known-interfering software --
+//
+// Diagnosed live, 2026-08-21/22, after a full day of chasing an
+// intermittent "File not found" / "is not recognized as an internal or
+// external command" error that only ever happened through this app's real
+// launch path, never through any isolated reproduction: Process Monitor
+// (kernel-level, cannot be fooled the way userspace checks can) caught
+// Intel's "Energy Server Service" (esrv_svc.exe, part of Intel's SUR/
+// System Usage Report telemetry bundle, services ESRV_SVC_QUEENCREEK and
+// USER_ESRV_SVC_QUEENCREEK) making its own malformed CreateFile calls
+// using the *exact* command line this app was trying to launch, at the
+// *exact* moment each failure happened - it appears to hook process
+// creation for its own telemetry purposes, and a bug in how it parses a
+// multi-argument command line interferes with the real launch. This isn't
+// specific to one machine's install - it's Intel driver-bundled software
+// that could plausibly be present on any Windows machine this app runs
+// on, so the check (and warning) belongs here, not just as a one-off fix
+// on the machine it was found on.
+const KNOWN_INTERFERING_SERVICES = [
+  {
+    serviceNames: ["ESRV_SVC_QUEENCREEK", "USER_ESRV_SVC_QUEENCREEK"],
+    label: "Intel Energy Server Service (esrv_svc.exe)",
+    explanation:
+      "Part of Intel's SUR/telemetry bundle. Confirmed live (via Process Monitor) to intermittently interfere with launching the claude CLI, causing intermittent \"File not found\" / \"not recognized\" errors with no other visible cause. Not required for graphics, chipset, or any normal driver function - safe to disable.",
+  },
+];
+
+async function checkInterferingServices() {
+  if (process.platform !== "win32") return [];
+  const found = [];
+  for (const entry of KNOWN_INTERFERING_SERVICES) {
+    for (const serviceName of entry.serviceNames) {
+      try {
+        const shell = process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe";
+        const output = await runClaudeCommand(
+          shell,
+          ["/d", "/c", "powershell", "-NoProfile", "-Command", `(Get-Service -Name ${serviceName} -ErrorAction SilentlyContinue).Status`],
+          { env: process.env }
+        );
+        if (/Running/i.test(output)) {
+          found.push({ ...entry, matchedServiceName: serviceName });
+          break; // one hit for this entry is enough - don't list it twice for both service names
+        }
+      } catch (e) {
+        /* best-effort - a failed check here shouldn't block the app from opening */
+      }
+    }
+  }
+  return found;
+}
+
+ipcMain.handle("check-interfering-services", () => checkInterferingServices());
+
+// Stops and disables the service going forward - the app itself never
+// silently gains admin rights to do this; Start-Process -Verb RunAs makes
+// Windows show the user its own real UAC consent prompt for this one
+// specific action, same as any other app requesting elevation.
+ipcMain.handle("disable-interfering-service", async (event, { serviceName }) => {
+  if (process.platform !== "win32") return { ok: false, error: "Not on Windows" };
+  const found = KNOWN_INTERFERING_SERVICES.some((e) => e.serviceNames.includes(serviceName));
+  if (!found) return { ok: false, error: "Unrecognized service name" };
+  const psCommand = `Stop-Service -Name '${serviceName}' -Force -ErrorAction SilentlyContinue; Set-Service -Name '${serviceName}' -StartupType Disabled`;
+  const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
+  try {
+    // Same node-pty-routed pattern as everything else in this file -
+    // child_process is the exact thing confirmed unreliable in this app's
+    // launch context, and this whole feature exists because of an issue
+    // that pattern helps sidestep, so using it here would be self-
+    // defeating. Start-Process -Verb RunAs shows the user Windows' own
+    // real UAC consent prompt for this one specific action - this app
+    // itself never silently gains admin rights.
+    const shell = process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe";
+    await runClaudeCommand(
+      shell,
+      ["/d", "/c", "powershell", "-NoProfile", "-Command", `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-EncodedCommand','${encoded}' -Wait`],
+      { env: process.env }
+    );
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// ------------------------------------- claude executable health check --
+//
+// Proactive startup check for "the 2 sec problem" (see CLAUDE.md's own
+// top-of-file section by that name) and anything else that would produce
+// the identical symptom - rather than waiting for the owner to hit a cryptic
+// mid-conversation failure and someone reverse-engineering it live (as
+// happened once, at real length, on 2026-08-23), actually try running
+// `claude --version` once at startup and surface a clear, specific banner
+// immediately if it fails, instead of a per-agent "[failed to start
+// session]" error that only shows up once you've already tried to use one.
+async function checkClaudeExecutableHealth() {
+  if (process.platform !== "win32") return { healthy: true };
+
+  let resolvedPath;
+  try {
+    resolvedPath = resolveClaudeExecutable();
+  } catch (e) {
+    if (e && e.code === "CLAUDE_NOT_INSTALLED") return { healthy: false, reason: "not-installed", detail: e.message, needsSetup: true };
+    return { healthy: false, reason: "not-resolved", detail: e.message };
+  }
+
+  let viaSymlink = false;
+  try {
+    viaSymlink = fs.lstatSync(resolvedPath).isSymbolicLink();
+  } catch (e) {
+    /* not fatal - just means we can't report whether this specific path is a symlink */
+  }
+
+  if (!fs.existsSync(resolvedPath)) {
+    return { healthy: false, reason: "missing", detail: resolvedPath, viaSymlink };
+  }
+
+  // A real, live smoke test - existence alone isn't sufficient proof it
+  // actually runs, which is exactly what made "the 2 sec problem" so
+  // confusing (the file existed the whole time, from most vantage points).
+  // Deliberately a short retry budget here (not runClaudeCommand's usual
+  // 20x900ms=~18s), so a genuine problem is reported within a few seconds
+  // at startup rather than making every normal launch feel slow.
+  try {
+    const output = await runClaudeCommand(resolvedPath, ["--version"], { env: process.env }, 3, 500);
+    if (CMD_NOT_RECOGNIZED_RE.test(output)) {
+      return { healthy: false, reason: "not-recognized", detail: resolvedPath, viaSymlink };
+    }
+    return { healthy: true, resolvedPath, viaSymlink };
+  } catch (e) {
+    return { healthy: false, reason: "spawn-failed", detail: e.message, viaSymlink };
+  }
+}
+
+ipcMain.handle("check-claude-executable-health", () => checkClaudeExecutableHealth());
+
+// ------------------------------------------------------- startup countdown --
+// v1.53.0. the owner: "Can you put some big numbers on the screen (counting down)
+// until agent desktop fully loads so I will know not to interact with it until
+// it's ready?" For the first stretch after a launch (or a relaunch.vbs restart
+// after a CLI update) the window is up but the first ensureAllAgentsBackgrounded
+// sweep is still running `claude agents --json` / `claude --bg` per agent, and
+// clicks into the window are unreliable - it can even show "(Not Responding)".
+//
+// "Ready" means BOTH: the first sweep has processed every unpaused agent
+// (success or failure - a failed agent still counts as processed, the sweep
+// never waits on it again) AND the renderer has finished loading. The renderer
+// (startup-overlay.js) draws a full-window countdown until then.
+//
+// The countdown's starting figure is a measurement, not a guess: every real
+// startup's app-start -> ready duration is appended to startup-timing.json and
+// the next launch counts down from the average of the last 3 (60 s if none).
+// Test-mode launches that skip the sweep are ready at once and are NOT recorded,
+// so a sandbox run cannot drag the live estimate down (the sandbox has its own
+// userData anyway, but the rule holds either way).
+const STARTUP_TIMING_PATH = path.join(app.getPath("userData"), "startup-timing.json");
+const STARTUP_DEFAULT_ESTIMATE_MS = 60 * 1000;
+const STARTUP_TIMING_KEEP = 20; // history kept on disk; only the last 3 are averaged
+const STARTUP_TIMING_AVERAGE_OF = 3;
+// Module load is as close to "process start" as this file can see; the gap
+// before it is Electron's own boot, which the user sees as no window at all.
+const APP_START_MS = Date.now();
+
+function readStartupTimings() {
+  try {
+    const doc = readJsonFile(STARTUP_TIMING_PATH);
+    return Array.isArray(doc.runs) ? doc.runs.filter((r) => r && Number.isFinite(r.durationMs) && r.durationMs > 0) : [];
+  } catch (e) {
+    return []; // first run, or an unreadable file - fall back to the default
+  }
+}
+
+function estimateStartupMs() {
+  const recent = readStartupTimings().slice(-STARTUP_TIMING_AVERAGE_OF);
+  if (!recent.length) return STARTUP_DEFAULT_ESTIMATE_MS;
+  return Math.round(recent.reduce((sum, r) => sum + r.durationMs, 0) / recent.length);
+}
+
+const startupState = {
+  startedAt: APP_START_MS,
+  estimateMs: estimateStartupMs(),
+  total: 0, // unpaused agents in the first sweep; 0 until the sweep has listed them
+  done: 0,
+  agentName: null, // the agent most recently processed
+  sweepDone: false,
+  rendererLoaded: false,
+  ready: false,
+  readyAt: null,
+  dismissed: false, // "Use it anyway" - remembered here so a renderer reload doesn't re-show it
+};
+
+function sendStartup(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send(channel, payload);
+    } catch (e) {}
+  }
+}
+
+function startupSnapshot() {
+  const { startedAt, estimateMs, total, done, agentName, ready, readyAt, dismissed } = startupState;
+  return { startedAt, estimateMs, total, done, agentName, ready, readyAt, dismissed, now: Date.now() };
+}
+
+async function recordStartupTiming(durationMs) {
+  try {
+    const runs = readStartupTimings();
+    runs.push({ at: new Date().toISOString(), durationMs, agents: startupState.total, version: app.getVersion() });
+    const doc = JSON.stringify({ runs: runs.slice(-STARTUP_TIMING_KEEP) }, null, 2);
+    await withFsRetryAsync(() => fs.promises.writeFile(STARTUP_TIMING_PATH, doc, "utf-8"));
+  } catch (e) {
+    logStuckWatchdog(`startup timing not saved: ${e.message}`);
+  }
+}
+
+function maybeMarkStartupReady() {
+  if (startupState.ready || !startupState.sweepDone || !startupState.rendererLoaded) return;
+  startupState.ready = true;
+  startupState.readyAt = Date.now();
+  logStuckWatchdog(`startup: ready (overlay released) after ${Math.round((Date.now() - APP_START_MS) / 1000)}s`);
+  sendStartup("startup-ready", startupSnapshot());
+}
+
+// v1.76.0 startup timeline + main-thread stall monitor. Every launch writes a
+// few "startup:" lines to the watchdog log (window shown, renderer loaded,
+// first agent list / chat transcript answered, ready) so a slow start can be
+// read off the log instead of guessed at, and for the first two minutes a
+// 100 ms timer measures how late it fires: the sum of lateness over 50 ms is
+// time the main thread spent blocked (synchronous file parsing, spawns), which
+// is what makes clicks and IPC wait. One summary line at the end; ~0 cost.
+const STARTUP_SWEEP_DELAY_MS = 4000;
+const startupMarksSeen = new Set();
+function startupMark(name) {
+  if (startupMarksSeen.has(name)) return;
+  startupMarksSeen.add(name);
+  perfLog.mark("startup: " + name);
+  logStuckWatchdog(`startup: ${name} at +${((Date.now() - APP_START_MS) / 1000).toFixed(1)}s`);
+}
+function startMainThreadStallMonitor() {
+  const TICK = 100, WINDOW_MS = 120000, THRESHOLD = 50;
+  let last = Date.now();
+  let blocked = 0, worst = 0, stalls = 0;
+  const t = setInterval(() => {
+    const now = Date.now();
+    const late = now - last - TICK;
+    last = now;
+    if (late > THRESHOLD) { blocked += late; stalls++; if (late > worst) worst = late; }
+    if (now - APP_START_MS >= WINDOW_MS) {
+      clearInterval(t);
+      logStuckWatchdog(`startup: main thread blocked ${(blocked / 1000).toFixed(1)}s in the first ${WINDOW_MS / 1000}s (${stalls} stalls over ${THRESHOLD} ms, worst ${worst} ms)`);
+    }
+  }, TICK);
+  t.unref();
+}
+
+// Called once, when the first sweep returns (however it returns). `measured`
+// is false when there was nothing real to measure - the sweep was skipped in
+// test mode, or listAgents() failed - so those launches don't pollute the
+// estimate.
+function markStartupSweepDone(measured) {
+  if (startupState.sweepDone) return;
+  startupState.sweepDone = true;
+  const durationMs = Date.now() - APP_START_MS;
+  logStuckWatchdog(`startup: first sweep done after ${Math.round(durationMs / 1000)}s (${startupState.done}/${startupState.total} agents${measured ? "" : ", not recorded"})`);
+  if (measured) recordStartupTiming(durationMs);
+  maybeMarkStartupReady();
+}
+
+// Progress hook handed to the FIRST ensureAllAgentsBackgrounded() call only;
+// the 15-minute sweeps after it run without one.
+const startupProgress = {
+  begin(total) {
+    startupState.total = total;
+    sendStartup("startup-progress", startupSnapshot());
+  },
+  agentDone(agentName) {
+    startupState.done += 1;
+    startupState.agentName = agentName;
+    sendStartup("startup-progress", startupSnapshot());
+  },
+};
+
+ipcMain.handle("get-startup-state", () => startupSnapshot());
+ipcMain.on("startup-dismiss", () => {
+  startupState.dismissed = true;
+});
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    // v1.63.8 (test mode only): the sandbox window must never take focus from the program the owner is using.
+    // Created hidden and shown with showInactive() on ready-to-show. The live window is unchanged.
+    ...(testMode.TEST_MODE ? { show: false } : {}),
+    ...(demo.ON ? demo.windowOptions() : {}), // v1.86.0: demo test launches can sit far off-screen (AGENT_DESKTOP_DEMO_OFFSCREEN=1)
+    width: 1280,
+    height: 820,
+    minWidth: 900,
+    minHeight: 600,
+    title: testMode.TEST_MODE && !demo.ON ? SANDBOX_WINDOW_TITLE : "Agent Desktop", // demo mode shows no sandbox label
+    backgroundColor: "#0f1115",
+    // Amber rather than the usual blue. the owner's ask after seeing two identical
+    // icons sitting next to each other in the taskbar: the title alone does
+    // not help there, because both truncate to a few characters.
+    icon: path.join(__dirname, "..", "build", testMode.TEST_MODE && !demo.ON ? "icon-sandbox.ico" : "icon.ico"),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      // Chromium's built-in PDF viewer, so the Library can show documents in
+      // the app itself (v1.39.0 - the owner: documents as PDF, viewable in the
+      // main screen with a back button).
+      plugins: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      // Electron throttles renderer JS timers (setTimeout/setInterval,
+      // including the debounce that schedules live chat-view rebuilds) once
+      // this window loses focus, to save resources. Confirmed to actually
+      // bite: a response landed while the window wasn't focused, and the
+      // chat view stayed stuck showing nothing until opening DevTools
+      // (which refocuses the window) let the stalled rebuild finally fire.
+      // This app needs to keep rendering correctly even when it's not the
+      // focused window (e.g. the user working in another app while a response
+      // comes in), so that throttling is disabled entirely rather than
+      // worked around.
+      backgroundThrottling: false,
+    },
+  });
+  // v1.76.0: AGENT_DESKTOP_HIDDEN=1 (sandbox only) keeps the window unshown so a measurement run never
+  // touches the screen; backgroundThrottling is already off, so timers run as if visible.
+  if (testMode.TEST_MODE && process.env.AGENT_DESKTOP_HIDDEN !== "1") mainWindow.once("ready-to-show", () => { try { mainWindow.showInactive(); } catch (e) {} });
+  // index.html carries its own <title>, and Electron lets a page's title win
+  // over the BrowserWindow `title` option - which is why the first sandbox
+  // launch still read "Agent Desktop" despite setting it above. Refusing the
+  // page's update and setting the title explicitly is what actually holds it.
+  if (testMode.TEST_MODE && !demo.ON) {
+    mainWindow.on("page-title-updated", (e) => e.preventDefault());
+    mainWindow.setTitle(SANDBOX_WINDOW_TITLE);
+  }
+
+  // Sandbox-only UI experiments, injected rather than linked from index.html
+  // so the live app cannot pick them up even accidentally. This is what lets a
+  // proposed redesign be looked at in the sandbox first and then kept or
+  // thrown away - see styles-experimental.css for the current one.
+  // v1.37.0: the header/Tasks-panel experiment graduated to index.html, so
+  // there may be no experiment at all - absent files are the normal case now,
+  // not an error. Drop a new styles-experimental.css / experimental.js into
+  // renderer\ to start the next one.
+  const xpCss = path.join(__dirname, "renderer", "styles-experimental.css");
+  if (testMode.TEST_MODE && fs.existsSync(xpCss)) {
+    mainWindow.webContents.on("did-finish-load", () => {
+      try {
+        const css = fs.readFileSync(xpCss, "utf-8");
+        // A real <style> element appended to <head>, NOT webContents.insertCSS.
+        // insertCSS injects at the user-stylesheet level, which loses to the
+        // app's own author styles on equal specificity - confirmed live: the
+        // button overrides applied (no competing rule) while every badge
+        // override silently lost to styles.css. Appending an author
+        // stylesheet last makes normal cascade order do the work, with no
+        // !important anywhere.
+        mainWindow.webContents.executeJavaScript(
+          `(() => { const s = document.createElement("style");
+                    s.id = "experimental-css";
+                    s.textContent = ${JSON.stringify(css)};
+                    document.head.appendChild(s);
+                    return true; })()`
+        );
+        // The JS half of a proposal (restructured header, task panel). Runs
+        // after the CSS so the styles it relies on already exist. It never
+        // reimplements behaviour - it hides the original controls and clicks
+        // them through - so a failure here is cosmetic, not functional.
+        const xpJs = path.join(__dirname, "renderer", "experimental.js");
+        if (fs.existsSync(xpJs)) {
+          mainWindow.webContents.executeJavaScript(fs.readFileSync(xpJs, "utf-8")).catch((e) =>
+            logStuckWatchdog(`experimental JS failed: ${e.message}`)
+          );
+        }
+      } catch (e) {
+        logStuckWatchdog(`experimental CSS not applied: ${e.message}`);
+      }
+    });
+  }
+
+  // Second half of the startup "ready" condition (see startupState). Fires on
+  // every load, including a renderer reload - harmless after the first.
+  mainWindow.webContents.on("did-finish-load", () => {
+    startupMark("renderer loaded");
+    startupState.rendererLoaded = true;
+    maybeMarkStartupReady();
+  });
+  mainWindow.once("show", () => startupMark("window shown"));
+  // v1.119.1: ~20 s after the window loads, install any package.json dependency that node_modules lacks (code that
+  // arrived by a pull done outside the app). Async, once per run, never in test mode.
+  if (!testMode.TEST_MODE) {
+    let depCheckScheduled = false;
+    mainWindow.webContents.on("did-finish-load", () => {
+      if (depCheckScheduled) return;
+      depCheckScheduled = true;
+      setTimeout(() => { appUpdate.startupDepCheck().catch(() => {}); }, 20000);
+    });
+  }
+
+  if (demo.ON) demo.injectUi(mainWindow.webContents); // v1.86.0: demo-only styles and the My Finance mock view
+  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+
+  // Electron gives a BrowserWindow no OS-native right-click menu and blocks
+  // target="_blank" links by default - neither was ever wired up here,
+  // which is exactly why copying (or even opening) a link, or copying
+  // plain text without a per-message button, has never worked in this app.
+  // the owner hit this directly asking to copy something from a chat.
+  // v1.82.1 (My Health review F17): the main window may only ever show its own page; any other navigation (a stray link, a redirect) is refused.
+  const ownUrl = () => mainWindow.webContents.getURL();
+  mainWindow.webContents.on("will-navigate", (event, url) => { if (url !== ownUrl()) event.preventDefault(); });
+  mainWindow.webContents.on("will-redirect", (event, url) => { if (url !== ownUrl()) event.preventDefault(); });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("context-menu", (event, params) => {
+    const template = [];
+    if (params.isEditable) {
+      template.push(
+        { label: "Cut", role: "cut", enabled: params.editFlags.canCut },
+        { label: "Copy", role: "copy", enabled: params.editFlags.canCopy },
+        { label: "Paste", role: "paste", enabled: params.editFlags.canPaste },
+        { type: "separator" },
+        { label: "Select All", role: "selectAll" }
+      );
+    } else if (params.selectionText) {
+      // Not webContents.copy()'s built-in role here - that copies whatever
+      // the OS selection currently is, which can change/clear between the
+      // right-click and the menu-item click on a slower machine. Capturing
+      // params.selectionText now and writing it explicitly is safer.
+      template.push({
+        label: "Copy",
+        click: () => clipboard.writeText(params.selectionText),
+      });
+    }
+    if (params.linkURL) {
+      if (template.length) template.push({ type: "separator" });
+      template.push(
+        { label: "Copy Link Address", click: () => clipboard.writeText(params.linkURL) },
+        { label: "Open Link in Browser", click: () => shell.openExternal(params.linkURL) }
+      );
+    }
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
+}
+
+// Without this, launching the app a second time (e.g. clicking the shortcut
+// again while an earlier window is still alive somewhere, minimized, or not
+// fully closed) spawns a completely separate process with its own empty
+// ptySessions map - confirmed to actually happen: the visible new window's
+// terminal was blank while an old, invisible instance from hours earlier was
+// still silently answering messages in the background the whole time. A
+// single-instance lock makes a second launch just refocus the real window
+// instead of creating that split-brain situation.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  // v1.83.4: app.quit() is asynchronous, so the rest of this file (IRIS, PHEME, the guards) still ran in the doomed
+  // second copy - seen 2026-10-07 13:44 after a CLI-update relaunch (app.relaunch() + relaunch.vbs start two copies 4 s
+  // apart): the loser opened IRIS/PHEME pipes and fought for port 47321. Exit hard instead.
+  try { logStuckWatchdog(`second instance pid=${process.pid} refused by single-instance lock - exiting`); } catch (e) {}
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (testMode.TEST_MODE) return; // sandbox: a second launch must not pull its window to the front (v1.63.8)
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+  app.whenReady().then(() => {
+    createWindow();
+    if (demo.ON) { // v1.86.0 demo mode: no watchdogs, sweeps, timers or CLI work - just the window on the fictional data
+      markStartupSweepDone(false);
+      writeRuntimeStamp();
+      return;
+    }
+    applyClaudeIntegration(); // v1.121.0: only with the person's consent (Setup > Claude Code integration); v1.77.2: a no-op in test mode
+    reapOrphanedBackgroundAgentProcesses();
+    setInterval(reapOrphanedBackgroundAgentProcesses, REAPER_INTERVAL_MS);
+    setInterval(() => { checkApprovalBlocked().catch((e) => logStuckWatchdog(`checkApprovalBlocked error: ${e.message}`)); }, 60 * 1000).unref();
+    setInterval(() => {
+      checkForStuckTurns().catch((e) => logStuckWatchdog(`checkForStuckTurns error: ${e.message}`));
+    }, STUCK_CHECK_INTERVAL_MS);
+    setInterval(() => {
+      checkForHaltedTurns().catch((e) => logStuckWatchdog(`checkForHaltedTurns error: ${e.message}`));
+      try { if (keepGoing) keepGoing.tick(); } catch (e) { logStuckWatchdog(`keepgoing tick error: ${e.message}`); }
+      try { if (keepGoingAttach) keepGoingAttach.tick().catch((e) => logStuckWatchdog(`keepgoing-attach error: ${e.message}`)); } catch (e) { logStuckWatchdog(`keepgoing-attach error: ${e.message}`); }
+    }, STUCK_CHECK_INTERVAL_MS);
+    setInterval(() => {
+      try {
+        checkForAuthFailure();
+      } catch (e) {
+        logStuckWatchdog(`checkForAuthFailure error: ${e.message}`);
+      }
+    }, STUCK_CHECK_INTERVAL_MS);
+    // Give the app's own startup (window, statusline, reaper) a moment to
+    // settle before launching a CLI process per configured agent. Respects
+    // the `paused` flag (agents.js setAgentPaused) - see that function's
+    // and this sweep's own comments for why that flag exists.
+    // The first sweep also drives the startup countdown overlay: it reports
+    // each agent through startupProgress, and its end (normal, skipped or
+    // thrown) marks the sweep half of "ready". A throw is logged and still
+    // counts as done - the overlay must never wait on a sweep that has ended.
+    // A sandbox whose sweep will be skipped anyway is ready at once rather
+    // than after the settle delay below.
+    // v1.76.0: the delay is 4 s, not 10 - the window and renderer are up in
+    // ~2 s and the reaper no longer blocks the main thread; the sweep itself
+    // now takes seconds, not a minute, so the countdown is short.
+    if (!testMode.liveAgentsPermitted()) markStartupSweepDone(false);
+    // v1.66.1: the startup overlay never waits longer than 90 s for the sweep (a CPU hold can queue starts for
+    // up to 15 min; the sweep carries on in the background, the overlay is released with a log line).
+    setTimeout(() => {
+      logStuckWatchdog("startup: overlay released after 90 s (sweep still queued, probably behind a CPU hold)");
+      markStartupSweepDone(false);
+    }, 100000).unref();
+    setTimeout(() => {
+      ensureAllAgentsBackgrounded(startupProgress)
+        .then((result) => markStartupSweepDone(!!(result && result.measured)))
+        .catch((e) => {
+          logStuckWatchdog(`ensureAllAgentsBackgrounded startup error: ${e.message}`);
+          markStartupSweepDone(false);
+        });
+    }, STARTUP_SWEEP_DELAY_MS);
+    startMainThreadStallMonitor();
+    setInterval(() => {
+      ensureAllAgentsBackgrounded().catch((e) => logStuckWatchdog(`ensureAllAgentsBackgrounded interval error: ${e.message}`));
+    }, ENSURE_AGENTS_ALIVE_INTERVAL_MS);
+    setInterval(repinAllAgentNames, REPIN_AGENT_NAMES_INTERVAL_MS);
+    writeRuntimeStamp();
+    setTimeout(() => cpuGuard.ensure().catch(() => {}), 45000); // first-time consent dialog, after the startup rush
+    logStuckWatchdog(`started v${app.getVersion()} pid=${process.pid} (${testMode.describe()})`);
+    if (testMode.TEST_MODE) {
+      enforceTestTokenBudget();
+      setInterval(enforceTestTokenBudget, TEST_BUDGET_CHECK_INTERVAL_MS);
+    }
+  });
+}
+
+app.on("window-all-closed", () => {
+  for (const [agentPath, session] of ptySessions) {
+    try {
+      clearInterval(session.archiveTimer);
+      syncArchive(agentPath, session.sessionCwd);
+      session.proc.kill();
+    } catch (e) {}
+  }
+  if (process.platform !== "darwin") app.quit();
+});
+
+// Exit trace (2026-09-26): on 09-26 the owner found Agent Desktop closed after hours away and there was no
+// evidence either way (no crash handlers, no Crashpad reports, no clean-exit record). These leave a trail:
+// every crash/quit path is logged, and a heartbeat file lets the NEXT start say when the previous instance
+// was last alive and whether it exited cleanly.
+const HEARTBEAT_PATH = path.join(app.getPath("userData"), "heartbeat.json");
+let heartbeatQuitting = false; // once will-quit has written "clean-exit", the interval must not overwrite it
+function writeHeartbeat(state) {
+  if (!gotSingleInstanceLock) return; // a second instance that lost the lock must not clobber the running one's record
+  if (heartbeatQuitting && state === "running") return;
+  try {
+    fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), state }));
+  } catch (e) {}
+}
+// Read the previous heartbeat now, but log it after ready: STUCK_WATCHDOG_LOG_PATH is a const defined further down.
+let previousHeartbeat = null;
+try {
+  previousHeartbeat = readJsonFile(HEARTBEAT_PATH);
+} catch (e) {}
+writeHeartbeat("running");
+setInterval(() => writeHeartbeat("running"), 60 * 1000).unref();
+app.whenReady().then(() => {
+  const prev = previousHeartbeat;
+  if (gotSingleInstanceLock && prev && prev.pid !== process.pid) {
+    logStuckWatchdog(
+      prev.state === "clean-exit"
+        ? `previous instance pid=${prev.pid} exited cleanly at ${prev.at}`
+        : `previous instance pid=${prev.pid} did NOT exit cleanly - last heartbeat ${prev.at} (killed, crashed, or machine off)`
+    );
+  }
+});
+app.on("before-quit", () => logStuckWatchdog(`before-quit pid=${process.pid}`));
+app.on("will-quit", () => {
+  try { if (global.__healthMain) global.__healthMain.shutdown(); } catch (e) { /* flag file removal is best effort */ }
+  logStuckWatchdog(`will-quit pid=${process.pid}`);
+  heartbeatQuitting = true;
+  writeHeartbeat("clean-exit");
+});
+app.on("render-process-gone", (_e, wc, d) =>
+  logStuckWatchdog(`render-process-gone reason=${d && d.reason} exitCode=${d && d.exitCode} url=${wc && wc.getURL ? wc.getURL() : ""}`)
+);
+app.on("child-process-gone", (_e, d) =>
+  logStuckWatchdog(`child-process-gone type=${d && d.type} reason=${d && d.reason} exitCode=${d && d.exitCode}`)
+);
+// Shared by both exit-trace handlers below so a future change to how much
+// stack (or which fields) gets logged only needs updating in one place.
+function formatErrForLog(err) {
+  return err && err.stack ? err.stack.split("\n").slice(0, 4).join(" | ") : err;
+}
+process.on("uncaughtExceptionMonitor", (err) => {  // monitor variant: logs without changing Electron's default handling
+  logStuckWatchdog(`uncaughtException: ${formatErrForLog(err)}`);
+});
+// Unlike uncaughtExceptionMonitor, an unhandled promise rejection is NOT covered by that
+// handler and (unlike a sync throw) leaves nothing in Windows' crash log or Crashpad either -
+// Node's default behavior for an unhandled rejection with no listener is to terminate the
+// process outright, invisibly to every exit-trace hook above. Registering a listener at all
+// (even one that does nothing else) suppresses that default termination, so this both closes
+// a real blind spot in the 2026-09-27 "app vanished with zero evidence anywhere" investigation
+// and, if that was the actual cause, stops it from recurring.
+process.on("unhandledRejection", (reason) => {
+  logStuckWatchdog(`unhandledRejection: ${formatErrForLog(reason)}`);
+});
+
+// ---------------------------------------------------------------- agents --
+
+ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return listAgents(); });
+
+// Sidebar groups ("folders"). Visual-only - see src/groups.js for the full
+// contract. The renderer sends the whole document back on every change
+// (single user, single window via requestSingleInstanceLock, small file), and
+// writeGroups() normalizes + persists it and returns the cleaned copy.
+ipcMain.handle("list-groups", () => readGroups());
+ipcMain.handle("save-groups", (event, { doc }) => writeGroups(doc));
+
+ipcMain.handle("pick-avatar", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose an avatar image",
+    filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
+    properties: ["openFile"],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const filePath = result.filePaths[0];
+  const buffer = fs.readFileSync(filePath);
+  return {
+    path: filePath,
+    dataUrl: `data:image/${path.extname(filePath).slice(1)};base64,${buffer.toString("base64")}`,
+  };
+});
+
+ipcMain.handle("create-agent", (event, { name, role, avatarPath }) => {
+  let avatarBuffer = null;
+  if (avatarPath && fs.existsSync(avatarPath)) {
+    avatarBuffer = fs.readFileSync(avatarPath);
+  }
+  const agentDir = createAgent({ name, role, avatarBuffer });
+  // v1.54.0: Claude Code (2.1.281+) will not run `claude --bg` in a folder
+  // whose workspace-trust prompt was never accepted - under this app's pty it
+  // just waits on the prompt, so the new agent would never start. Creating
+  // the agent here IS the owner's consent for this one folder (he just named it
+  // and clicked Create), so its .claude-session is trusted now. Existing
+  // agents are never trusted silently - they go through the untrusted banner
+  // and its button instead. Skipped in a fixtures-only sandbox, which must not
+  // touch the real ~/.claude.json. A failure is logged, not fatal: the agent
+  // then shows up in the untrusted banner on its first dispatch.
+  if (testMode.liveAgentsPermitted()) {
+    try {
+      const r = workspaceTrust.markFoldersTrusted([sessionCwdFor(agentDir)]);
+      logStuckWatchdog(`create-agent: trusted new agent folder ${agentDir} (verified=${r.verified}, backup=${r.backupPath || "none"})`);
+    } catch (e) {
+      logStuckWatchdog(`create-agent: could not trust new agent folder ${agentDir}: ${e.message}`);
+    }
+  }
+  return { agentDir };
+});
+
+ipcMain.handle("update-agent", (event, { agentPath, name, role, avatarPath }) => {
+  let avatarBuffer = null;
+  if (avatarPath && fs.existsSync(avatarPath)) {
+    avatarBuffer = fs.readFileSync(avatarPath);
+  }
+  updateAgent(agentPath, { name, role, avatarBuffer });
+  return { ok: true };
+});
+
+// --- Agent instructions (the agent folder's own CLAUDE.md) ---------------
+// This is the file Claude Code actually loads as the agent's standing
+// instructions every session - distinct from the short `role` blurb in
+// agent_config.json. Editing it in-app means a user (not just a Claude
+// session willing to write files) can set an agent up.
+function agentClaudeMdPath(agentPath) {
+  const resolved = path.resolve(agentPath);
+  // Only ever touch a CLAUDE.md that sits directly inside a real agent
+  // folder one level under the agents root - refuse anything else outright
+  // rather than trust the caller's path.
+  if (path.dirname(resolved) !== path.resolve(AGENTS_ROOT)) {
+    throw new Error("Refusing to touch a path outside the agents root");
+  }
+  return path.join(resolved, "CLAUDE.md");
+}
+
+ipcMain.handle("read-instructions", (event, { agentPath }) => {
+  const file = agentClaudeMdPath(agentPath);
+  if (!fs.existsSync(file)) return { exists: false, content: "", mtimeMs: null };
+  const content = fs.readFileSync(file, "utf-8");
+  const mtimeMs = fs.statSync(file).mtimeMs;
+  return { exists: true, content, mtimeMs };
+});
+
+ipcMain.handle("write-instructions", async (event, { agentPath, content, baseMtimeMs, force }) => {
+  const file = agentClaudeMdPath(agentPath);
+  const exists = fs.existsSync(file);
+  if (!force) {
+    // Conflict check: the file changed on disk since the editor loaded it
+    // (Claude edited it, an external editor, a Dropbox-synced change from
+    // another machine). Hand the current content back so the renderer can
+    // offer to reload rather than silently clobbering.
+    const currentMtime = exists ? fs.statSync(file).mtimeMs : null;
+    const changed = exists
+      ? baseMtimeMs == null || Math.abs(currentMtime - baseMtimeMs) > 1
+      : baseMtimeMs != null;
+    if (changed) {
+      return {
+        conflict: true,
+        content: exists ? fs.readFileSync(file, "utf-8") : "",
+        mtimeMs: currentMtime,
+      };
+    }
+  }
+  await withFsRetryAsync(() => fs.writeFileSync(file, content, "utf-8"));
+  return { ok: true, mtimeMs: fs.statSync(file).mtimeMs };
+});
+
+// Windows does not release a killed process file handles (including its
+// own working-directory lock) the instant kill() is called - confirmed to
+// actually bite: deleting an agent right after killing its live session
+// failed with "EBUSY: resource busy or locked, rmdir ...". Retries with a
+// short backoff also guard against any other transient locker - a cloud
+// sync tool, a security/AV scanner, whatever else might briefly hold a
+// handle on this same folder - not just this specific pty-teardown race.
+// Routed through the shared fsRetry.js
+// helper (2026-08-20) so this uses the same transient-error set as the rest
+// of the app file writes - the old inline check here tested e.message
+// against /EBUSY|EPERM|EACCES/ and never matched ENOENT, despite ENOENT
+// being live-confirmed (same session) as a real, reproducible transient
+// error in this exact project folder.
+// 2026-08-21: widened from 5x400ms (2s total) to 12x500ms (6s total) - a
+// native background agent's dispatch also spawns a separate, longer-lived
+// "daemon" helper process (confirmed directly, live: `claude daemon run
+// --origin transient --spawned-by {...cwd...}`) that `claude stop <id>`
+// does not necessarily terminate promptly. It still holds its own handle
+// on this same folder, so even after stopBackgroundAgentForCwd above has
+// confirmed the *agent* session itself has exited, rmdir can still hit a
+// real "EBUSY: resource busy or locked" until that separate daemon process
+// also finishes exiting and releases it - the original 2s budget (sized
+// for the unrelated attach-pty-kill case elsewhere in this file) wasn't
+// enough headroom for that.
+async function deleteAgentWithRetry(agentPath, attempts = 12, delayMs = 500) {
+  await withFsRetryAsync(() => deleteAgent(agentPath), { attempts, delayMs });
+}
+
+ipcMain.handle("delete-agent", async (event, { agentPath }) => {
+  // Kill any live session for this agent first - deleting its folder out
+  // from under a running pty (its cwd, its archive target) would otherwise
+  // leave an orphaned process and a broken syncArchive call on its next tick.
+  const session = ptySessions.get(agentPath);
+  if (session) {
+    try {
+      clearInterval(session.archiveTimer);
+    } catch (e) {}
+    ptySessions.delete(agentPath);
+    // Wait for the process to actually confirm it's gone (with a timeout
+    // fallback in case exit never fires) rather than assuming kill() is
+    // instantaneous - this is the actual root cause of the EBUSY above.
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      try {
+        session.proc.onExit(finish);
+        session.proc.kill();
+      } catch (e) {
+        finish();
+      }
+      setTimeout(finish, 2000);
+    });
+  }
+  await stopBackgroundAgentForCwd(sessionCwdFor(agentPath));
+  await deleteAgentWithRetry(agentPath);
+  if (untrustedAgents.delete(path.resolve(agentPath))) sendUntrustedAgents();
+  return { ok: true };
+});
+
+// 2026-09-20: the actual "stop an agent" the owner asked for, distinct from
+// delete-agent (which also removes the folder) - a real reason to want this
+// short of deleting anything: a runaway/looping agent burning usage, a
+// project on hold, freeing up the machine for something heavy. Persists via
+// agents.js's setAgentPaused() so ensureAllAgentsBackgrounded()'s periodic
+// sweep (elsewhere in this file) skips it and won't resurrect it - without
+// this flag, that sweep would otherwise bring back ANY stopped agent within
+// its own re-check interval, since delete was previously the only way to
+// stop a background process at all. Pausing tears down the live pty (same
+// pattern as delete-agent, just without removing the folder) and stops the
+// underlying `claude --bg` process; resuming immediately re-dispatches it in
+// the background (no pty attach - that only happens if/when the chat tab is
+// actually opened) so it's reachable again right away rather than waiting
+// for the next sweep.
+ipcMain.handle("set-agent-paused", async (event, { agentPath, paused }) => {
+  const newState = setAgentPaused(agentPath, paused);
+  if (newState) {
+    const session = ptySessions.get(agentPath);
+    if (session) {
+      try {
+        clearInterval(session.archiveTimer);
+      } catch (e) {}
+      ptySessions.delete(agentPath);
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        try {
+          session.proc.onExit(finish);
+          session.proc.kill();
+        } catch (e) {
+          finish();
+        }
+        setTimeout(finish, 2000);
+      });
+    }
+    await stopBackgroundAgentForCwd(sessionCwdFor(agentPath));
+  } else {
+    try {
+      const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+      const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+      await findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwdFor(agentPath));
+    } catch (e) {
+      logStuckWatchdog(`set-agent-paused resume dispatch failed for ${agentPath}: ${e.message}`);
+    }
+  }
+  return { ok: true, paused: newState };
+});
+
+// A pasted clipboard image (as opposed to a dragged real file) has no
+// filesystem path at all - it only exists as raw bytes in the clipboard.
+// Claude Code's own Read tool needs an actual file to open, so a pasted
+// image gets written out here as a real file before its path is ever
+// mentioned to the agent. Saved to the OS temp dir (not the agent's own
+// folder) since these are throwaway - nothing about them needs to persist
+// or sync via Dropbox once the message referencing them has been sent.
+const PASTED_IMAGE_DIR = path.join(app.getPath("temp"), "agent-desktop-pasted");
+
+ipcMain.handle("save-pasted-image", (event, { base64, ext }) => {
+  fs.mkdirSync(PASTED_IMAGE_DIR, { recursive: true });
+  const filePath = path.join(PASTED_IMAGE_DIR, `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
+  fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
+  return filePath;
+});
+
+// 2026-09-20: for a message long enough to risk the terminal-input
+// corruption documented at writeToPtyChunked() below (confirmed live,
+// repeatedly, well past what bracketed-paste alone reliably fixed) - write
+// it to a plain text file and tell the agent to read it with its own Read
+// tool instead of typing/pasting it at all. This is the same reliable
+// mechanism a pasted image already uses (a file reference, not raw
+// keystrokes) and sidesteps the terminal-input pipeline entirely rather
+// than trying to make a large paste survive it.
+const LONG_MESSAGE_DIR = path.join(app.getPath("temp"), "agent-desktop-long-messages");
+// Reads back a long message the renderer wrote, so the chat bubble can show
+// what the owner actually typed instead of the file path the CLI was handed.
+// 2026-09-22, his words: "it needs to actually show the message even if it
+// sends it in a file." The file reference is a transport detail; the message
+// is the thing he wrote and the thing he needs to see when scrolling back.
+//
+// Confined to LONG_MESSAGE_DIR on purpose - the renderer supplies this path
+// from transcript text, so it must not be able to ask for an arbitrary file.
+ipcMain.handle("read-long-message", (event, { filePath }) => {
+  try {
+    const dir = path.resolve(LONG_MESSAGE_DIR);
+    const resolved = path.resolve(String(filePath || ""));
+    if (!resolved.startsWith(dir + path.sep)) return null;
+    return fs.readFileSync(resolved, "utf-8");
+  } catch (e) {
+    return null; // a missing file just means the bubble keeps its current text
+  }
+});
+
+ipcMain.handle("save-long-message", (event, { text }) => {
+  fs.mkdirSync(LONG_MESSAGE_DIR, { recursive: true });
+  const filePath = path.join(LONG_MESSAGE_DIR, `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+  fs.writeFileSync(filePath, text, "utf-8");
+  return filePath;
+});
+
+// -------------------------------------------------------------- terminal --
+
+// Claude Code keys sessions purely by working directory. Spawning directly in
+// the agent's own folder would mean this app's sessions collide with (and get
+// silently hijacked by) any other Claude Code session someone runs with that
+// same folder as cwd - not a one-time risk, an ongoing one every time either
+// gets used. A dedicated hidden subfolder gives Agent Desktop's sessions their
+// own isolated project bucket in ~/.claude/projects/, while CLAUDE.md still
+// loads normally since Claude Code searches parent directories for it.
+const SESSION_CWD_DIRNAME = ".claude-session";
+function sessionCwdFor(agentPath) {
+  const dir = sessionCwdPath(agentPath);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+// v1.93.0: the same path WITHOUT the mkdir, for callers that only read transcripts (the transcript folder is in
+// ~/.claude/projects, keyed by this path string; the folder itself need not exist). The 10 s overview, the per-agent
+// context-usage sweep, the chat poll, the watchdogs and the approval scan called sessionCwdFor() ~400 times a
+// minute on 25 agents, each a recursive mkdirSync on an existing Dropbox folder. Everything that starts, attaches
+// to or trusts a session still calls sessionCwdFor().
+function sessionCwdPath(agentPath) {
+  return path.join(agentPath, SESSION_CWD_DIRNAME);
+}
+
+function hasPriorSession(cwd) {
+  const projectDir = path.join(require("os").homedir(), ".claude", "projects", encodeProjectPath(cwd));
+  try {
+    return fs.readdirSync(projectDir).some((f) => f.endsWith(".jsonl"));
+  } catch (e) {
+    return false; // project dir doesn't exist yet - first-ever session for this cwd
+  }
+}
+
+const ARCHIVE_SYNC_INTERVAL_MS = 30000;
+
+// --- Native background-agent backend (2026-08-21) -------------------------
+// Instead of directly owning each agent's `claude` process via a bare
+// pty.spawn(), each agent is now dispatched as a real native Claude Code
+// background agent (`claude --bg`) and the pty here just attaches to it
+// (`claude attach <id>`) for the live view. Confirmed directly, live,
+// before building this: `claude attach` streams real incremental pty
+// output (not a static snapshot), and a background agent's process
+// genuinely survives independent of whatever is currently attached to it -
+// killing/losing the attach connection does not kill the underlying agent.
+// This is what makes the auto-reattach in handlePtyExit() below safe and
+// meaningful: if the *attach* connection dies (a real, separately-confirmed
+// node-pty/ConPTY quirk on Windows - killing an attach pty can throw an
+// uncaught "AttachConsole failed" from node-pty's own cleanup code) but the
+// underlying agent is still alive, this reconnects silently instead of
+// telling the user their session ended when it didn't.
+//
+// child_process's execFileSync/spawnSync turns out to be structurally
+// unreliable in this app's own launch context (via the hidden VBS wrapper) -
+// confirmed directly, live: "spawnSync ...\claude.cmd EINVAL", "spawnSync
+// cmd.exe ENOENT", and "spawnSync C:\Windows\system32\cmd.exe ENOENT" even
+// against that fully-qualified, unquestionably-real system path. node-pty's
+// spawn uses a different, lower-level Windows API path and is unaffected -
+// already relied on throughout this file for the actual attach pty - so
+// one-shot CLI calls (agents/--bg/stop) are run through it too rather than
+// child_process, collecting output until the process exits instead of
+// returning it synchronously.
+//
+// Two more layers of the same "this app's real launch chain behaves
+// differently from any directly-launched process" problem, diagnosed live
+// on 2026-08-21 and both worked around below:
+//
+// 1. node-pty's native Windows spawn path does its own file-existence
+//    pre-check via raw GetFileAttributesW on the exact path *before*
+//    attempting to launch it (see conpty.cc's file_exists()), and even
+//    cmd.exe's own CreateProcess-level resolution failed the same way -
+//    reproducibly, only through this app's real launch chain (WScript.Shell
+//    -> hidden cmd.exe -> npm start -> electron.exe), never once through a
+//    directly-launched process (Playwright, manual CLI, isolated scripts).
+//    Ruled out directly: Electron's ASAR-patched fs (original-fs agrees),
+//    a symlink/junction at the npm folder (fsutil confirms plain
+//    directory), Windows Defender Controlled Folder Access (write-only, no
+//    matching block event), and Malwarebytes malware/PUP scanning (folder
+//    excluded, no change). What's left and specific to this app's own
+//    spawning mechanism: node-pty defaults to the newer ConPTY backend on
+//    Windows 10 1809+, which has known quirks with GUI-subsystem processes
+//    (Electron.exe always is one) launched through a fully console-detached
+//    chain like this one's hidden WScript.Shell.Run. Forcing the older
+//    winpty backend (spawnOptions.useConpty = false below) sidesteps
+//    ConPTY entirely and resolved it live.
+// 2. Separately, `shell` here is a .cmd file, which node-pty can't spawn
+//    directly on Windows without going through a real shell - toCmdShellSpawn
+//    routes it through cmd.exe's own `/c` rather than the bare path.
+function toCmdShellSpawn(shell, args) {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(shell)) {
+    return { shell, args };
+  }
+  const comspec = process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe";
+  return { shell: comspec, args: ["/d", "/c", shell, ...args] };
+}
+
+function spawnPtyWithRetry(shell, args, options, attempts = 10, delayMs = 500) {
+  return new Promise((resolve, reject) => {
+    function attempt(i) {
+      const { shell: spawnFile, args: spawnArgs } = toCmdShellSpawn(shell, args);
+      const spawnOptions = process.platform === "win32" ? { ...options, useConpty: false } : options;
+      try {
+        testGuard.assertWritable(spawnOptions && spawnOptions.cwd); // v1.77.2: test mode refuses a session cwd outside the sandbox
+        const proc = pty.spawn(spawnFile, spawnArgs, spawnOptions);
+        resolve(proc);
+      } catch (e) {
+        if (i >= attempts - 1 || !/^File not found:/.test(e.message)) {
+          reject(e);
+          return;
+        }
+        setTimeout(() => attempt(i + 1), delayMs);
+      }
+    }
+    attempt(0);
+  });
+}
+
+// Confirmed live, 2026-08-21: whatever intermittently makes this process
+// unable to see the npm-global claude.cmd (see toCmdShellSpawn's comment
+// above) doesn't always show up as node-pty's own synchronous spawn-time
+// exception - cmd.exe can also launch fine itself and only fail *inside*
+// its own run, printing its native "'<path>' is not recognized as an
+// internal or external command..." to the pty's output stream instead of
+// throwing. spawnPtyWithRetry's retry loop never sees that case (from its
+// point of view, the spawn succeeded), so it was passing through as a
+// silent bad result. Retrying the whole run (not just the spawn) whenever
+// the output matches this exact failure signature closes that gap -
+// confirmed non-deterministic (same code failed once, then succeeded
+// immediately after on an unchanged retry), consistent with transient
+// external interference rather than a real, permanent problem with the
+// path.
+const CMD_NOT_RECOGNIZED_RE = /is not recognized as an internal or external command/i;
+
+// Diagnosed live, 2026-08-22, the actual root cause of the "File not
+// found"/"is not recognized" errors above (the Intel esrv_svc.exe service
+// documented near KNOWN_INTERFERING_SERVICES turned out to be a red
+// herring - fully locked down there, and the bug still recurred). A full
+// Process Monitor trace of a failing burst showed ten concurrent cmd.exe
+// launches of claude.cmd all failing within the same ~6-second window, and
+// in that same window `where.exe`'s own live directory listing of
+// %APPDATA%\npm showed claude/claude.cmd/claude.ps1 and the whole
+// node_modules\@anthropic-ai\claude-code folder genuinely absent from
+// disk - not a permissions/AV illusion, an actual transient absence.
+// %APPDATA%\npm\.last-update-result.json and a leftover
+// .claude-code-<random> staging folder confirmed Claude Code's own
+// npm-global self-updater had fired more than once recently, and that
+// updater does an in-place swap of that entire shared global install
+// (shims included) that takes several seconds. This app fires many
+// concurrent claude.cmd invocations (one status poll per sidebar agent);
+// any invocation whose launch lands inside that swap window sees the
+// shims as literally gone. DISABLE_AUTOUPDATER=1 is a real,
+// updater-respected env var - confirmed already set in Claude Desktop's
+// own embedded Claude Code sessions - so setting it on every claude.cmd
+// child process this app spawns stops the updater from ever firing out
+// from under a concurrent launch, closing the race at its source rather
+// than retrying around it. The explicit "update-claude-code" IPC handler
+// above intentionally does NOT get this - that one IS the deliberate
+// update path.
+const CLAUDE_AUTOUPDATER_DISABLE_ENV = { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_AUTO_MODE_SERVER: "0" };
+
+// Diagnosed live, 2026-08-22, a second and completely separate cause of an
+// Agent Desktop session looking permanently frozen (the first being the
+// updater race above): a background agent can get wedged mid-turn on an
+// expired OAuth session - e.g. an auto-triggered /compact hitting "Login
+// expired - Please run /login" - with no one there to complete the
+// interactive browser login a headless process can't do itself. Caught
+// live on a session that had been idle since the day before. Confirmed via
+// Raw Terminal that the CLI's own elapsed-time spinner ("SautÃ©ed for 50s")
+// was genuinely static, not just slow, and that a brand new message sent
+// through Agent Desktop's Chat View never even reached the underlying pty.
+// findAliveBackgroundAgent only checks that the OS process still has a pid
+// - it has no way to know the process inside is dead-ended on an
+// unanswerable prompt - so every future attach, including this app's own
+// silent reattach-on-restart in handlePtyExit, just reconnects to the same
+// permanently stuck session forever. Confirmed directly: stopping that one
+// dead session and dispatching a fresh `claude --bg` for the same cwd
+// picked up a valid, working session immediately - the saved credentials
+// themselves were fine, only that one already-running session was wedged.
+const LOGIN_EXPIRED_RE = /Login expired|Not logged in.*Run \/login/is;
+const LOGIN_EXPIRED_PEEK_MS = 1500;
+
+// Diagnosed live, 2026-08-22, a third and completely separate cause of a
+// session looking permanently frozen: Claude Code CLI's own --continue
+// shows an interactive "how do you want to resume this" prompt whenever
+// the target session is old/large enough ("This session is 2d 1h old and
+// 127.2k tokens... We recommend resuming from a summary", with a 1/2/3
+// menu and "Enter to confirm - Esc to cancel") - confirmed via
+// `claude agents --json --all` showing this exact agent's status as
+// "waiting"/waitingFor:"dialog open" the whole time it looked stuck, and
+// via a raw pty peek showing the literal menu text sitting unanswered.
+// Agent Desktop's Chat View has no way to detect or answer an interactive
+// menu like this (it isn't a normal assistant turn), so the session just
+// sits there forever with no error text at all - arguably a worse dead
+// end than the login-expiry case above, since nothing in the UI even
+// hints at what's wrong. Confirmed live: sending "3" (Don't ask me again)
+// then Enter resolves it immediately into a normal, healthy session -
+// reused verbatim here rather than "1" (resume from summary) since that's
+// the exact sequence already proven to work, and it should also suppress
+// this same prompt on future resumes of this session.
+const RESUME_DIALOG_RE = /Resume from summary \(recommended\)/i;
+const RESUME_DIALOG_PEEK_MS = 1500;
+
+// Auto-registers every freshly-dispatched agent with Claude Code's Remote
+// Control (claude.ai/code, the mobile app) - requested directly by the owner
+// (2026-09-04) after tracing why his agents never showed up remotely.
+// Root cause: this app always runs agents as `claude --bg` (see
+// dispatchBackgroundAgent above), and the `remoteControlAtStartup: true`
+// user setting (ensureRemoteControlEnabled() in this file) only auto-
+// connects INTERACTIVE sessions - `claude --help` is explicit that
+// `--remote-control` itself "start[s] an interactive session with Remote
+// Control enabled". A background agent never gets that automatic
+// connection no matter what the setting says. The one-time manual
+// `/remote-control` run per agent on 2026-08-23 proved a bg session CAN
+// still register if you run the command inside it - it just isn't
+// automatic, and that manual registration is tied to the live process, so
+// it was lost the moment each agent's bg session ended. This closes the
+// gap by running the same command, and answering its own confirm prompt,
+// right after every FRESH dispatch (see findOrDispatchBackgroundAgent's
+// freshlyDispatched flag) - not on a reattach to a bg agent that's still
+// alive, since that one already went through this exact registration when
+// IT was first dispatched.
+const REMOTE_CONTROL_REGISTER_WAIT_MS = 2500;
+const REMOTE_CONTROL_CONFIRM_RE = /Enable Remote Control/i;
+// Live-verified (2026-09-04, via `claude logs` on a real freshly-dispatched
+// bg agent): selecting "1. Enable Remote Control" doesn't return straight
+// to a normal session - it shows a follow-up summary panel first ("Remote
+// Control" heading, the session's claude.ai/code URL, Disconnect/QR-code
+// options, a highlighted "â¯ Continue") that itself needs one more Enter to
+// dismiss. Without answering this too, the session sits there permanently
+// (`claude agents --json` showed status "waiting"/waitingFor:"dialog open"
+// forever) - confirmed live that a single extra Enter is exactly what
+// clears it, same as every other menu here defaults to its highlighted
+// option.
+const REMOTE_CONTROL_SUCCESS_RE = /This session is available in the Claude mobile app/i;
+
+// Deliberately best-effort and silent: this is plumbing, not something the
+// user needs to see happen, and an agent that fails to register should
+// just stay local-only - exactly the pre-existing behavior - rather than
+// this ever blocking or breaking a real chat session opening. Uses its own
+// private onData listener rather than the permanent one (attached later in
+// startTerminalSession) specifically so its own "/remote-control" echo and
+// the confirm-menu redraw never reach the renderer/Chat View - purely
+// internal, same spirit as the login/resume-dialog peeks right above it.
+async function registerRemoteControl(proc) {
+  try {
+    let buffer = "";
+    const disposable = proc.onData((d) => {
+      buffer += d;
+    });
+    // Text and Enter as two separately-timed writes, not one combined write -
+    // the same pattern submitToAgent() in renderer.js uses for every real
+    // chat message (text, then a staggered "\r"), and for the same reason:
+    // sending them together can land before the CLI is actually reading
+    // input yet.
+    proc.write("/remote-control");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    proc.write("\r");
+    await new Promise((resolve) => setTimeout(resolve, REMOTE_CONTROL_REGISTER_WAIT_MS));
+    if (REMOTE_CONTROL_CONFIRM_RE.test(stripTerminalCodes(buffer))) {
+      // "1. Enable Remote Control" / "2. Never mind" - same write-key,
+      // wait, write-Enter sequence already proven to work against the
+      // RESUME_DIALOG_RE menu above, just selecting option 1 instead of 3.
+      proc.write("1");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      proc.write("\r");
+      await new Promise((resolve) => setTimeout(resolve, REMOTE_CONTROL_REGISTER_WAIT_MS));
+    }
+    // See REMOTE_CONTROL_SUCCESS_RE above - the post-enable summary panel
+    // needs its own dismiss. `buffer` has kept accumulating everything
+    // since the very first write, so it already contains this panel's text
+    // if it appeared during either wait above.
+    if (REMOTE_CONTROL_SUCCESS_RE.test(stripTerminalCodes(buffer))) {
+      proc.write("\r");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    disposable.dispose();
+  } catch (e) {
+    /* best-effort - see comment above */
+  }
+}
+
+// Diagnosed live, 2026-08-21, the actual cause of messages appearing "sent"
+// but never going anywhere: `output` here is captured straight off a real
+// ConPTY - it's genuinely a terminal stream, not plain text, and comes
+// full of terminal control codes (color/cursor-position/clear-screen CSI
+// sequences, OSC window-title sequences, per-line erase-to-end-of-line
+// redraw artifacts). dispatchBackgroundAgent()'s own id-extraction regex
+// and listBackgroundAgents()'s JSON.parse() were both written and tested
+// against clean text and silently broke once the real CLI's output
+// started actually carrying these codes - dispatch regex fails closed
+// (throws "Could not parse..."), so the subsequent attach that would give
+// the user a live, working session never happens; JSON.parse() fails
+// closed even more silently the OTHER way, via listBackgroundAgents()'s
+// own catch-and-return-[] - meaning every open silently failed to find the
+// agent it just dispatched, then dispatched ANOTHER new one instead of
+// reusing it. Confirmed directly against a real captured multi-KB listing
+// output: stripping these two families (OSC first, since an OSC sequence
+// can itself contain characters a CSI-only strip would misparse) recovers
+// clean, valid JSON every time. Centralized here (not at each call site)
+// so every caller - present and future - gets clean text automatically.
+// 2026-10-02: is a Claude Code permission dialog ("Do you want to proceed?" ... "Esc to cancel")
+// the last thing on this agent's screen? Read from the terminal data main already receives, so no
+// extra process or polling. Only known for agents with an attached session (a tab opened this run).
+// Used for the red "blocked" sidebar badge and by the forced-checkpoint guard's reasoning.
+const DIALOG_RE = /Do you want to proceed\?[\s\S]*Esc to cancel/;
+const dialogTails = new Map(); // agentPath -> last ~1500 printable chars
+function trackDialog(agentPath, data) {
+  const tail = ((dialogTails.get(agentPath) || "") + stripTerminalCodes(String(data))).slice(-1500);
+  dialogTails.set(agentPath, tail);
+}
+// v1.65.0: broader than DIALOG_RE (which drives the red badge): any screen that looks like a prompt
+// waiting for an answer. Used only to gate typing/Enter into a session.
+const PROMPT_RE = /Esc to cancel|Enter to confirm|Do you want to|\(y\/n\)|\[Y\/n\]|❯\s*1\.\s|Press Enter/i;
+const deliveryScreen = require("./deliveryScreen"); // v1.69.4: screen classifiers (dialog / queued / unsent box), tested on real CLI captures
+function promptLikelyOpen(agentPath) {
+  if (dialogOpenFor(agentPath)) return true;
+  const tail = dialogTails.get(agentPath) || "";
+  return PROMPT_RE.test(tail.slice(-600)) || deliveryScreen.isDialog(tail, ""); // v1.69.4: also matches when cursor moves ate the spaces ("Doyouwanttoproceed")
+}
+function dialogOpenFor(agentPath) {
+  if (!ptySessions.get(agentPath) || !ptySessions.get(agentPath).proc) return false;
+  const tail = dialogTails.get(agentPath) || "";
+  return DIALOG_RE.test(tail.slice(-900));
+}
+
+function stripTerminalCodes(s) {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "") // OSC (window title, etc.)
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, ""); // CSI (color/cursor/clear/erase)
+}
+
+async function runClaudeCommandOnce(shell, args, options) {
+  const proc = await spawnPtyWithRetry(shell, args, {
+    name: "xterm-color",
+    cols: 240,
+    rows: 50,
+    // node-pty's native binding turns an explicit `cwd: undefined` into
+    // a real invalid path rather than defaulting sanely - confirmed
+    // directly: callers that don't care about cwd (listing/stopping,
+    // as opposed to dispatching) hit "Cannot create process, error
+    // code: 267" (Windows ERROR_DIRECTORY) every time without this.
+    cwd: options.cwd || process.cwd(),
+    env: options.env,
+  });
+  // options.timeoutMs (opt-in, 2026-09-24): without it a CLI call that never
+  // exits blocks its caller forever. Seen live right after a Claude Code
+  // update: the sweep's `claude --bg` dispatches were spawned before the
+  // CLI's daemon came back, never exited, and ensureAllAgentsBackgrounded()
+  // sat on them - so no agent was relaunched and Software Engineering never
+  // answered. Opt-in because npm installs legitimately run for minutes.
+  //
+  // options.abortPattern (opt-in, v1.54.0): a RegExp checked against the
+  // output as it streams. On a match the pty is killed at once and the call
+  // rejects with err.aborted = true and err.abortOutput, instead of waiting
+  // for the process to exit or for timeoutMs. Built for Claude Code's
+  // workspace-trust prompt, which under a pty waits for a keypress forever
+  // (see workspaceTrust.js) - but generic, for any interactive prompt a
+  // one-shot call must never sit on. The pattern is tested against the text
+  // with terminal codes and ALL whitespace removed (ConPTY can draw a space
+  // as a cursor move), so write it with \s* between words.
+  return new Promise((resolve, reject) => {
+    let output = "";
+    let timer = null;
+    let settled = false;
+    const abortMatches = () => {
+      if (!options.abortPattern) return false;
+      const tail = output.length > 8000 ? output.slice(-8000) : output;
+      return options.abortPattern.test(stripTerminalCodes(tail).replace(/\s+/g, ""));
+    };
+    const abortError = () => {
+      const err = new Error(`claude ${args.join(" ")} aborted: output matched ${options.abortPattern}`);
+      err.aborted = true;
+      err.abortOutput = stripTerminalCodes(output);
+      return err;
+    };
+    if (options.timeoutMs) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          proc.kill();
+        } catch (e) {
+          /* already gone */
+        }
+        const err = new Error(`claude ${args.join(" ")} timed out after ${options.timeoutMs}ms`);
+        err.timedOut = true;
+        reject(err);
+      }, options.timeoutMs);
+    }
+    proc.onData((data) => {
+      output += data;
+      if (settled || !abortMatches()) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        proc.kill();
+      } catch (e) {
+        /* already gone */
+      }
+      reject(abortError());
+    });
+    proc.onExit(() => {
+      if (timer) clearTimeout(timer);
+      // v1.59.2: release the pty even on a normal exit. With the winpty
+      // backend (useConpty: false) the child exiting does NOT end its
+      // winpty-agent.exe + conhost.exe; only closing the pty does. Every
+      // one-shot call (the once-a-minute `claude agents` poll among them)
+      // leaked a pair - 451 pairs / ~900 processes in 8 h on 2026-09-25,
+      // cleared only by an app restart - and the owner saw the PC stalling.
+      setImmediate(() => {
+        try {
+          proc.kill();
+        } catch (e) {
+          /* already gone */
+        }
+      });
+      if (settled) return;
+      settled = true;
+      // The plain-shell form of a prompt (e.g. "Workspace not trusted ...")
+      // prints and exits rather than waiting - still an abort, not output.
+      if (abortMatches()) {
+        reject(abortError());
+        return;
+      }
+      resolve(stripTerminalCodes(output));
+    });
+  });
+}
+
+// Confirmed live, 2026-08-22: even with the updater-race fix above in
+// place (DISABLE_AUTOUPDATER=1 genuinely active - checked the running
+// process's own start time against this file's edit time to be sure), the
+// exact same "is not recognized" text still recurred once, with the npm-
+// global install's files completely unchanged before and after - no
+// update swap in progress at the time. So the updater is a real, fixed
+// cause of this symptom, but evidently not the only possible one; nothing
+// else here has been caught as clearly as that one was. The previous
+// 5-attempt/500ms budget (~2.5s) is what actually ran out here, per the
+// user's own report of the failure appearing after "~2s" - raising this
+// is a deliberately root-cause-agnostic hedge: whatever transient
+// condition is briefly making a genuinely-present file unresolvable,
+// giving it several more seconds to clear resolves it without needing to
+// have pinned down every possible cause first.
+// Log path for logCmdNotRecognized() below - deliberately NOT one of the
+// "remove after the bug's confirmed fixed" temporary logs this file's own
+// history mentions elsewhere. This failure class has now recurred (2026-08-
+// 23, live, on the owner's real machine) despite two earlier rounds that each
+// looked like the real fix at the time (DISABLE_AUTOUPDATER, then the
+// 5->12 attempt widening) - clear sign the root cause isn't actually
+// understood yet, just mitigated. Keeping this logging permanently means
+// the NEXT occurrence has real evidence to diagnose from instead of
+// starting over from a screenshot and a guess.
+const CMD_NOT_RECOGNIZED_LOG_PATH = path.join(app.getPath("userData"), "cmd-not-recognized.log");
+
+function logCmdNotRecognized(attemptNum, shell) {
+  try {
+    let npmClaudeExists = "unknown";
+    try {
+      npmClaudeExists = String(fs.existsSync(shell));
+    } catch (e) {}
+    const line = `${new Date().toISOString()} attempt=${attemptNum} shell=${shell} existsOnDisk=${npmClaudeExists}\n`;
+    fs.appendFileSync(CMD_NOT_RECOGNIZED_LOG_PATH, line);
+  } catch (e) {
+    // Logging itself must never be why a real attempt fails.
+  }
+}
+
+// Widened again 2026-08-23 (12x700ms=8.4s -> 20x900ms=18s) after the owner hit
+// this exact hard failure live - "is not recognized" persisted across
+// EVERY one of the previous 12 attempts, a full 8.4 seconds, meaning
+// whatever transient condition this is can outlast that budget. Checked
+// directly afterward: the npm-global install files were untouched for 21+
+// hours (ruling out an in-progress auto-updater swap for THIS specific
+// occurrence, despite that being the confirmed cause of an earlier round of
+// this same symptom) and 8 back-to-back plain invocations of claude.cmd all
+// succeeded normally minutes later - so whatever this was had already
+// cleared by the time it could be inspected, consistent with something
+// transient but NOT necessarily the same transient cause as before. Rather
+// than chase an already-cleared window further, widened the budget (a
+// blunt but proven-effective hedge for this exact failure class) and added
+// logCmdNotRecognized() above so a future occurrence leaves real evidence -
+// specifically, whether the file existed on disk at the moment of failure -
+// instead of requiring another live-reproduction hunt.
+async function runClaudeCommand(shell, args, options, attempts = 20, delayMs = 900) {
+  for (let i = 0; i < attempts; i++) {
+    const output = await runClaudeCommandOnce(shell, args, options);
+    if (!CMD_NOT_RECOGNIZED_RE.test(output)) {
+      return output;
+    }
+    logCmdNotRecognized(i, shell);
+    if (i === attempts - 1) {
+      return output;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+const CLAUDE_CLI_TIMEOUT_MS = 90 * 1000; // see runClaudeCommandOnce's timeoutMs
+
+// `claude stop` is always a small, bounded operation (unlike `--version` or
+// `install -g`, which legitimately run for minutes - that's why
+// runClaudeCommandOnce's timeoutMs is opt-in in general), so every caller
+// needs the same protection. Routing all of them through one wrapper means
+// a future new `stop` call site gets timeoutMs for free instead of relying
+// on whoever adds it remembering to copy it - the exact way this gap
+// happened twice already (2026-09-24, then again 2026-09-27, both times a
+// hung `claude stop`/`--bg` left an agent unreachable with no clean
+// recovery). `opts` lets a caller override or add anything runClaudeCommand
+// accepts; timeoutMs specifically defaults but can still be overridden.
+function stopClaudeAgent(shell, agentId, spawnEnv, opts = {}) {
+  return runClaudeCommand(shell, ["stop", agentId], {
+    env: spawnEnv,
+    timeoutMs: CLAUDE_CLI_TIMEOUT_MS,
+    ...opts,
+  });
+}
+
+// v1.61.9: read the agent list through plain pipes, NOT a pty. Root cause of
+// the 2026-09-29 dispatch storm: this used to run `claude agents --json --all`
+// inside a winpty terminal, which hands back a repainted SCREEN (cursor moves,
+// line erases, scrolled rows), not the JSON text - and the bigger the list grew
+// (110 KB by then) the more scrambled it came back. A scrambled read parsed as
+// "nobody alive", the sweep relaunched every agent, the list grew, the next read
+// was worse. Pipes give the exact bytes. Unknown (error/timeout/garbage) is
+// thrown, never returned as [] ("none alive").
+const AGENT_LIST_TTL_MS = 8 * 1000; // one sweep asks ~20 times; one real listing is enough
+let agentListCache = { at: 0, agents: null, inflight: null };
+function listBackgroundAgents(shell, spawnEnv, opts = {}) {
+  if (!opts.fresh) {
+    if (agentListCache.agents && Date.now() - agentListCache.at < AGENT_LIST_TTL_MS) return Promise.resolve(agentListCache.agents);
+    if (agentListCache.inflight) return agentListCache.inflight;
+  }
+  const run = new Promise((resolve, reject) => {
+    const viaCmd = /[.](cmd|bat)$/i.test(shell);
+    const file = viaCmd ? process.env.ComSpec || "cmd.exe" : shell;
+    const args = viaCmd ? ["/d", "/s", "/c", `"${shell}" agents --json --all`] : ["agents", "--json", "--all"];
+    execFile(
+      file,
+      args,
+      { env: spawnEnv, timeout: CLAUDE_CLI_TIMEOUT_MS, windowsHide: true, maxBuffer: 256 * 1024 * 1024, windowsVerbatimArguments: viaCmd },
+      (err, stdout) => {
+        if (err) {
+          if (err.killed) err.timedOut = true;
+          return reject(err);
+        }
+        try {
+          const text = String(stdout);
+          const start = text.indexOf("[");
+          const end = text.lastIndexOf("]");
+          const parsed = JSON.parse(start >= 0 && end > start ? text.slice(start, end + 1) : text);
+          if (!Array.isArray(parsed)) throw new Error("claude agents --json did not return a list");
+          agentCacheSet(parsed);
+          resolve(parsed);
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+  });
+  agentListCache.inflight = run;
+  const clear = () => { if (agentListCache.inflight === run) agentListCache.inflight = null; };
+  run.then(clear, clear);
+  return run;
+}
+function agentCacheSet(agents) {
+  agentListCache.at = Date.now();
+  agentListCache.agents = agents;
+}
+
+// A background agent still has a "pid" field for as long as its OS process
+// is alive, regardless of its turn-by-turn state (idle/blocked/done are all
+// still-running states between turns - only stopped/failed entries drop the
+// pid field). Checking for pid presence is more robust than enumerating
+// state strings, which Anthropic could add more of later.
+async function findAliveBackgroundAgent(shell, spawnEnv, sessionCwd, opts = {}) {
+  const agents = await listBackgroundAgents(shell, spawnEnv, opts);
+  const target = path.resolve(sessionCwd);
+  const live = agents.filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
+  // v1.96.0 wake-agent caller tracing: record a found session only when it is the ONLY live one in this folder, so a second
+  // `claude --bg` someone starts in the COO's / Security's folder is never adopted as a wake caller (re-review 2, B2-R2).
+  if (live.length === 1) wakeNoteSession(sessionCwd, live[0].id);
+  return live[0];
+}
+
+// Dispatches a fresh background agent for this cwd and returns its id.
+// --continue is passed whenever a prior session exists, same condition
+// hasPriorSession() already used for the old direct-spawn path - --bg
+// --continue with no prompt dispatches idle, "send a prompt to start",
+// which matches this app's own "reopen an agent to an empty, ready-to-type
+// box" UX exactly (confirmed directly before writing this).
+//
+// opts (all optional, used by the Chats panel's switch / new-conversation
+// actions - see the "conversation-*" IPC handlers below):
+//   resumeSessionId - resume this exact past conversation (`--bg --resume <id>`)
+//                     instead of the most-recent one `--continue` would pick.
+//   forceFresh      - start a brand-new conversation (`--bg`, no --continue)
+//                     even though prior sessions exist for this cwd.
+// v1.54.4 (2026-09-25): duplicate-dispatch guard. Seen live at 03:06: a
+// planned context reset dispatched a fresh `--bg` for System Optimization,
+// and 3 s later the keep-alive sweep - whose `claude agents` listing did not
+// show the new process yet - dispatched a SECOND one for the same folder. Two
+// live copies of one agent left the app showing it "not running" and the owner's
+// messages undelivered. Every dispatch stamps its cwd here, and the sweep
+// leaves alone any agent something else dispatched within the grace window.
+const DISPATCH_GRACE_MS = 90 * 1000;
+const lastDispatchAt = new Map(); // path.resolve(sessionCwd).toLowerCase() -> ms
+function dispatchKey(sessionCwd) {
+  return path.resolve(sessionCwd).toLowerCase();
+}
+// v1.66.1: starts that are queued or running (the limiter can hold a start for minutes), per agent.
+const startsInFlight = new Map(); // dispatchKey -> { p: Promise<id>, urgent }
+function dispatchedRecently(sessionCwd) {
+  const k = dispatchKey(sessionCwd);
+  if (startsInFlight.has(k)) return true;
+  const at = lastDispatchAt.get(k);
+  return !!at && Date.now() - at < DISPATCH_GRACE_MS;
+}
+
+// The same agent is never started twice at once: a second plain start (sweep, reattach) joins the one already
+// queued/running. A forced-fresh / resume start, or an urgent one over a queued non-urgent start, goes ahead
+// (the queued one re-checks that the agent is not up yet once its slot is granted).
+function dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, opts = {}) {
+  const k = dispatchKey(sessionCwd);
+  const plain = !opts.forceFresh && !opts.resumeSessionId;
+  const cur = startsInFlight.get(k);
+  if (cur && plain && (cur.urgent || !opts.urgent)) return cur.p;
+  const entry = { urgent: !!opts.urgent };
+  entry.p = dispatchBackgroundAgentImpl(shell, spawnEnv, sessionCwd, opts).finally(() => {
+    if (startsInFlight.get(k) === entry) startsInFlight.delete(k);
+  });
+  startsInFlight.set(k, entry);
+  return entry.p;
+}
+
+// v1.69.5: every dispatched session is pinned to a model. With no --model the CLI picked Haiku, which runs in
+// permission mode "default" (not "auto"): its first Read/Glob waited for an approval nobody could see in a headless
+// agent (job state: needs "approve Read"), and the owner's messages queued behind it ("Not confirmed" for 20+ min).
+// Default is Sonnet for everything; <userData>gent-model.json {"default":"sonnet","agents":{"<folder name>":"opus"}}
+// overrides it. Haiku is never used unless a file entry names it explicitly.
+function pinnedModelFor(sessionCwd) {
+  try {
+    const cfg = readJsonFile(path.join(app.getPath("userData"), "agent-model.json"));
+    const agent = path.basename(path.dirname(sessionCwd));
+    return String((cfg.agents && cfg.agents[agent]) || cfg.default || "sonnet");
+  } catch (_) {
+    return "sonnet";
+  }
+}
+
+// v1.96.0 wake-agent: remember the bg ids of the COO / Security sessions this app dispatched or found, so a wake request
+// can be traced (by process ancestry) to one of them. No-op for every other folder, in demo mode, or if the module fails.
+function wakeNoteSession(sessionCwd, id) {
+  if (demo.ON || !id) return;
+  try { require("./wakeAgentMain").noteSession({ workspace: AGENTS_ROOT, sessionCwd, id: String(id) }); } catch (e) {}
+}
+
+async function dispatchBackgroundAgentImpl(shell, spawnEnv, sessionCwd, opts = {}) {
+  let args;
+  if (opts.resumeSessionId) {
+    args = ["--bg", "--resume", opts.resumeSessionId];
+  } else if (opts.forceFresh) {
+    args = ["--bg"];
+    // v1.62.0: the fresh session can be started WITH its first message (verified: `claude --bg "<prompt>"`
+    // processes the prompt as the first turn with nothing attached). Used by the handoff flow so the
+    // resume message does not wait for the owner to open the agent's tab. Single line, no double quotes.
+    if (opts.initialPrompt) args.push(String(opts.initialPrompt).replace(/\s*[\r\n]+\s*/g, " ").replace(/"/g, "'"));
+  } else {
+    args = hasPriorSession(sessionCwd) ? ["--bg", "--continue"] : ["--bg"];
+  }
+  args.splice(1, 0, "--model", pinnedModelFor(sessionCwd)); // after --bg, before the prompt/resume args
+  // Every `claude --bg` in this app goes through here (the sweep, opening a
+  // chat, resume-after-pause, conversation switch, login recovery), so this is
+  // the one place the workspace-trust prompt is caught - see workspaceTrust.js
+  // and the untrusted-agents registry below. A match kills the pty at once
+  // (no 90 s timeout) and rejects with err.untrusted = true.
+  let output;
+  try {
+    // v1.66.0: start limiter (max 3 starts in flight, 4 s apart, holds while the CPU guard says overloaded).
+    // opts.urgent = one explicit user action (or a reconnect): never queued behind the crowd.
+    output = await cpuGuard.limiter.run(
+      async () => {
+        // A start that waited in the queue may have been overtaken (a tab open, another path): never start a second copy.
+        if (!opts.urgent && !opts.forceFresh && !opts.resumeSessionId) {
+          const up = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd, { fresh: true }).catch(() => null);
+          if (up && up.id) return { existingId: up.id };
+        }
+        lastDispatchAt.set(dispatchKey(sessionCwd), Date.now()); // stamped when the start really begins, not when it was queued
+        return runClaudeCommand(shell, args, {
+          cwd: sessionCwd,
+          env: spawnEnv,
+          timeoutMs: CLAUDE_CLI_TIMEOUT_MS,
+          abortPattern: workspaceTrust.TRUST_PROMPT_RE,
+        });
+      },
+      { label: path.basename(path.dirname(sessionCwd)), urgent: !!opts.urgent }
+    );
+    if (output && output.existingId) return output.existingId;
+  } catch (e) {
+    if (e.aborted) {
+      const err = new Error(
+        `workspace not trusted: ${sessionCwd} - Claude Code wants its trust prompt accepted once before it will run this agent`
+      );
+      err.untrusted = true;
+      err.sessionCwd = sessionCwd;
+      noteAgentUntrusted(sessionCwd);
+      throw err;
+    }
+    throw e;
+  }
+  // Real dispatch output (confirmed byte-for-byte via a live test dispatch):
+  // "backgrounded \xC2\xB7 5467abbc (idle ...)" - a single U+00B7 MIDDLE DOT,
+  // not a literal "." or multiple dots.
+  const match = output.match(/backgrounded\s*·\s*([a-f0-9]+)/i);
+  if (!match) {
+    throw new Error("Could not parse background agent id from dispatch output: " + output);
+  }
+  // A clean dispatch proves the folder is trusted now (the button below, or
+  // the owner accepting the prompt in a terminal himself).
+  clearAgentUntrusted(sessionCwd);
+  // Stamp again on completion: the grace window runs from when the process
+  // exists, not from when a possibly slow dispatch call began.
+  lastDispatchAt.set(dispatchKey(sessionCwd), Date.now());
+  wakeNoteSession(sessionCwd, match[1]); // v1.96.0 wake-agent caller tracing (this app's own dispatch)
+  return match[1];
+}
+
+// --- Untrusted agents (v1.54.0) ---------------------------------------------
+// Agents whose `claude --bg` hit Claude Code's workspace-trust prompt. Keyed by
+// agent folder path. The renderer shows a banner listing them with a "Trust and
+// start them" button, and the same message in an untrusted agent's own chat
+// pane instead of a silent hang. Nothing here grants trust by itself - only
+// the "trust-agent-folders" IPC (the owner's click) and create-agent do.
+const untrustedAgents = new Map(); // agentPath -> { agentPath, displayName, sessionCwd, since }
+
+function untrustedAgentsList() {
+  return [...untrustedAgents.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+function sendUntrustedAgents() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send("untrusted-agents", untrustedAgentsList());
+    } catch (e) {}
+  }
+}
+
+function noteAgentUntrusted(sessionCwd) {
+  const agentPath = path.dirname(path.resolve(sessionCwd));
+  if (untrustedAgents.has(agentPath)) return;
+  const displayName = agentDisplayName(agentPath);
+  untrustedAgents.set(agentPath, { agentPath, displayName, sessionCwd: path.resolve(sessionCwd), since: new Date().toISOString() });
+  logStuckWatchdog(`untrusted: ${displayName} (${sessionCwd}) - Claude Code's workspace-trust prompt blocks it; waiting for the owner to trust it`);
+  sendUntrustedAgents();
+}
+
+function clearAgentUntrusted(sessionCwd) {
+  const agentPath = path.dirname(path.resolve(sessionCwd));
+  if (!untrustedAgents.delete(agentPath)) return;
+  logStuckWatchdog(`untrusted: cleared ${agentDisplayName(agentPath)} - it dispatched normally`);
+  sendUntrustedAgents();
+}
+
+ipcMain.handle("get-untrusted-agents", () => untrustedAgentsList());
+
+// the owner's "Trust and start them" click. The ONLY path besides create-agent that
+// writes workspace trust. Accepts agent folder paths, but only ones that are
+// both real agents under the agents root AND currently in the untrusted list -
+// so a renderer bug cannot be used to trust an arbitrary folder.
+ipcMain.handle("trust-agent-folders", async (event, { agentPaths } = {}) => {
+  const requested = Array.isArray(agentPaths) ? agentPaths.map((p) => path.resolve(String(p))) : [];
+  const root = path.resolve(AGENTS_ROOT);
+  const targets = requested.filter((p) => path.dirname(p) === root && untrustedAgents.has(p));
+  if (!targets.length) return { ok: false, error: "None of those agents are waiting for trust.", results: [] };
+
+  const names = targets.map((p) => untrustedAgents.get(p).displayName);
+  let trustResult;
+  try {
+    trustResult = workspaceTrust.markFoldersTrusted(targets.map((p) => sessionCwdFor(p)));
+  } catch (e) {
+    logStuckWatchdog(`untrusted: trusting ${names.join(", ")} FAILED: ${e.message}`);
+    return { ok: false, error: e.message, results: [] };
+  }
+  logStuckWatchdog(
+    `untrusted: the owner trusted ${names.join(", ")} - changed=${trustResult.changed.length} already=${trustResult.alreadyTrusted.length} ` +
+      `verified=${trustResult.verified} backup=${trustResult.backupPath || "(no existing file)"}`
+  );
+
+  // Start them straight away with the same dispatch the sweep uses, one at a
+  // time with the sweep's stagger. A successful dispatch clears the agent from
+  // the untrusted list itself (clearAgentUntrusted, in dispatchBackgroundAgent).
+  const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+  const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+  const results = [];
+  for (let i = 0; i < targets.length; i++) {
+    const agentPath = targets[i];
+    const name = names[i];
+    if (!testMode.liveAgentsPermitted()) {
+      results.push({ agentPath, name, ok: false, error: "sandbox: live agents are off" });
+      continue;
+    }
+    try {
+      const found = await findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwdFor(agentPath));
+      clearAgentUntrusted(sessionCwdFor(agentPath)); // also covers "was already alive"
+      logStuckWatchdog(`untrusted: ${name} started after trust -> ${found.id}`);
+      results.push({ agentPath, name, ok: true, id: found.id });
+    } catch (e) {
+      logStuckWatchdog(`untrusted: ${name} still failed after trust: ${e.message}`);
+      results.push({ agentPath, name, ok: false, error: e.message, untrusted: !!e.untrusted });
+    }
+    if (i < targets.length - 1) await new Promise((resolve) => setTimeout(resolve, ENSURE_AGENTS_ALIVE_STAGGER_MS));
+  }
+  sendUntrustedAgents();
+  return { ok: results.every((r) => r.ok), verified: trustResult.verified, backupPath: trustResult.backupPath, results };
+});
+
+// --- Always-on background agents (2026-09-20) ------------------------------
+// the owner's requirement: agents must be able to reach each other via
+// SendMessage/ListAgents even when one hasn't been opened in Agent Desktop
+// for a day or two - a hard need for the planned COO agent, which will need
+// to reach every other agent on its own initiative, not only ones with a
+// chat tab already open. Confirmed cross-session messaging discovers a "bg"
+// peer purely by whether a `claude --bg` process is currently running for
+// that cwd - NOT by whether Agent Desktop has an attached pty/chat-view for
+// it (~/.claude/daemon/pty-pids/*.pid and daemon.log's "bg spawned"/"bg
+// settled" lines are written by the CLI's own shared daemon for every --bg
+// dispatch, independent of any attach). So the fix is simply making sure
+// every configured agent's `claude --bg` process is dispatched and stays
+// alive - deliberately NOT also attaching an interactive pty
+// (startTerminalSession's job, only when a chat tab is actually opened), so
+// this stays cheap: one background CLI process per agent, no ConPTY/terminal
+// overhead until the owner opens it.
+//
+// This does NOT extend the stuck-turn/halted-turn watchdogs above, which key
+// off ptySessions (the attached view) specifically - that remains the
+// documented limitation it always was for an agent whose tab was never
+// opened this run.
+//
+// An "always keep everything alive" sweep would otherwise fight any
+// deliberate stop (a runaway/looping agent, a project on hold, freeing up
+// the machine for something heavy) - resurrecting it within one sweep
+// interval, with delete-agent as the only escape. Fixed by the `paused` flag
+// (agents.js setAgentPaused(), set via the "set-agent-paused" IPC handler
+// above delete-agent): this sweep skips any agent with it set.
+// v1.54.4 self-heal for the duplicate race above, in case one ever slips
+// through: when one agent folder has more than one live background process,
+// stop the extras that have never written a transcript (an empty copy holds
+// no conversation, so stopping it loses nothing). A copy WITH a transcript is
+// never touched - two real conversations are logged for a human instead.
+// Skips a folder dispatched within the grace window (its new copy may not
+// have written its first line yet).
+async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
+  const all = await listBackgroundAgents(shell, spawnEnv);
+  for (const agent of agentsToCheck) {
+    const sessionCwd = sessionCwdFor(agent.path);
+    if (dispatchedRecently(sessionCwd)) continue;
+    const target = path.resolve(sessionCwd);
+    const live = all.filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
+    if (live.length < 2) continue;
+    const projDir = path.join(app.getPath("home"), ".claude", "projects", encodeProjectPath(sessionCwd));
+    const hasTranscript = (a) => {
+      try {
+        return fs.statSync(path.join(projDir, (a.sessionId || a.id) + ".jsonl")).size > 0;
+      } catch (e) {
+        return false;
+      }
+    };
+    const real = live.filter(hasTranscript);
+    const empty = live.filter((a) => !hasTranscript(a));
+    // Keep at least one: if none has a transcript yet, keep the newest.
+    if (!real.length) empty.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0)).shift();
+    for (const dup of empty) {
+      try {
+        await stopClaudeAgent(shell, dup.id, spawnEnv);
+        logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} had ${live.length} live copies - stopped empty duplicate ${dup.id}`);
+      } catch (e) {
+        logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} stop ${dup.id} failed: ${e.message}`);
+      }
+    }
+    if (real.length > 1) {
+      logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} has ${real.length} live copies WITH conversations (${real.map((a) => a.id).join(", ")}) - left alone, needs a human`);
+    }
+  }
+}
+
+const ENSURE_AGENTS_ALIVE_INTERVAL_MS = 15 * 60 * 1000;
+const SWEEP_MAX_DISPATCHES = 4; // a healthy sweep relaunches 0-2 agents; more means the liveness read is wrong
+// OS-level count of Claude Code CLI processes (excludes the Claude Desktop app,
+// which is also named Claude.exe). null = could not measure: fail-open, the per-sweep dispatch cap still applies.
+function countCliClaudeProcesses() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve(null);
+    const ps = "@(Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'claude.exe' -and $_.ExecutablePath -notmatch 'WindowsApps' }).Count";
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], { windowsHide: true, timeout: 20000 }, (err, out) => {
+      const n = parseInt(String(out || "").trim(), 10);
+      resolve(err || Number.isNaN(n) ? null : n);
+    });
+  });
+}
+const ENSURE_AGENTS_ALIVE_STAGGER_MS = 2000; // don't launch every configured agent's CLI process in the same instant
+// `progress` (optional) is the startup countdown's hook - see startupProgress.
+// Returns { measured: true } only when it actually walked the agent list, so
+// the caller can tell a real sweep from a skipped/failed one.
+// v1.66.1: one sweep at a time. With starts queued behind a CPU hold a sweep can take minutes; the 15-min timer
+// must not stack a second sweep on top of it.
+let sweepRunning = false;
+async function ensureAllAgentsBackgrounded(progress) {
+  if (sweepRunning) {
+    logStuckWatchdog("ensureAllAgentsBackgrounded: previous sweep still running - skipping this one");
+    return { measured: false, skipped: true };
+  }
+  sweepRunning = true;
+  try {
+    return await ensureAllAgentsBackgroundedImpl(progress);
+  } finally {
+    sweepRunning = false;
+  }
+}
+async function ensureAllAgentsBackgroundedImpl(progress) {
+  // Tier 1/2 sandboxes must never dispatch a real `claude --bg` process: that
+  // spends real quota and, in a fixtures-only sandbox, there is nothing for a
+  // live process to do anyway. Tier 3 turns it on explicitly, and stops again
+  // by itself once the token budget is gone.
+  if (!testMode.liveAgentsPermitted()) {
+    logStuckWatchdog(`ensureAllAgentsBackgrounded: skipped - ${testMode.describe()}`);
+    return { measured: false };
+  }
+  let agents;
+  try {
+    agents = listAgents();
+  } catch (e) {
+    logStuckWatchdog(`ensureAllAgentsBackgrounded: listAgents failed: ${e.message}`);
+    return { measured: false };
+  }
+  const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+  const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+  // Paused agents are skipped (the owner explicitly stopped them - see
+  // set-agent-paused above), so they are left out of the countdown's total too.
+  const toCheck = agents.filter((agent) => !agent.paused);
+  await stopEmptyDuplicateAgents(shell, spawnEnv, toCheck).catch((e) =>
+    logStuckWatchdog(`stopEmptyDuplicateAgents failed: ${e.message}`)
+  );
+  if (progress) progress.begin(toCheck.length);
+  // v1.61.9 circuit-breaker: never pile more sessions onto a machine that
+  // already has far too many, and never let one sweep launch more than a few.
+  const osCliCount = await countCliClaudeProcesses();
+  // Healthy fleet measured at ~1 CLI process per agent (~18-20 for ~20 agents);
+  // the storm was 200+. 4x + 10 leaves room for helper/pty-host processes.
+  const osCeiling = toCheck.length * 4 + 10;
+  // The first sweep after app start (has `progress`) may bring up every agent that is down.
+  let dispatchBudget = progress ? toCheck.length : SWEEP_MAX_DISPATCHES;
+  const breakerOpen = osCliCount !== null && osCliCount > osCeiling;
+  if (breakerOpen) {
+    logStuckWatchdog(`ensureAllAgentsBackgrounded: CIRCUIT BREAKER OPEN - ${osCliCount} claude CLI processes running for ${toCheck.length} configured agents (ceiling ${osCeiling}); no dispatching this sweep`);
+    try { fs.appendFileSync(path.join(app.getPath("userData"), "dispatch-breaker.flag"), `${new Date().toISOString()} ${osCliCount}/${osCeiling}
+`); } catch (_) { /* best effort */ }
+  }
+  for (let i = 0; i < toCheck.length; i++) {
+    const agent = toCheck[i];
+    let dispatchedThisAgent = false;
+    try {
+      const sessionCwd = sessionCwdFor(agent.path);
+      let alive = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+      if (!alive && (breakerOpen || dispatchBudget <= 0)) {
+        logStuckWatchdog(`ensureAllAgentsBackgrounded: ${agent.folderName} looks not running but ${breakerOpen ? "breaker is open" : "this sweep's dispatch cap (" + SWEEP_MAX_DISPATCHES + ") is used up"} - NOT dispatching`);
+      } else if (!alive && dispatchedRecently(sessionCwd)) {
+        // v1.54.4: something else (a reset, a chat open, a resume) launched
+        // this agent moments ago and `claude agents` doesn't list it yet.
+        // Launching again here is exactly how the 09-25 duplicate happened.
+        logStuckWatchdog(`ensureAllAgentsBackgrounded: ${agent.folderName} dispatched <${DISPATCH_GRACE_MS / 1000}s ago elsewhere - not dispatching again`);
+      } else if (!alive) {
+        // An untrusted folder rejects here within a second or two (the trust
+        // prompt is caught as it is drawn), is logged by the catch below and
+        // still counts as processed for the startup countdown.
+        dispatchBudget--;
+        dispatchedThisAgent = true;
+        const id = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd);
+        logStuckWatchdog(`ensureAllAgentsBackgrounded: dispatched ${agent.folderName} -> ${id}`);
+        alive = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd, { fresh: true }); // re-fetch for its full sessionId, below
+      } else {
+        clearAgentUntrusted(sessionCwd); // running now, e.g. the owner started it by hand
+      }
+      // 2026-09-20: the owner's ask, after the Trade Show agent reported "no
+      // Product Development agent is running" - confirmed live it actually
+      // WAS running the whole time, just under a cross-session name
+      // ("subscription tier migration") that reflected its current
+      // conversation topic, not which configured agent it is. Claude
+      // Code's own SendMessage/ListAgents match by exact name, so a
+      // perfectly live, reachable agent was invisible to a peer searching
+      // for it by role. Pin the cross-session-visible name to the agent's
+      // own folder name every sweep - overwrites whatever topical title the
+      // conversation itself accumulated, deliberately: reliable agent-to-
+      // agent addressability matters more here than a descriptive title
+      // (the owner already identifies each agent by its own sidebar tab, not by
+      // this name).
+      if (alive && alive.sessionId) {
+        try {
+          setConversationTitle(sessionCwd, alive.sessionId, agent.folderName);
+        } catch (e) {
+          /* non-fatal - a rename failure shouldn't stop the alive-check sweep */
+        }
+      }
+    } catch (e) {
+      // One agent's own hiccup must never block the rest of the sweep.
+      logStuckWatchdog(`ensureAllAgentsBackgrounded: ${agent.folderName} failed: ${e.message}`);
+    }
+    if (progress) progress.agentDone(agent.displayName || agent.folderName);
+    // The stagger only separates one agent's CLI launch from the next, so
+    // there is nothing to wait for after the last one (it used to add a dead
+    // 2 s to every sweep, which the startup countdown would now show).
+    // v1.76.0: and nothing to wait for after an agent that was merely found
+    // alive - no CLI process was launched for it. The sweep used to sleep 2 s
+    // after every one of the 22 agents (42 s of the 78 s startup countdown
+    // was this sleep, measured 2026-10-06); dispatches are still spaced, and
+    // the start limiter (4 s apart, max 3 in flight) paces them as well.
+    if (i < toCheck.length - 1 && dispatchedThisAgent) await new Promise((resolve) => setTimeout(resolve, ENSURE_AGENTS_ALIVE_STAGGER_MS));
+  }
+  return { measured: true };
+}
+
+// The 15-minute sweep above pins each agent's cross-session name once per
+// pass, but cannot hold it: Claude Code's own auto-namer re-derives a topical
+// name from the conversation and appends a fresh agent-name record whenever
+// the conversation moves on, and the last record wins. That is what made the
+// Product Development Agent invisible to the Trade Show agent on 2026-09-20 -
+// live and reachable the whole time, but listed as "subscription tier
+// migration", so a peer looking for it by role found nothing and silently
+// took its "agent not reachable" fallback path instead of messaging it.
+//
+// This reclaims the name roughly once a minute. It is deliberately cheap and
+// fully synchronous-filesystem: no CLI process, no transcript parsing, one
+// stat per quiet agent per pass (see repinAgentName()'s own comments).
+const REPIN_AGENT_NAMES_INTERVAL_MS = 60 * 1000;
+const REPIN_LOG_EVERY_MS = 60 * 60 * 1000;
+const repinLogThrottle = require("./logThrottle").createLogThrottle(REPIN_LOG_EVERY_MS);
+function repinAllAgentNames() {
+  let agents;
+  try {
+    agents = listAgents();
+  } catch (e) {
+    return; // the alive-sweep logs listAgents failures already; don't double-log every minute
+  }
+  for (const agent of agents) {
+    if (agent.paused) continue; // deliberately stopped - leave its conversation alone
+    try {
+      const result = repinAgentName(sessionCwdPath(agent.path), agent.folderName);
+      if (result) {
+        // result.from is null when the tail held no agent-name at all (a fresh
+        // conversation, or one whose naming records predate the tail window).
+        // v1.77.3: 48% of the watchdog log was this line (300-860/day). The rename still happens every time; it is LOGGED
+        // only the first time per agent per hour, with a count of the ones skipped since.
+        const rl = repinLogThrottle.check(agent.folderName);
+        if (rl.log) {
+          logStuckWatchdog(
+            (result.from === null
+              ? `repinAgentNames: ${agent.folderName} pinned (no prior name in transcript tail)`
+              : `repinAgentNames: ${agent.folderName} renamed back from "${result.from}"`) + (rl.skipped ? ` (+${rl.skipped} more renames since the last log line)` : "")
+          );
+        }
+      }
+    } catch (e) {
+      logStuckWatchdog(`repinAgentNames: ${agent.folderName} failed: ${e.message}`);
+    }
+  }
+}
+
+// --- Tier 3 token budget ----------------------------------------------------
+// the owner's condition for letting the sandbox run a real agent: "use this testing
+// agent very conservatively - maybe limit its token use and ask me when it
+// exceeds a certain low amount." Enforced mechanically rather than left to the
+// agent's own judgement, because the whole risk is an unattended loop nobody
+// is watching.
+//
+// Stopping is done by pausing each sandbox agent (the same `paused` flag the
+// keep-alive sweep already respects) AND stopping its background process, so
+// nothing restarts it a sweep later. the owner raises the budget or clears the
+// pause himself - the instance never un-pauses itself.
+const TEST_BUDGET_CHECK_INTERVAL_MS = 60 * 1000;
+let testBudgetWarned = false;
+let testBudgetStopped = false;
+
+function notifyTestBudget(title, body) {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  } catch (e) {}
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("test-budget-status", { title, body });
+  }
+}
+
+async function enforceTestTokenBudget() {
+  if (!testMode.TEST_MODE || !testMode.ALLOW_LIVE_AGENTS) return;
+  let status;
+  try {
+    status = testMode.budgetStatus();
+  } catch (e) {
+    return;
+  }
+
+  if (status.state === "warn" && !testBudgetWarned) {
+    testBudgetWarned = true;
+    const pct = Math.round(status.fraction * 100);
+    logStuckWatchdog(`test budget at ${pct}% (${status.billable}/${status.budget} tokens)`);
+    notifyTestBudget(
+      "Sandbox at " + pct + "% of its token budget",
+      `${status.billable.toLocaleString()} of ${status.budget.toLocaleString()} tokens used.`
+    );
+  }
+
+  if (status.state === "exceeded" && !testBudgetStopped) {
+    testBudgetStopped = true;
+    logStuckWatchdog(
+      `test budget EXCEEDED (${status.billable}/${status.budget} tokens) - pausing every sandbox agent`
+    );
+    let paused = 0;
+    try {
+      for (const agent of listAgents()) {
+        try {
+          setAgentPaused(agent.path, true);
+          await stopBackgroundAgentForCwd(sessionCwdFor(agent.path));
+          paused += 1;
+        } catch (e) {
+          logStuckWatchdog(`test budget: could not stop ${agent.folderName}: ${e.message}`);
+        }
+      }
+    } catch (e) {
+      logStuckWatchdog(`test budget: listAgents failed while stopping: ${e.message}`);
+    }
+    notifyTestBudget(
+      "Sandbox stopped - token budget reached",
+      `${status.billable.toLocaleString()} tokens used (budget ${status.budget.toLocaleString()}). ` +
+        `${paused} agent(s) paused. Ask the owner of this app before raising AGENT_DESKTOP_TEST_TOKEN_BUDGET.`
+    );
+  }
+}
+
+// Returns { id, freshlyDispatched } rather than a bare id - startTerminalSession
+// uses freshlyDispatched to know whether this is a brand-new bg process (needs
+// registerRemoteControl(), below) or one it's simply reattaching to (already
+// registered, if it ever was, back when IT was first dispatched).
+async function findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwd) {
+  let existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+  // v1.54.4: launched moments ago by something else but not listed yet - give
+  // it up to ~10 s to show up before launching a second copy.
+  for (let i = 0; !existing && i < 5 && dispatchedRecently(sessionCwd); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+  }
+  if (existing) return { id: existing.id, freshlyDispatched: false };
+  const id = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { urgent: true }); // opening one agent's tab
+  return { id, freshlyDispatched: true };
+}
+
+// Deleting an Agent Desktop agent must also stop its real native background
+// agent process, not just whatever attach pty happens to be viewing it right
+// now - the two are decoupled by design (see the backend comment above), so
+// closing/killing the attach alone leaves the underlying `claude --bg`
+// process orphaned, still running against a cwd whose folder is about to be
+// deleted out from under it. Looked up by cwd (not by a live ptySessions
+// entry) so this also catches an agent that was dispatched in an earlier
+// app run and never reattached in this one - ptySessions only knows about
+// sessions opened since the app last started.
+async function stopBackgroundAgentForCwd(sessionCwd) {
+  async function attempt() {
+    const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+    const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+    const agent = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+    if (agent) {
+      // Callers are already protected from a hang here by this function's own
+      // outer Promise.race (5s, below) - the real point of stopClaudeAgent's
+      // built-in timeout is that WITHOUT it, a truly stuck `claude stop` keeps
+      // this abandoned attempt() running (and its underlying pty/child
+      // process alive) forever after the race gives up on it, since nothing
+      // else ever cancels it. With the timeout, the abandoned attempt settles
+      // on its own and that process actually gets cleaned up instead of
+      // leaking - same class of orphaned-process leak this file already
+      // fixes elsewhere (see the 2026-08-23 orphan-pty comment below).
+      await stopClaudeAgent(shell, agent.id, spawnEnv);
+      // `claude stop` returning just means the stop request was issued, not
+      // that the target background process has actually exited and released
+      // its own handles yet - its cwd IS this same sessionCwd, unlike the
+      // "stop" command's own pty process. Confirmed directly, live: deleting
+      // right after stop resolved hit "EBUSY: resource busy or locked,
+      // rmdir ...\.claude-session" even after deleteAgentWithRetry's own
+      // 2-second retry window - that process was still holding it. Polling
+      // here for the pid to actually disappear (same alive-check used
+      // everywhere else in this file) closes that gap properly instead of
+      // just widening the existing retry window and hoping.
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const stillAlive = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+        if (!stillAlive) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+  }
+  try {
+    // Confirmed directly, live: this whole sequence can occasionally hang
+    // well past its own internal 3s poll budget (root cause not fully
+    // pinned down - isolated outside the app, the same pty-based `claude
+    // stop` call reliably completes in under 2s, so something about this
+    // app's own concurrent process/env state is implicated, not the
+    // mechanism itself). A hard outer timeout means a flaky stop-detection
+    // can never block the delete indefinitely - deleteAgentWithRetry's own
+    // EBUSY-retry loop right after this is the real safety net either way,
+    // so falling through to it (agent possibly still alive) is strictly
+    // better than the delete just hanging forever with no feedback.
+    await Promise.race([attempt(), new Promise((resolve) => setTimeout(resolve, 5000))]);
+  } catch (e) {
+    /* best-effort - a stray still-running background process is not worth failing the delete over */
+  }
+}
+
+// Diagnosed live, 2026-08-23: a `claude --bg` dispatch's own "daemon run"
+// helper process can die without ever cleaning up the "--bg-pty-host"
+// wrapper (and that wrapper's own inner --session-id process) it spawned.
+// Windows does not kill a process's children when it dies unless it
+// explicitly used a Job Object, and nothing - not this app, not the CLI
+// itself - ever re-checks these once dispatched. Confirmed live: 8 such
+// orphaned pairs (16 processes, ~5GB of RAM) were found sitting idle for
+// over an hour, every one with a dead parent daemon, none of them having
+// ever written a single line to a transcript file - this matches, and now
+// gives a confirmed mechanism for, the "several orphaned background agents
+// accumulated" observation from the 2026-08-21 backend-rewrite investigation
+// above, which was circumstantial at the time.
+//
+// A pty-host is only treated as orphaned - and only killed - when BOTH:
+// (1) its own parent PID is no longer running, AND (2) `claude agents --json
+// --all` does not list its session id as still known to the CLI. Either
+// signal alone risks a false positive (a legitimately reparented process, or
+// a momentary gap in `agents --json`); both together is the conservative bar
+// for something to actually be unreachable dead weight worth killing.
+//
+// $ProgressPreference='SilentlyContinue' avoids a real, confirmed gotcha:
+// Get-CimInstance's first-use module load writes a "Preparing modules..."
+// progress record that PowerShell serializes as CLIXML onto the output
+// stream when invoked non-interactively like this, corrupting the JSON.
+// execFile (argument array, no shell) rather than exec (shell string) - the
+// -EncodedCommand payload is base64 so it can't contain shell metacharacters
+// either way, but this avoids a shell entirely rather than relying on that
+// being true forever.
+// v1.76.0: asynchronous (was execFileSync). The only caller (the orphan reaper)
+// runs at startup, right after the window is created, and the synchronous call
+// blocked the main thread for ~1.4 s (measured 2026-10-06) while the renderer's
+// first IPC requests waited behind it.
+function runPowerShellJsonAsync(script) {
+  const wrapped = `$ProgressPreference='SilentlyContinue'; ${script}`;
+  const encoded = Buffer.from(wrapped, "utf16le").toString("base64");
+  return new Promise((resolve, reject) => {
+    execFile("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+      encoding: "utf-8",
+      maxBuffer: 20 * 1024 * 1024,
+      windowsHide: true,
+      timeout: 60000,
+    }, (err, out) => {
+      if (err) return reject(err);
+      try {
+        const parsed = String(out).trim() ? JSON.parse(String(out)) : [];
+        resolve(Array.isArray(parsed) ? parsed : [parsed]);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+function listClaudeProcessesWindows() {
+  return runPowerShellJsonAsync("Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress")
+    .catch(() => []);
+}
+
+// process.kill(pid, 0) throws ESRCH if the pid is gone, but throws EPERM
+// (not ESRCH) if the pid exists and this process just lacks permission to
+// signal it - EPERM therefore still means "alive," not "unreachable."
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+const REAPER_LOG_PATH = path.join(app.getPath("userData"), "orphan-reaper.log");
+function logReaperAction(line) {
+  try {
+    fs.appendFileSync(REAPER_LOG_PATH, `${new Date().toISOString()} ${line}\n`);
+  } catch (e) {
+    /* logging itself must never be why the reaper fails */
+  }
+}
+
+async function reapOrphanedBackgroundAgentProcesses() {
+  if (process.platform !== "win32") return;
+  // Never in a test instance. This enumerates every claude process on the
+  // machine and kills any pty-host missing from ITS OWN agent roster - which
+  // in a sandbox is a different roster, so "unrecognised" would mean the owner's
+  // real agents. There is deliberately no env var to turn this back on.
+  if (!testMode.processReapingPermitted()) return;
+  try {
+    const procs = await listClaudeProcessesWindows();
+    const pidsPresent = new Set(procs.map((p) => p.ProcessId));
+    const ptyHosts = procs.filter((p) => (p.CommandLine || "").includes("--bg-pty-host"));
+    if (ptyHosts.length === 0) return;
+
+    const shell = resolveClaudeExecutable();
+    const spawnEnv = { ...process.env, ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+    const knownAgents = await listBackgroundAgents(shell, spawnEnv);
+    const knownIds = new Set(knownAgents.map((a) => a.id));
+
+    for (const host of ptyHosts) {
+      const parentAlive = pidsPresent.has(host.ParentProcessId) || isPidAlive(host.ParentProcessId);
+      if (parentAlive) continue; // still owned by a live daemon - leave it alone
+
+      const idMatch = (host.CommandLine || "").match(/--session-id\s+([a-f0-9-]+)/i);
+      const sessionId = idMatch ? idMatch[1] : null;
+      if (sessionId && knownIds.has(sessionId)) continue; // CLI still knows it - don't touch it
+
+      const children = procs.filter((p) => p.ParentProcessId === host.ProcessId);
+      const toKill = [host.ProcessId, ...children.map((c) => c.ProcessId)];
+      for (const pid of toKill) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (e) {
+          /* already gone - fine */
+        }
+      }
+      logReaperAction(`killed orphaned pty-host pid=${host.ProcessId} sessionId=${sessionId || "unknown"} deadParentPid=${host.ParentProcessId} children=[${children.map((c) => c.ProcessId).join(",")}]`);
+    }
+  } catch (e) {
+    logReaperAction(`reaper error: ${e.message}`);
+  }
+}
+
+// Run once at startup (catches orphans left over from a prior app run or
+// crash) and then on a slow periodic sweep while the app stays open - this
+// isn't chasing a fast-moving condition, a daemon dying mid-session is rare,
+// so 30 minutes is plenty rather than adding startup-only blind spots for a
+// long-running window.
+const REAPER_INTERVAL_MS = 30 * 60 * 1000;
+
+// Mitigation for a confirmed upstream Claude Code CLI bug (see
+// agent-desktop\CLAUDE.md, "ROOT CAUSE FOUND for the session wedged solid
+// mystery", 2026-09-16): the `--bg` + attach code path can leave the CLI's
+// own process alive and "Responding: true" at the OS level, but internally
+// stalled mid-turn forever - proven with a minimal repro outside this app
+// entirely (main.js/Agent Desktop is not the cause and cannot patch the
+// real bug). handlePtyExit()'s existing silent-reattach only fires once the
+// process has actually died, so it never catches this - the process never
+// dies, it just stops making progress. This watchdog catches the
+// "alive but not progressing" case specifically and forces the recovery a
+// human would otherwise have to do by hand (confirmed live, repeatedly,
+// the same night this was written: killing the stuck process and
+// redispatching fresh reliably gets a working session again for a while).
+//
+// Deliberately cheap per check - getSessionActivity() already does the
+// real "is it actually alive" liveness check via a pid-file existence +
+// signal-0 probe (no process enumeration), and getLatestTranscriptMtimeMs()
+// is a plain fs.statSync, no JSON parsing. Safe to run every 30s even with
+// several agents open.
+const STUCK_CHECK_INTERVAL_MS = 30 * 1000;
+
+// --- Global auth-failure watchdog (2026-09-20) -----------------------------
+// Root cause of the incident this fixes: the CLI's own shared background
+// daemon proactively refreshes the OAuth login on a self-scheduled timer
+// (see ~/.claude/daemon.log: repeated "auth: proactive refresh succeeded").
+// Overnight, one such refresh genuinely failed ("proactive refresh failed,
+// signalling re-auth required") - the daemon has no way to reach a human, so
+// it just wrote the login out as empty tokens and quietly polled the OS
+// keychain every 30s waiting for someone to run `claude auth login`, forever
+// if nobody happened to notice. Every claude --bg agent then failed EVERY
+// turn instantly with authentication_failed - the Trade Show agent sat like
+// that for ~7 hours until the owner noticed it wasn't responding.
+// checkForHaltedTurns() (below) only ever notices this via a given agent's
+// OWN transcript, and only for agents already attached in ptySessions this
+// run - so an agent that never tried a message, or was never opened this
+// run, gave zero signal. This check is independent of both: it reads the
+// shared credentials file directly on the same 30s timer, so it fires within
+// seconds of the break no matter which (if any) agent tab is open, and
+// re-notifies periodically (not every 30s - that would be pure noise) for as
+// long as it stays broken, since a single dismissed toast is easy to miss.
+const AUTH_RENOTIFY_INTERVAL_MS = 15 * 60 * 1000;
+let authWasBroken = false;
+let lastAuthNotifiedAt = 0;
+
+function isCredentialsFileBroken() {
+  try {
+    const credPath = path.join(require("os").homedir(), ".claude", ".credentials.json");
+    const oauth = readJsonFile(credPath).claudeAiOauth;
+    // Confirmed broken-state signature from the real incident: accessToken
+    // and refreshToken both wiped to "", expiresAt reset to 0.
+    return !oauth || !oauth.accessToken || !oauth.refreshToken;
+  } catch (e) {
+    return false; // missing/unreadable file isn't this signature - don't false-alarm
+  }
+}
+
+function checkForAuthFailure() {
+  const broken = isCredentialsFileBroken();
+  if (!broken) {
+    if (authWasBroken) logStuckWatchdog("auth: credentials recovered - login restored");
+    authWasBroken = false;
+    return;
+  }
+  const now = Date.now();
+  if (authWasBroken && now - lastAuthNotifiedAt < AUTH_RENOTIFY_INTERVAL_MS) return;
+  authWasBroken = true;
+  lastAuthNotifiedAt = now;
+  logStuckWatchdog("auth: credentials.json is in the logged-out state - every agent will fail instantly until re-login");
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title: "Claude Code login expired - ALL agents are down",
+        body: "Not a usage limit. Run `claude auth login` from a terminal (or the claude.exe path if `claude` isn't on PATH), then Restart Session on each agent.",
+      });
+      n.on("click", () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+      n.show();
+    }
+  } catch (e) {
+    /* a notification failure must never break the watchdog itself */
+  }
+}
+// How long a turn can show zero new transcript bytes, while confirmed
+// "working" AND confirmed alive, before it's treated as stuck rather than
+// just a genuinely slow single tool call or thinking step. Tuned against
+// real data from the same investigation: every confirmed real wedge sat at
+// exactly 0 bytes of growth for 100s-500+s; ordinary turns (including a
+// slow multi-part Bash call) kept producing new transcript entries at least
+// every 10-60s. 3 minutes gives real slow turns comfortable headroom while
+// still recovering well before a human would likely have noticed and acted
+// manually.
+const STUCK_TURN_THRESHOLD_MS = 3 * 60 * 1000;
+// If recovery itself doesn't hold (the same session wedges again shortly
+// after a fresh redispatch - also observed the same night), this used to
+// stop auto-recovering after 3 recoveries per 15-minute window and leave the
+// agent stuck for a human to notice and manually restart. Changed 2026-09-17
+// (the owner, after the watchdog left an agent dead for 3+ hours overnight and
+// manual "Restart Session" clicks landed in the same doomed loop): a bounded
+// recovery cadence (at most one kill/redispatch per STUCK_TURN_THRESHOLD_MS,
+// i.e. ~3 min apart) is not a runaway thrash even run forever, so there's no
+// good reason to ever stop trying - the alternative is a dead agent nobody
+// notices. The count/window tracking is kept purely for visibility (the
+// in-terminal notice below reports it) - recovery itself is never gated on it.
+const AUTO_RECOVERY_WINDOW_MS = 15 * 60 * 1000;
+// Recovery still isn't gated on this - it's just the point past which the
+// in-terminal notice adds a louder "this keeps happening" warning, since a
+// handful of recoveries in a window is normal noise but double digits means
+// something worth a human's attention even though the watchdog is coping.
+const MAX_VISIBLE_RECOVERIES_BEFORE_WARNING = 3;
+
+// Deliberately NOT stored on the ptySessions entry itself: recoverStuckSession()
+// kills the old session object and startTerminalSession() creates a brand
+// new one for the fresh process, which would silently reset any counter
+// kept there - defeating the point of tracking recoveries across redispatches.
+const autoRecoveryTracking = new Map(); // agentPath -> { windowStart, count }
+
+// Found live 2026-09-17 debugging why recovered sessions kept accumulating
+// as zombies: `session.proc.kill()` only signals the top-level pty-hosted
+// process (`claude.exe --bg-pty-host ...`), but that process spawns the
+// actual `--resume` worker as its own OS child - Windows does not kill
+// children when a parent dies unless they're grouped in a job object with
+// KILL_ON_JOB_CLOSE, which node-pty's winpty backend here doesn't set up.
+// So a "successful" kill left the real worker alive and still burning API
+// calls/CPU, un-tracked, while a fresh redispatch started on top of it -
+// confirmed live: after one recovery cycle, both the pre-recovery and
+// post-recovery worker PIDs were simultaneously alive. `taskkill /T` kills
+// the whole process tree, not just the one PID, which is what's actually
+// needed here.
+//
+// CORRECTED same night, after the owner reported the whole app itself froze and
+// had to be closed and reopened: the first version of this used
+// execFileSync, which runs synchronously ON THE MAIN PROCESS'S ONLY THREAD -
+// if `taskkill` itself ever stalled (e.g. an unresponsive target process),
+// it would freeze all of Agent Desktop, not just the one agent being
+// recovered - every IPC call, every window, everything, exactly matching
+// what the owner hit. Switched to the async `execFile` with an explicit timeout
+// so a slow/stuck taskkill can never block anything else, and made this
+// fire-and-forget (recovery already doesn't wait for the OS-level kill to
+// fully land before redispatching - same as the pre-existing session.proc.kill()
+// call this replaced never did either).
+function killProcessTree(proc) {
+  if (!proc) return;
+  try {
+    proc.kill();
+  } catch (e) {
+    /* fall through to the tree-kill below regardless */
+  }
+  if (process.platform === "win32" && proc.pid) {
+    execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, timeout: 5000 }, () => {
+      /* best-effort cleanup - nothing more to do whether it succeeded, the
+         process was already gone, or it timed out */
+    });
+  }
+}
+
+const STUCK_WATCHDOG_LOG_PATH = path.join(app.getPath("userData"), "stuck-turn-watchdog.log");
+let watchdogLogLines = 0;
+function logStuckWatchdog(line) {
+  try {
+    try { if (++watchdogLogLines % 50 === 1 && fs.statSync(STUCK_WATCHDOG_LOG_PATH).size > 2 * 1024 * 1024) fs.renameSync(STUCK_WATCHDOG_LOG_PATH, STUCK_WATCHDOG_LOG_PATH + ".old"); } catch (e) { /* no file yet */ }
+    fs.appendFileSync(STUCK_WATCHDOG_LOG_PATH, `${new Date().toISOString()} ${line}\n`);
+  } catch (e) {
+    /* logging itself must never be why the watchdog fails */
+  }
+}
+
+// 2026-10-03: the renderer's auto-handoff sweep writes its skip/start/fail reasons here (it has no
+// file access of its own). Rate-limiting is done in the renderer; this just appends one line.
+ipcMain.on("guard-log", (event, { line }) => {
+  logStuckWatchdog("[autohandoff] " + String(line || "").replace(/\s+/g, " ").slice(0, 400));
+});
+
+// v1.67.0 connection health (reconnect with backoff, dead-link auto-restart, post-recovery nudge) - see
+// src/connectionHealth.js. Hook points elsewhere in this file: handlePtyExit, recoverStuckSession,
+// start-terminal's catch, startTerminalSession (noteData / onConnected), terminal-input (noteWrite).
+const lateInputs = new Map(); // agentPath -> input written while disconnected; replayed by the next attach (review M1)
+const lateInputsAt = new Map(); // v1.69.4: when it was queued; input older than 10 min is never replayed (a stale message must not appear hours later)
+function takeLateInputs(agentPath) {
+  const li = lateInputs.get(agentPath);
+  lateInputs.delete(agentPath);
+  if (!li || !li.length) return [];
+  if (Date.now() - (lateInputsAt.get(agentPath) || 0) > 10 * 60 * 1000) { logStuckWatchdog(`late-input: ${agentPath} - dropped ${li.length} queued input chunk(s) older than 10 min`); return []; }
+  return li;
+}
+// v1.67.3: removing a failed "starting" placeholder must keep the input it queued (it is replayed by the next attach)
+function dropPlaceholder(agentPath) {
+  const ph = ptySessions.get(agentPath);
+  if (ph && ph.starting && ph.pendingInput && ph.pendingInput.length) { lateInputs.set(agentPath, ph.pendingInput.concat(lateInputs.get(agentPath) || [])); lateInputsAt.set(agentPath, Date.now()); }
+  if (ph && ph.starting) ptySessions.delete(agentPath);
+}
+const TEST_FAULT_DIR = () => app.getPath("userData");
+function testFaultFile(name) { return path.join(TEST_FAULT_DIR(), name); }
+async function restartAgentSession(agentPath) {
+  // v1.110.0 (B3): the sandbox must not start a live CLI session once its token budget is spent / live agents are off
+  // (the bulk restart already checks this; this single-agent path did not)
+  if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) throw new Error("test mode: live agents are not permitted (budget spent or live agents off) - restart refused");
+  const sessionCwd = sessionCwdFor(agentPath);
+  const cur = getCurrentConversation(sessionCwd); // v1.77.3: newest conversation only, not a full parse of every transcript
+  if (!cur || !cur.sessionId) throw new Error("no conversation to resume");
+  const old = ptySessions.get(agentPath);
+  const size = { cols: old && old.cols, rows: old && old.rows };
+  const r = await switchConversationImpl(agentPath, { resumeSessionId: cur.sessionId, placeholder: true });
+  try {
+    await startTerminalSession(agentPath, sessionCwd, size.cols, size.rows, r.agentId, false, false, "restart-session");
+  } catch (e) {
+    dropPlaceholder(agentPath);
+    throw e;
+  }
+  if (testMode.TEST_MODE) { try { fs.unlinkSync(testFaultFile("mute-" + path.basename(agentPath))); } catch (e) {} }
+}
+// v1.69.6: an agent that is BLOCKED ON A PERMISSION PROMPT is invisible: a headless background session shows "Working..."
+// while the daemon's job file says needs "approve Read". Found 2026-10-04: fresh sessions with no --model came up as Haiku
+// in permission mode "default", their first Read/Glob waited for an approval nobody could see (21+ min) and every message
+// queued behind it. pinnedModelFor() stops the cause; this catches any recurrence. Every 60 s it reads the job files of the
+// agents this app has attached (a few small reads, no polling of idle agents' transcripts). Blocked on an approval for 2
+// checks in a row -> logged; and if the session is on a non-pinned (Haiku) model it is restarted through Restart Session,
+// which resumes it on the pinned model in auto mode (max once per 20 min per agent). A real approval on a Sonnet session is
+// only logged: restarting would throw away a question that is legitimately the owner's.
+const approvalScan = require("./approvalScan");
+const approvalScanCache = approvalScan.createScanCache();
+const approvalBlockedSince = new Map();
+const approvalRestartAt = new Map();
+// v1.69.17: a Sonnet agent blocked on a permission prompt nobody could see (UI/UX sat for hours on "approve Bash: ls ...",
+// the app only said "Working..."). approvalPending drives a visible banner with Approve / Deny that only the owner's click
+// answers (nothing is ever approved automatically), and makes the stuck-turn watchdog leave the agent alone.
+const approvalPending = new Map();      // agentPath -> { needs, since }
+async function checkApprovalBlocked() {
+  const now = Date.now();
+  // Scans the daemon's job files, NOT ptySessions: an agent whose tab was never opened has no attach client, and the
+  // first version (ptySessions only) never saw the two hung agents after an app restart.
+  const jobsDir = path.join(require("os").homedir(), ".claude", "jobs");
+  const states = approvalScan.collectAgentJobStates(jobsDir, now, approvalScanCache, (st) => {
+    if (!st.cwd || !/\.claude-session$/i.test(st.cwd)) return null; // only the fleet's agent sessions
+    const ap = path.dirname(st.cwd);
+    if (!fs.existsSync(ap) || sessionCwdPath(ap) !== st.cwd) return null;
+    return ap;
+  });
+  if (!states) return;
+  // v1.77.3: decide per agent AFTER the whole scan; a stale non-blocked job file must not reset the 90 s waiting timer of a blocked one
+  for (const [agentPath, entry] of states) {
+    const st = entry.blocked;
+    if (!st) { approvalBlockedSince.delete(agentPath); approvalPending.delete(agentPath); continue; }
+    const since = approvalBlockedSince.get(agentPath) || now;
+    if (!approvalBlockedSince.has(agentPath)) logStuckWatchdog(`approval-blocked: ${agentPath} - first seen waiting for "${String(st.needs).slice(0, 120)}"`);
+    approvalBlockedSince.set(agentPath, since);
+    if (now - since < 90 * 1000) continue;
+    // only the agent's CURRENT conversation counts: an old killed job file can keep "blocked" forever
+    // (newest transcript file by mtime, not listConversations(): that returns [] for a session whose only human turn is a
+    // handoff prompt, which is exactly the kind of session that hangs)
+    try {
+      const pdir = path.join(require("os").homedir(), ".claude", "projects", encodeProjectPath(st.cwd));
+      let best = null, bestT = 0;
+      for (const fn of fs.readdirSync(pdir)) { if (!/\.jsonl$/.test(fn)) continue; const t = fs.statSync(path.join(pdir, fn)).mtimeMs; if (t > bestT) { bestT = t; best = fn; } }
+      if (!best || best.replace(/\.jsonl$/, "") !== st.sessionId || st.state !== "working") continue;
+    } catch (_) { continue; }
+    let model = "";
+    try {
+      const fd = fs.openSync(st.linkScanPath, "r"); const size = fs.fstatSync(fd).size; const len = Math.min(size, 256 * 1024);
+      const buf = Buffer.alloc(len); fs.readSync(fd, buf, 0, len, size - len); fs.closeSync(fd);
+      const all = buf.toString("utf-8").match(/"model":"([^"]+)"/g); if (all) model = all[all.length - 1];
+    } catch (_) {}
+    const secs = Math.round((now - since) / 1000);
+    const haiku = /haiku/i.test(model);
+    logStuckWatchdog(`approval-blocked: ${agentPath} - waiting ${secs}s for "${String(st.needs).slice(0, 160)}" (${model || "model unknown"})${haiku ? " - Haiku session, restarting it on the pinned model" : " - left alone, this approval is the owner's"}`);
+    if (!haiku) approvalPending.set(agentPath, { needs: String(st.needs).slice(0, 600), since });   // shown as a banner with Approve / Deny (renderer approval-banner.js)
+    if (haiku && now - (approvalRestartAt.get(agentPath) || 0) > 20 * 60 * 1000) {
+      approvalRestartAt.set(agentPath, now);
+      approvalBlockedSince.delete(agentPath);
+      try { await restartAgentSession(agentPath); logStuckWatchdog(`approval-blocked: ${agentPath} - restarted on ${pinnedModelFor(sessionCwdFor(agentPath))}`); }
+      catch (e) { logStuckWatchdog(`approval-blocked: ${agentPath} - restart failed: ${e.message}`); }
+    }
+  }
+}
+ipcMain.handle("approval-pending-get", (event, { agentPath }) => {
+  const p = approvalPending.get(agentPath);
+  return p ? { needs: p.needs, since: p.since, promptOnScreen: promptLikelyOpen(agentPath) } : null;
+});
+// the owner's click only. Enter takes the prompt's default "Yes"; Escape declines.
+ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
+  // v1.71.1 (Testing agent review): the click must answer EXACTLY the prompt the banner showed.
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, reason: "not from the main window" };
+  if (answer !== "approve" && answer !== "deny") return { ok: false, reason: "bad answer" };
+  const s = ptySessions.get(agentPath);
+  if (!s || !s.proc) return { ok: false, reason: "this agent is not attached; open its Terminal tab once, or use Session > Restart session" };
+  const pend = approvalPending.get(agentPath);
+  if (!pend) return { ok: false, reason: "nothing is waiting for approval" };
+  if (since !== pend.since) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
+  if (!promptLikelyOpen(agentPath)) return { ok: false, reason: "the prompt is not on the screen; use Session > Restart session" };
+  const strip = (x) => String(x).replace(/\s+/g, "");
+  const want = strip(String(pend.needs).replace(/^approve\s*\w*\s*:?\s*/i, "")).slice(0, 30);
+  if (want.length < 3 || !strip(dialogTails.get(agentPath) || "").includes(want)) return { ok: false, reason: "the prompt on the agent's screen is not the one shown here; use Session > Restart session" };
+  logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} for "${String(pend.needs).slice(0, 160)}"`);
+  writeToPtyChunked(s.proc, agentPath, answer === "approve" ? "\r" : "\x1b");
+  approvalPending.delete(agentPath);        // the next prompt (if any) must be seen and read again, never approved by a second click on this card
+  approvalBlockedSince.delete(agentPath);
+  return { ok: true };
+});
+function typeIntoPty(agentPath, text) {
+  const s = ptySessions.get(agentPath);
+  if (!s || !s.proc) return;
+  text = require("./pasteText").cleanPasteText(text); // v1.96.0: text only, never key sequences inside the paste
+  logSentInput(agentPath, text);
+  writeToPtyChunked(s.proc, agentPath, "\x1b[200~" + text);
+  setTimeout(() => writeToPtyChunked(s.proc, agentPath, "\x1b[201~"), 30);
+  setTimeout(() => writeToPtyChunked(s.proc, agentPath, "\r"), 230);
+}
+const connHealth = require("./connectionHealth").create({
+  log: (line) => logStuckWatchdog(line),
+  emit: (agentPath, snap) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("connection-state", snap);
+  },
+  shouldRetry: (agentPath) => {
+    if (heartbeatQuitting) return false;
+    if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) return false;
+    try {
+      const cfg = readJsonFile(path.join(agentPath, "agent_config.json"));
+      if (cfg && cfg.paused) return false;
+    } catch (e) { /* no config: fall through to the folder check */ }
+    return fs.existsSync(agentPath);
+  },
+  sessionKind: (agentPath) => {
+    const s = ptySessions.get(agentPath);
+    return !s ? null : s.starting ? "starting" : "real";
+  },
+  reconnect: async (agentPath, size) => {
+    if (ptySessions.has(agentPath)) return;
+    ptySessions.set(agentPath, { starting: true, pendingInput: takeLateInputs(agentPath) });
+    try {
+      await startTerminalSession(agentPath, sessionCwdFor(agentPath), size && size.cols, size && size.rows, undefined, false, false, "connhealth-reconnect");
+    } catch (e) {
+      // v1.67.3: a failed attempt must not swallow the input it was carrying - keep it for the next attempt
+      dropPlaceholder(agentPath);
+      throw e;
+    }
+  },
+  restartSession: (agentPath) => restartAgentSession(agentPath),
+  screenShows: (agentPath, snippet) => {
+    const strip = (x) => String(x).replace(/\s+/g, "");
+    const want = strip(snippet || "").slice(-30);
+    return want.length >= 3 && strip(dialogTails.get(agentPath) || "").includes(want);
+  },
+  isIdleAndQuiet: (agentPath, sinceMs) => {
+    const cwd = sessionCwdPath(agentPath);
+    const act = getSessionActivity(cwd);
+    if (act && act.working) return false;
+    const mt = getLatestTranscriptMtimeMs(cwd);
+    return mt == null || mt < sinceMs;
+  },
+  isWorking: (agentPath) => {
+    const act = getSessionActivity(sessionCwdPath(agentPath));
+    return !!(act && act.working);
+  },
+  wasInterrupted: (agentPath) => {
+    const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
+    if (!nt) return false;
+    const fd = fs.openSync(nt.jsonlPath, "r");
+    try {
+      const len = Math.min(16384, nt.size);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, nt.size - len);
+      return /Request interrupted/.test(buf.toString("utf-8"));
+    } finally { fs.closeSync(fd); }
+  },
+  nudge: (agentPath, text) => typeIntoPty(agentPath, text),
+  // v1.68.0 stuck Enter (see connectionHealth.js)
+  inputHoldsText: (agentPath, snippet) => inputHoldsUnsentText(agentPath, snippet),
+  transcriptHas: (agentPath, text, sinceMs) => transcriptTailHasText(agentPath, text, sinceMs),
+  // v1.68.1: the renderer presses it, through the same per-session write chain as every message (a bare write from
+  // here could land inside the next message's bracketed paste)
+  pressEnter: (agentPath) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("press-enter", { agentPath });
+  },
+  // v1.69.4 recovery ladder: keys go through the renderer's per-session write chain, like every message
+  sendKeys: (agentPath, steps) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("send-keys", { agentPath, steps });
+  },
+  resetScreen: () => { /* the Ctrl+C gate (can-send-ctrlc) clears the screen text itself, after it has checked the box */ },
+  screenState: (agentPath, snippet, fullText) => screenStateFor(agentPath, snippet, fullText),
+  reattachClient: (agentPath, reason) => reattachClient(agentPath, reason),
+});
+// v1.69.4: what the agent's screen shows right now, for the ladder and the failure log.
+// Evidence the attach CLIENT is dead although the pty object exists (experiment 2026-10-04): another `claude attach` kicked it
+// ("Session opened in another window"), or two Ctrl+C detached it (the `claude agents` dashboard is on screen), or `claude logs`
+// shows a CLI screen while the attach screen is blank (probed in the background, only when the attach has been silent for 15 s
+// and the agent is not working). Silence alone is never evidence: a healthy idle CLI is silent.
+function claudeLogsTail(agentPath) {
+  return new Promise((resolve) => {
+    try {
+      const sess = ptySessions.get(agentPath);
+      const id = sess && sess.agentId ? String(sess.agentId).slice(0, 8) : null;
+      if (!id || !/^[0-9a-f]{8}$/i.test(id) || !sess.shell) return resolve(null);
+      execFile(sess.shell, ["logs", id], { windowsHide: true, timeout: 8000, env: sess.spawnEnv, maxBuffer: 1024 * 1024 }, (err, stdout) => resolve(err && !stdout ? null : stripTerminalCodes(String(stdout || ""))));
+    } catch (e) { resolve(null); }
+  });
+}
+function isWorkingNow(agentPath) {
+  try { const act = getSessionActivity(sessionCwdPath(agentPath)); return !!(act && act.working); } catch (e) { return false; }
+}
+function attachDeadEvidence(agentPath) {
+  const s = ptySessions.get(agentPath);
+  if (!s || !s.proc || s.starting) return null;
+  const ev = deliveryScreen.attachEvidence(dialogTails.get(agentPath) || "");
+  if (ev) return ev;
+  if (s.attachBlankAt && Date.now() - s.attachBlankAt < 120000) return "blank-attach";
+  // silent for a while: ask `claude logs` in the background (never blocks a send); a contradiction is remembered for 2 min
+  if (!isWorkingNow(agentPath) && deliveryScreen.attachHealth({ alive: true, now: Date.now(), attachedAt: s.attachedAt, dataBytes: s.dataBytes }) && Date.now() - (s.attachProbeAt || 0) > 60000) {
+    s.attachProbeAt = Date.now();
+    claudeLogsTail(agentPath).then((logs) => {
+      if (logs && ptySessions.get(agentPath) === s && deliveryScreen.screensDiffer(dialogTails.get(agentPath) || "", logs)) s.attachBlankAt = Date.now();
+    }).catch(() => {});
+  }
+  return null;
+}
+function screenStateFor(agentPath, snippet, fullText) {
+  const tail = dialogTails.get(agentPath) || "";
+  const s = ptySessions.get(agentPath);
+  const dead = !s || !s.proc;
+  const deadAttach = dead ? null : attachDeadEvidence(agentPath);
+  const working = isWorkingNow(agentPath);
+  const DS = deliveryScreen;
+  return {
+    cause: DS.classify(tail, snippet, { deadPty: dead, working, deadAttach }),
+    deadAttach, stacked: DS.stackedNewlines(tail, snippet),
+    holds: !dead && inputHoldsUnsentText(agentPath, snippet),
+    dialog: promptLikelyOpen(agentPath), queued: DS.isQueued(tail, snippet),
+    working: working || DS.isWorkingScreen(tail, snippet),
+    ctrlCAgain: DS.ctrlCAgainShown(tail), seen: tail.length > 0,
+    lines: DS.lastLines(tail, 25, 1500, fullText || snippet),
+  };
+}
+// v1.69.4: re-spawn ONLY the `claude attach` client of an agent (kicked / detached / dead), the bg agent keeps running. Input that
+// arrives meanwhile queues in the placeholder and is replayed into the new client once (the same mechanism as a fresh open).
+const reattaching = new Set();
+// Returns true (re-attached), "busy" (another re-attach or a starting placeholder is in flight: not a failure), "gone" (no live client
+// to replace) or false (the spawn failed; the placeholder is dropped so connection health can retry at once, and it is told).
+async function reattachClient(agentPath, reason) {
+  const live = ptySessions.get(agentPath);
+  if (reattaching.has(agentPath) || (live && live.starting)) return "busy";
+  if (!live || !live.proc || !live.agentId) return "gone";
+  reattaching.add(agentPath);
+  logStuckWatchdog(`attach: ${agentPath} path=reattach-client oldpid=${live.proc.pid} reason=${String(reason).slice(0, 200)}`);
+  try { clearInterval(live.archiveTimer); } catch (e) {}
+  ptySessions.set(agentPath, { starting: true, pendingInput: [] }); // the old client's exit then finds a placeholder and does nothing
+  killProcessTree(live.proc); // the winpty agent child too (a plain kill can leave it behind: live check on Windows)
+  dialogTails.set(agentPath, "");
+  try {
+    await startTerminalSession(agentPath, live.sessionCwd, live.cols, live.rows, live.agentId, true, false, "reattach-client");
+    return true;
+  } catch (e) {
+    dropPlaceholder(agentPath);
+    logStuckWatchdog(`attach: ${agentPath} path=reattach-client FAILED: ${e && e.message}; no session now, connection health retries`);
+    try { connHealth.onAttachFailed(agentPath, "re-attach failed: " + (e && e.message), { cols: live.cols, rows: live.rows }); } catch (e2) {}
+    return false;
+  } finally {
+    reattaching.delete(agentPath);
+  }
+}
+// Ctrl+C rule (v1.69.4): at most one per agent per 10 s, only when the CURRENT screen shows text in the input box (on an empty
+// box it prints "Press Ctrl-C again to detach" and a second one DETACHES the client), never with a dialog / working agent /
+// dashboard on screen. The gate clears the screen text so the next read shows only what the CLI repaints after the clear.
+const ctrlCAt = new Map();
+function ctrlCAllowed(agentPath, text) {
+  const s = ptySessions.get(agentPath);
+  if (!s || !s.proc || s.starting) return false;
+  if (Date.now() - (ctrlCAt.get(agentPath) || 0) < 10000) return false;
+  const tail = dialogTails.get(agentPath) || "";
+  if (deliveryScreen.attachEvidence(tail) || deliveryScreen.ctrlCAgainShown(tail) || promptLikelyOpen(agentPath) || isWorkingNow(agentPath)) return false;
+  if (!inputHoldsUnsentText(agentPath, text)) return false;
+  ctrlCAt.set(agentPath, Date.now());
+  dialogTails.set(agentPath, "");
+  return true;
+}
+ipcMain.handle("can-send-ctrlc", (event, { agentPath, text }) => ctrlCAllowed(agentPath, text));
+// true/false = the agent's newest transcript (last 1 MB) does / does not contain the message (via its longest plain
+// run of characters); null = cannot tell (nothing to look for, or no transcript). Only a transcript written since
+// `sinceMs` counts, so an identical older message does not read as delivered.
+function transcriptTailHasText(agentPath, text, sinceMs) {
+  try {
+    const runs = String(text || "").match(/[\p{L}\p{N} ]{14,}/gu) || [];
+    const needle = runs.sort((x, y) => y.length - x.length)[0];
+    if (!needle) return null;
+    const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
+    if (!nt) return null;
+    if (sinceMs && fs.statSync(nt.jsonlPath).mtimeMs < sinceMs - 1000) return false;
+    const fd = fs.openSync(nt.jsonlPath, "r");
+    try {
+      const len = Math.min(1024 * 1024, nt.size);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, nt.size - len);
+      return buf.toString("utf-8").includes(needle.trim().slice(0, 60));
+    } finally { fs.closeSync(fd); }
+  } catch (e) { return null; }
+}
+// v1.78.0: the proven verified-delivery path of Keep going (message channel first, pty typing only as a fallback, never typed twice,
+// verified in the transcript), hoisted unchanged so My Daily > Decisions reuses EXACTLY the same code. `what` only words the dry-run log.
+function deliverToAgentVerified(agentPath, text, what, deliverOpts) {
+  const kgDry = () => testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled());
+    if (kgDry()) { logStuckWatchdog(`keepgoing: DRY RUN (test mode, live agents not permitted) - would deliver ${what} to ${agentPath}`); return Promise.resolve({ delivered: false, attempts: 0, dry: true }); }
+    const HD = require("./handoffDelivery");
+    const contains = (needle) => {
+      const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
+      if (!nt) return false;
+      const len = Math.min(64 * 1024, nt.size); // M5: the marker is in the newest entries
+      const fd = fs.openSync(nt.jsonlPath, "r");
+      try { const buf = Buffer.alloc(len); fs.readSync(fd, buf, 0, len, nt.size - len); return buf.toString("utf-8").includes(needle); } finally { fs.closeSync(fd); }
+    };
+    return HD.deliver(text, {
+      channelSend: (t, o) => require("./agentChannel").send(agentPath, t, undefined, o),
+      channelCancel: (id) => require("./agentChannel").cancel(id),
+      // v1.69.2 (B-N1): typed ONCE (deliver's marker rule), never on top of a person's draft, and submitted: nudgeSubmit presses
+      // Enter (through the renderer's write chain) when the screen shows exactly this text sitting in the input box.
+      ptySend: (t) => {
+        if (!(dialogTails.get(agentPath) || "").trim()) throw Object.assign(new Error("nothing known about the screen - not typing the nudge blind"), { refused: true }); // v1.69.3 (L4)
+        if (require("./handoffLogic").draftInInputBox((dialogTails.get(agentPath) || "").slice(-600))) throw Object.assign(new Error("the input box holds text - not typing the nudge over it"), { refused: true });
+        if (promptLikelyOpen(agentPath)) throw Object.assign(new Error("a prompt is waiting for an answer - not typing the nudge"), { refused: true });
+        typeIntoPty(agentPath, t);
+      },
+      ptyQueued: () => false,
+      nudgeSubmit: async (body) => {
+        try {
+          const act = getSessionActivity(sessionCwdPath(agentPath));
+          if (act && act.working) return false;
+          if (promptLikelyOpen(agentPath) || !require("./handoffLogic").boxHoldsNudge(dialogTails.get(agentPath) || "", body)) return false; // v1.69.3 (M2): the whole nudge (unique hid) must be in the box
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("press-enter", { agentPath });
+          return true;
+        } catch (e) { return false; }
+      },
+      aborted: () => { const at = kgHandoffActive.get(norm_kg(agentPath)); return !!at && Date.now() - at < 50 * 60 * 1000; }, // a handoff started meanwhile: never land the nudge in the old session
+      transcriptHas: (m) => contains(m),
+      log: (line) => logStuckWatchdog("keepgoing: " + line),
+  }, deliverOpts || { ttlSec: 180 });
+}
+// v1.69.0 "Keep going": an agent that ends a turn announcing a next step nobody is blocking gets one short, calm nudge
+// (src/keepGoing.js decides, src/keepGoingGlue.js holds the safety rails). Rides on the 30 s tick above; reads a
+// transcript tail only when the transcript changed. Also: the fresh session after a handoff is told to continue at once.
+let keepGoing = null;
+const kgHandoffActive = new Map(); // agent -> flagged-at ms: handoff flow running in the renderer (M4); entries expire after 50 min
+const norm_kg = (p) => String(p || "").replace(/[\\/]+$/, "").toLowerCase();
+// L4: only known agent folders, and a handoff file that lives inside that agent's own folder
+function kgKnownAgent(agentPath) {
+  try { return listAgents().some((a) => norm_kg(a.path) === norm_kg(agentPath)); } catch (e) { return false; }
+}
+try {
+  const keepGoingFile = () => path.join(app.getPath("userData"), "keepgoing.json");
+  const throttleFile = () => testGuard.usageNowPath(); // v1.121.0: AGENT_DESKTOP_THROTTLE_FILE or the configured usageNowFile; null = no usage file here
+  const kgTestPaths = () => (testMode.TEST_MODE && testGuard.flowsEnabled() && process.env.AGENT_DESKTOP_KEEPGOING_AGENTS ? process.env.AGENT_DESKTOP_KEEPGOING_AGENTS.split(";").filter(Boolean) : []);
+  const kgDry = () => testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled()); // v1.77.2: also dry unless fixtures opt in (AGENT_DESKTOP_TEST_ENABLE_FLOWS=1)
+  keepGoing = require("./keepGoingGlue").create({
+    log: (line) => logStuckWatchdog(line),
+    ctx: () => featureCtx.keepGoing(), // owner name + task tool for the texts agents are sent
+    emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("keepgoing-state", snap); },
+    agents: () => {
+      const out = [];
+      for (const [p, s] of ptySessions) if (s && !s.starting && s.proc) out.push(p);
+      for (const p of kgTestPaths()) if (!out.includes(p)) out.push(p);
+      return out;
+    },
+    // M5: stat-only signature (the glue reads the tail only when it changed)
+    sig: (agentPath) => { const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath)); return nt ? nt.mtimeMs + ":" + nt.size : null; },
+    handoffActive: (agentPath) => { const at = kgHandoffActive.get(norm_kg(agentPath)); return !!at && Date.now() - at < 50 * 60 * 1000; },
+    readTail: (agentPath) => {
+      const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
+      if (!nt) return null;
+      const len = Math.min(128 * 1024, nt.size);
+      const fd = fs.openSync(nt.jsonlPath, "r");
+      try {
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, nt.size - len);
+        return { text: buf.toString("utf-8"), partialFirst: len < nt.size, sig: nt.mtimeMs + ":" + nt.size };
+      } finally { fs.closeSync(fd); }
+    },
+    isWorking: (agentPath) => { const a = getSessionActivity(sessionCwdPath(agentPath)); return !!(a && a.working); },
+    getHalt: (agentPath) => getHaltInfo(sessionCwdPath(agentPath)),
+    isPaused: (agentPath) => {
+      try { return !!readJsonFile(path.join(agentPath, "agent_config.json")).paused; } catch (e) { return false; }
+    },
+    readThrottle: () => {
+      // 2026-10-05 (the owner): when the CPU guard has set its fleet hold (CPU stayed overloaded), keep-going must not wake
+      // more agents: report HOLD, which stops every nudge (relentless mode included) until the hold clears.
+      try {
+        const SL = require("./startLimiter");
+        const hf = path.join(require("./cpuGuardInstall").defaultStateDir(), "state", "fleet_hold.json");
+        const info = SL.readHoldFile(hf);
+        if (info && SL.holdIsActive(info, Date.now(), undefined, info.mtimeMs)) return "CPUHOLD";
+      } catch (e) { /* guard files are optional */ }
+      try { const tf = throttleFile(); if (!tf) return null; const j = readJsonFile(tf); return j && j.fleetThrottle && j.fleetThrottle.state; } catch (e) { return null; }
+    },
+    readFile: (f) => fs.readFileSync(f, "utf-8").slice(0, 200000),
+    // v1.74.0: relentless mode still stops at the usage hard stop (7d or 5h >= 95%); fail-open (false) on any error
+    usageHardStop: () => {
+      try {
+        const c = require("./archive").getConfirmedRateLimits();
+        // v1.75.3: the stop level is config-driven (userData\hardstop.json {"pct": 99}); default and fallback 95. Delete the file to revert.
+        let lim = 95;
+        try { const hv = Number(JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "hardstop.json"), "utf-8").replace(/^﻿/, "")).pct); if (hv >= 80 && hv <= 100) lim = hv; } catch (e) { /* no file: 95 */ }
+        const hi = (x) => !!(x && typeof x.usedPct === "number" && x.usedPct >= lim);
+        if (c && (hi(c.sevenDay) || hi(c.fiveHour))) return true;
+        // COO review 2026-10-05: the confirmed reading is often old, so also read the usage model's own estimate
+        // (real reading + usage since) whatever its age, as long as its window has not reset. Either source >= 95% stops.
+        const um = JSON.parse(fs.readFileSync(testGuard.usageNowPath(), "utf-8").replace(/^﻿/, ""));
+        const nowMs = Date.now();
+        // 2026-10-06: the model's last real reading was 17 h old when it said 94.7% against a real ~100%. When that reading is
+        // older than 60 min the estimate is only an estimate, so it stops 3 points early (92 for a 95 stop). Missing age = stale.
+        const ageMin = um.lastReading && typeof um.lastReading.ageMin === "number" ? um.lastReading.ageMin : Infinity;
+        const modelLim = ageMin > 60 ? lim - 3 : lim;
+        return ["7d", "5h"].some((k) => {
+          const w = um.windows && um.windows[k];
+          if (!w || typeof w.usedPct !== "number" || w.usedPct < modelLim) return false;
+          if (w.resetsAt && Date.parse(w.resetsAt) < nowMs) return false;
+          return true;
+        });
+      } catch (e) { return false; }
+    },
+    storage: {
+      load: () => { try { return readJsonFile(keepGoingFile()); } catch (e) { return {}; } },
+      save: (o) => { const tmp = keepGoingFile() + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(o), "utf-8"); fs.renameSync(tmp, keepGoingFile()); },
+    },
+    // Same reliable path as the handoff prompts: message channel first (acked), pty typing only if the channel is
+    // unavailable, never typed twice, verified in the transcript. The agent is idle when this runs.
+    deliver: (agentPath, text) => deliverToAgentVerified(agentPath, text, "the nudge", { ttlSec: 180 }),
+  });
+  // v1.121.0: the heuristics that recognise "waiting for the owner" use the configured name; rebuilt when the setting changes
+  try {
+    const KG = require("./keepGoing"); const cfgMod = require("./appConfig");
+    KG.setOwner(cfgMod.get("ownerName"));
+    cfgMod.onChange(() => KG.setOwner(cfgMod.get("ownerName")));
+  } catch (e) { /* the neutral wording stays */ }
+  ipcMain.handle("keepgoing-get", () => { const c = featureCtx.keepGoing(); return Object.assign({}, keepGoing.getSettings(), { ownerName: c.ownerName, relentlessReady: !!c.ready }); }); // v1.121.0: the screen words its tooltips with the owner name and knows whether the mode can be offered
+  ipcMain.handle("keepgoing-set", (event, { agentPath, enabled }) => {
+    if (agentPath && !kgKnownAgent(agentPath)) return keepGoing.getSettings();
+    return keepGoing.setEnabled(agentPath || null, !!enabled);
+  });
+  // v1.74.0: "keep working regardless" (agentPath, or null = fleet). Only the UI can set it; never an agent or a peer message.
+  ipcMain.handle("keepgoing-set-relentless", (event, { agentPath, on }) => {
+    if (agentPath && !kgKnownAgent(agentPath)) return keepGoing.getSettings();
+    // "keep working regardless" sends agents to the task tool: switching it ON needs the tool (Setup); switching it OFF always works
+    if (on && !featureCtx.keepGoing().ready) return Object.assign({}, keepGoing.getSettings(), { ok: false, reason: "needs-setup" });
+    return keepGoing.setRelentless(agentPath || null, !!on);
+  });
+  // M4: the renderer lists the agents whose handoff flow is saving / resetting / resuming; no nudges for them
+  ipcMain.on("keepgoing-handoff-active", (event, payload) => {
+    const agents = payload && payload.agents;
+    kgHandoffActive.clear();
+    for (const a of Array.isArray(agents) ? agents : []) if (typeof a === "string") kgHandoffActive.set(norm_kg(a), Date.now());
+  });
+  // The renderer asks for the resume message of a fresh session after a handoff reset; this also sets the persisted
+  // "mission in progress" marker (the nudge counters are NOT touched by a handoff).
+  ipcMain.handle("keepgoing-resume-prompt", (event, { agentPath, archivedPath }) => {
+    try {
+      const ap = norm_kg(agentPath), fp = norm_kg(archivedPath);
+      if (!kgKnownAgent(agentPath) || !fp.startsWith(ap + "\\") && !fp.startsWith(ap + "/")) return { text: null, mission: false, error: "unknown agent or file outside the agent folder" };
+      return keepGoing.resumeText(agentPath, archivedPath);
+    } catch (e) { return { text: null, mission: false, error: e.message }; }
+  });
+} catch (e) {
+  console.error("keep-going failed to load:", e);
+  keepGoing = null;
+}
+// v1.75.0: attach (never dispatch) to the running background agents that "Keep working regardless" is ON for, so an agent the owner
+// does not open after an app restart can still be nudged. One agent per tick; see src/keepGoingAttach.js for the duplicate guard.
+let keepGoingAttach = null;
+try {
+  keepGoingAttach = require("./keepGoingAttach").create({
+    log: (line) => logStuckWatchdog(line),
+    fleet: () => { const s = keepGoing && keepGoing.getSettings(); return !!(s && s.relentless && s.relentless.fleet); },
+    relentlessAgents: () => { const s = keepGoing && keepGoing.getSettings(); return (s && s.relentless && s.relentless.agents) || []; },
+    listed: () => listAgents().map((a) => a.path),
+    attachedSet: () => new Set(ptySessions.keys()),
+    spawningSet: () => new Set(attachSpawning.keys()),
+    blocked: () => {
+      if (!keepGoing) return true;
+      if (testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled())) return true;
+      try { // the CPU guard's hold: no new work while the PC is overloaded
+        const SL = require("./startLimiter");
+        const info = SL.readHoldFile(path.join(require("./cpuGuardInstall").defaultStateDir(), "state", "fleet_hold.json"));
+        return !!(info && SL.holdIsActive(info, Date.now(), undefined, info.mtimeMs));
+      } catch (e) { return false; }
+    },
+    claim: (p) => { ptySessions.set(p, { starting: true, pendingInput: [] }); },
+    release: (p) => { const s = ptySessions.get(p); if (s && s.starting) ptySessions.delete(p); },
+    findAlive: async (p) => {
+      const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+      const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+      return findAliveBackgroundAgent(shell, spawnEnv, sessionCwdFor(p)); // find only: dispatching is deliberately not reachable from here
+    },
+    attach: async (p, agentId) => { await startTerminalSession(p, sessionCwdFor(p), 120, 30, agentId, false, false, "keepgoing-attach"); },
+  });
+} catch (e) {
+  console.error("keep-going attach failed to load:", e);
+  keepGoingAttach = null;
+}
+ipcMain.handle("get-connection-states", () => connHealth.getAll());
+// v1.86.0 demo mode: hand the session internals to the fake-session code (nothing happens with demo mode off).
+if (demo.ON) demo.attach({ ptySessions, dialogTails, connHealth, sessionCwdFor, send: (channel, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload); } });
+
+async function recoverStuckSession(agentPath, session, recoveryCount) {
+  const { sessionCwd, cols, rows } = session;
+  logStuckWatchdog(
+    `recovering agentPath=${agentPath} - no transcript growth for ${STUCK_TURN_THRESHOLD_MS / 1000}s while working+alive ` +
+      `(recovery #${recoveryCount} in current ${AUTO_RECOVERY_WINDOW_MS / 60000}min window)`
+  );
+  killProcessTree(session.proc);
+  // Same synchronous-placeholder-then-await pattern the start-terminal IPC
+  // handler uses (see its own comment) - closes the exact "no session
+  // object at all" input-loss window that pattern was built to fix, which
+  // would otherwise briefly reopen here between the kill and the new
+  // dispatch actually landing.
+  ptySessions.set(agentPath, { starting: true, pendingInput: [] });
+  try {
+    await startTerminalSession(agentPath, sessionCwd, cols, rows, undefined, false, false, "stuck-turn-recovery");
+    logStuckWatchdog(`recovery dispatched OK for agentPath=${agentPath}`);
+    try { connHealth.afterStuckRecovery(agentPath, { wasWorking: true }); } catch (e) { /* best effort */ }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const extra =
+        recoveryCount > MAX_VISIBLE_RECOVERIES_BEFORE_WARNING
+          ? ` This has now happened ${recoveryCount} times in the last ${AUTO_RECOVERY_WINDOW_MS / 60000} min - ` +
+            `if it keeps recurring, this agent's session may need a Reset Session (real /clear) or a fresh "+ New chat".`
+          : "";
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data:
+          "\r\n\x1b[33m[Agent Desktop: this session showed no progress for a while and appeared frozen - " +
+          `automatically restarted (recovery #${recoveryCount}). Known upstream Claude Code issue, see ` +
+          `agent-desktop\\CLAUDE.md.${extra}]\x1b[0m\r\n\r\n`,
+      });
+    }
+  } catch (e) {
+    ptySessions.delete(agentPath);
+    logStuckWatchdog(`recovery dispatch FAILED for agentPath=${agentPath}: ${e.message}`);
+    // v1.67.0: this used to be the end of the line - no session, no retry, messages written into the void.
+    try { connHealth.onAttachFailed(agentPath, e.message, { cols, rows }); } catch (e2) { /* best effort */ }
+  }
+}
+
+async function checkForStuckTurns() {
+  for (const [agentPath, session] of ptySessions) {
+    if (!session || session.starting || !session.proc) continue; // nothing real to check yet
+    let activity;
+    try {
+      activity = getSessionActivity(session.sessionCwd);
+    } catch (e) {
+      continue; // never let a read failure here affect anything else
+    }
+    if (!activity || !activity.working) {
+      // Not working (or the pid-liveness check inside getSessionActivity
+      // already caught it as dead) - nothing to watch right now.
+      session.stuckWatch = null;
+      continue;
+    }
+
+    const mtimeMs = getLatestTranscriptMtimeMs(session.sessionCwd);
+    if (mtimeMs == null) continue;
+
+    if (!session.stuckWatch || session.stuckWatch.mtimeMs !== mtimeMs) {
+      // Either the first time we've seen this agent working, or real new
+      // content landed since the last check - (re)start the clock.
+      session.stuckWatch = { mtimeMs, sinceTs: Date.now() };
+      continue;
+    }
+
+    // 2026-10-02: a huge session needs longer to answer after a (re)start - loading a 16 MB /
+    // 700K-token conversation and making the first API call can itself take minutes with no
+    // transcript growth. At a flat 3 min the watchdog killed Trade Show every ~4-6 min
+    // (05:54-06:19 UTC, recoveries #2-#4 repeating), each restart re-reading the whole session,
+    // so the wedge it was curing could be the loop it created. +1 min per 4 MB, capped at 10 min.
+    const sizeBytes = getLatestTranscriptSizeBytes(session.sessionCwd) || 0;
+    const thresholdMs = Math.min(10 * 60 * 1000, STUCK_TURN_THRESHOLD_MS + Math.floor(sizeBytes / (4 * 1024 * 1024)) * 60 * 1000);
+    const stuckForMs = Date.now() - session.stuckWatch.sinceTs;
+    if (stuckForMs < thresholdMs) continue;
+
+    const now = Date.now();
+    let tracking = autoRecoveryTracking.get(agentPath);
+    if (!tracking || now - tracking.windowStart > AUTO_RECOVERY_WINDOW_MS) {
+      tracking = { windowStart: now, count: 0 };
+      autoRecoveryTracking.set(agentPath, tracking);
+    }
+    tracking.count++;
+    session.stuckWatch = null;
+    // No cap: always recover. STUCK_TURN_THRESHOLD_MS already bounds this to
+    // at most one kill/redispatch roughly every 3 minutes per agent, so even
+    // a persistently-doomed session just costs a bounded, visible retry
+    // cadence rather than being silently abandoned (see 2026-09-17 note above).
+    await recoverStuckSession(agentPath, session, tracking.count);
+  }
+}
+
+// --- rate-limit halt watchdog ----------------------------------------------
+// Built 2026-09-17 after the exact gap it fixes: the Trade Show Agent hit the
+// account's shared 5-hour usage window mid-turn (answering a plain "Are you
+// working on it?"), the CLI wrote back a synthetic rate_limit halt, and
+// nothing surfaced it anywhere - no notification, no badge, just a session
+// that looked "idle" (correctly, per getSessionActivity's rules - the turn
+// really did stop) with no way to tell that from ordinary rest. On the
+// desktop Claude.ai app a session limit shows as a visible message; Agent
+// Desktop had no equivalent at all. the owner's ask was explicit: surface it, and
+// don't require a human to notice and retype something once the window
+// clears - auto-continue on its own.
+//
+// Distinguishes a *halt* from a *stuck* turn (the watchdog above): a stuck
+// turn is a frozen process that never finished; a halt is a turn that
+// finished normally, just with an error as its content. Same 30s cadence,
+// same ptySessions scope, but reads getHaltInfo() instead of transcript
+// mtime, and reacts by notifying + scheduling a resume rather than
+// kill+redispatch (killing here would be pointless - the process isn't
+// frozen, it's correctly idle waiting for the window to clear).
+//
+// Wait past the reported resetsAt rather than dispatching exactly on it -
+// Anthropic's own reset boundary is a rolling window edge, not a hard
+// instant guarantee the very next call succeeds.
+const RATE_LIMIT_AUTO_CONTINUE_BUFFER_MS = 90 * 1000;
+const AUTO_CONTINUE_PROMPT =
+  "The Claude usage limit that stopped this turn has now reset - please continue from exactly where you left off.";
+
+// Transient server errors (2026-09-22). A 500 from Anthropic's API ends the
+// turn exactly like a rate limit does, but nothing resumed it: the
+// auto-continue above waits for a `resetsAt`, and a 5xx has none, so the turn
+// simply sat dead. the owner's message that morning was never answered and he only
+// found out because he asked why the agent had "reached its limit".
+//
+// Retried rather than just reported because a 5xx usually succeeds on the next
+// attempt - but deliberately narrow: ONLY kind==="server_error". An auth
+// failure retries forever without a re-login, a rate limit needs its window,
+// and an unrecognised error may be permanently malformed, so none of those are
+// retried here.
+const SERVER_ERROR_RETRY_DELAY_MS = 45 * 1000;   // let the blip pass first
+const SERVER_ERROR_RETRY_PROMPT =
+  "The previous turn stopped on a transient API error before you could reply - " +
+  "please carry on from exactly where you left off.";
+
+// Loop protection, and the reason this is not just a counter on haltTracking.
+// haltTracking is keyed by the halt entry's TIMESTAMP, so if a retry itself
+// fails with a fresh 500 that is a new timestamp, a new tracking object, and a
+// counter reset - which would retry forever during a real outage. This budget
+// is keyed by agent and survives new halts; it is cleared only when the agent
+// actually completes a turn (see checkForHaltedTurns).
+const SERVER_ERROR_RETRY_WINDOW_MS = 30 * 60 * 1000;
+const SERVER_ERROR_MAX_RETRIES = 3;
+const serverRetryBudget = new Map(); // agentPath -> { count, since }
+
+// haltTracking is in-memory, so after an app restart every existing halt looks
+// new and would be retried ~45s later. Resuming this morning's dead turn is
+// exactly what we want; silently resurrecting a three-day-old one across every
+// agent at once is not. Past this age the banner still explains the error and
+// invites a resend - it just is not done automatically.
+const SERVER_ERROR_MAX_HALT_AGE_MS = 2 * 60 * 60 * 1000;
+
+function takeServerRetryBudget(agentPath) {
+  const now = Date.now();
+  let b = serverRetryBudget.get(agentPath);
+  if (!b || now - b.since > SERVER_ERROR_RETRY_WINDOW_MS) {
+    b = { count: 0, since: now };
+    serverRetryBudget.set(agentPath, b);
+  }
+  if (b.count >= SERVER_ERROR_MAX_RETRIES) return 0;
+  b.count += 1;
+  return b.count;
+}
+
+// agentPath -> { timestamp (of the halt entry being tracked), notified, autoContinued }
+// Keyed off the halt entry's own timestamp so a NEW halt (a fresh rate-limit
+// hit after a successful resume) is treated as a fresh event needing its own
+// notification/auto-continue, not swallowed as "already handled."
+const haltTracking = new Map();
+
+function notifyHalt(agentPath, halt) {
+  const agentName = path.basename(agentPath);
+  if (halt.error === "authentication_failed") {
+    try {
+      if (Notification.isSupported()) new Notification({ title: `${agentName}: Claude login expired`, body: "Not a usage limit. Run `claude /login` in a terminal, then Restart Session." }).show();
+    } catch (e) {}
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", { agentPath, data: "\r\n\x1b[31m[Agent Desktop: this session's Claude login expired (authentication_failed) - NOT a usage limit. Run `claude /login` in a terminal, then Restart Session.]\x1b[0m\r\n\r\n" });
+    }
+    return;
+  }
+  if (halt.kind === "server_error" && halt.refreshRace) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data: `\r\n\x1b[33m[Agent Desktop: Claude's login was being refreshed by another agent - NOT a usage limit. Temporary.]\x1b[0m\r\n\r\n`,
+      });
+    }
+    return;
+  }
+  if (halt.kind === "server_error") {
+    // Not a quota - do not say "usage limit" here either (the banner used to,
+    // and it sent the owner looking for a reset time that did not exist).
+    try {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: `${agentName}: API error ${halt.apiErrorStatus || "5xx"}`,
+          body: "Not a usage limit. Usually transient.",
+        }).show();
+      }
+    } catch (e) {}
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // Deliberately does not promise a retry: this fires the moment the halt
+      // is seen, before the age check and the retry budget have had their say.
+      // The retry announces itself separately when it actually happens.
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data:
+          `\r\n\x1b[33m[Agent Desktop: this turn stopped on an API error ` +
+          `(${halt.apiErrorStatus || "5xx"}) - NOT a usage limit. Usually transient.]\x1b[0m\r\n\r\n`,
+      });
+    }
+    return;
+  }
+  const resetTime = halt.resetsAt ? new Date(halt.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : null;
+  const resetText = resetTime ? `auto-resumes around ${resetTime}` : "no reset time reported - will need a manual message";
+
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title: `${agentName}: usage limit hit`,
+        body: `${halt.rateLimitType || "Usage"} limit reached - ${resetText}.`,
+      });
+      n.on("click", () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+      n.show();
+    }
+  } catch (e) {
+    /* a notification failure must never break the watchdog itself */
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("terminal-data", {
+      agentPath,
+      data:
+        `\r\n\x1b[33m[Agent Desktop: this session hit its Claude usage limit (${halt.rateLimitType || "rate_limit"}) and stopped. ` +
+        (resetTime ? `It will auto-continue once the window resets around ${resetTime}.]` : `No reset time was reported - send it a message to continue.]`) +
+        `\x1b[0m\r\n\r\n`,
+    });
+  }
+}
+
+// Mirrors renderer.js's submitToAgent() exactly, including its own hard-won
+// finding (see that function's comment): writing a composed message and its
+// trailing "\r" as one fast synchronous pty write gets misread by Claude
+// Code's CLI as pasted content rather than typed-text-then-Enter and never
+// actually submits. The ~80ms gap before the Enter keystroke is what makes
+// real submission happen.
+function autoContinueSession(agentPath, session, halt) {
+  logStuckWatchdog(
+    `auto-continuing agentPath=${agentPath} after rate-limit reset (resetsAt=${halt.resetsAt ? new Date(halt.resetsAt).toISOString() : "unknown"})`
+  );
+  try {
+    session.proc.write(AUTO_CONTINUE_PROMPT);
+    setTimeout(() => {
+      try {
+        session.proc.write("\r");
+      } catch (e) {
+        logStuckWatchdog(`auto-continue Enter write FAILED for agentPath=${agentPath}: ${e.message}`);
+      }
+    }, 80);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data: `\r\n\x1b[36m[Agent Desktop: usage window reset - automatically resuming this session.]\x1b[0m\r\n\r\n`,
+      });
+    }
+  } catch (e) {
+    logStuckWatchdog(`auto-continue write FAILED for agentPath=${agentPath}: ${e.message}`);
+  }
+}
+
+// Same pty-write shape as autoContinueSession() above, including the 80ms gap
+// before Enter that makes the CLI treat this as typed input rather than a
+// paste. `attempt` is only for the log and the on-screen notice - the budget
+// itself lives in serverRetryBudget.
+function retryAfterServerError(agentPath, session, halt, attempt) {
+  logStuckWatchdog(
+    `retrying agentPath=${agentPath} after API ${halt.apiErrorStatus || "5xx"} ` +
+      `(attempt ${attempt}/${SERVER_ERROR_MAX_RETRIES}, halt at ${halt.timestamp})`
+  );
+  try {
+    session.proc.write(SERVER_ERROR_RETRY_PROMPT);
+    setTimeout(() => {
+      try {
+        session.proc.write("\r");
+      } catch (e) {
+        logStuckWatchdog(`server-error retry Enter write FAILED for agentPath=${agentPath}: ${e.message}`);
+      }
+    }, 80);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data:
+          `\r\n\x1b[36m[Agent Desktop: retrying after the API error ` +
+          `(attempt ${attempt} of ${SERVER_ERROR_MAX_RETRIES}).]\x1b[0m\r\n\r\n`,
+      });
+    }
+  } catch (e) {
+    logStuckWatchdog(`server-error retry write FAILED for agentPath=${agentPath}: ${e.message}`);
+  }
+}
+
+async function checkForHaltedTurns() {
+  for (const [agentPath, session] of ptySessions) {
+    if (!session || session.starting || !session.proc) continue;
+
+    let activity;
+    try {
+      activity = getSessionActivity(session.sessionCwd);
+    } catch (e) {
+      continue;
+    }
+    if (activity && activity.working) {
+      // A fresh turn is running - any halt tracked before this is stale.
+      haltTracking.delete(agentPath);
+      continue;
+    }
+
+    let halt;
+    try {
+      halt = getHaltInfo(session.sessionCwd);
+    } catch (e) {
+      continue;
+    }
+    if (!halt) {
+      // No halt is the end of the story: the agent replied normally (or the
+      // user sent something new), so a past run of server errors is over and
+      // its retry budget should not count against a future, unrelated one.
+      haltTracking.delete(agentPath);
+      serverRetryBudget.delete(agentPath);
+      continue;
+    }
+
+    let tracking = haltTracking.get(agentPath);
+    if (!tracking || tracking.timestamp !== halt.timestamp) {
+      tracking = { timestamp: halt.timestamp, notified: false, autoContinued: false, firstSeenAt: Date.now() };
+      haltTracking.set(agentPath, tracking);
+    }
+
+    if (!tracking.notified) {
+      tracking.notified = true;
+      logStuckWatchdog(
+        `halt detected agentPath=${agentPath} error=${halt.error} rateLimitType=${halt.rateLimitType} ` +
+          `resetsAt=${halt.resetsAt ? new Date(halt.resetsAt).toISOString() : "unknown"}`
+      );
+      notifyHalt(agentPath, halt);
+    }
+
+    // Transient API error: wait out the blip, then resend once. Guarded by
+    // BOTH tracking.autoContinued (one retry per halt entry) and
+    // serverRetryBudget (a cap per agent that survives new halt entries, so a
+    // real outage stops instead of retrying forever - see its comment above).
+    if (halt.kind === "server_error") {
+      const haltAge = halt.timestamp ? Date.now() - Date.parse(halt.timestamp) : 0;
+      if (haltAge > SERVER_ERROR_MAX_HALT_AGE_MS) {
+        tracking.autoContinued = true; // too old to resume on its own; banner still explains it
+      }
+      if (!tracking.autoContinued && Date.now() - tracking.firstSeenAt >= SERVER_ERROR_RETRY_DELAY_MS) {
+        tracking.autoContinued = true;
+        const attempt = takeServerRetryBudget(agentPath);
+        if (attempt) {
+          retryAfterServerError(agentPath, session, halt, attempt);
+        } else {
+          logStuckWatchdog(
+            `NOT retrying agentPath=${agentPath} - ${SERVER_ERROR_MAX_RETRIES} API-error retries already used ` +
+              `in the last ${SERVER_ERROR_RETRY_WINDOW_MS / 60000} minutes; leaving it for the owner`
+          );
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("terminal-data", {
+              agentPath,
+              data:
+                `\r\n\x1b[31m[Agent Desktop: the API keeps erroring - stopping automatic retries after ` +
+                `${SERVER_ERROR_MAX_RETRIES}. Check https://status.claude.com, then send your message again.]\x1b[0m\r\n\r\n`,
+            });
+          }
+        }
+      }
+      continue;
+    }
+
+    if (!tracking.autoContinued && halt.resetsAt && Date.now() >= halt.resetsAt + RATE_LIMIT_AUTO_CONTINUE_BUFFER_MS) {
+      tracking.autoContinued = true;
+      autoContinueSession(agentPath, session, halt);
+    }
+  }
+}
+// --- end rate-limit halt watchdog -------------------------------------------
+// --- end native background-agent backend helpers ---------------------------
+// Shared by proc.onExit() below (the normal path) and the terminal-input/
+// terminal-resize catch blocks further down (the "we only found out the
+// process was dead because touching it just threw" path) - factored out so
+// a dead process gets cleaned up and the renderer notified immediately on
+// whichever signal arrives first, rather than only reacting to onExit and
+// potentially sitting silent (no crash, but also no "[session ended]"
+// notice) if onExit is ever slow to fire relative to a failed write/resize.
+// Safe to call twice for the same agentPath - ptySessions.delete() makes
+// the second call's ptySessions.get() return undefined and no-op.
+//
+// 2026-08-21: now checks whether the underlying background agent is still
+// alive before declaring the session dead - see the native background-agent
+// backend comment above. Attempts exactly one silent re-attach; if that
+// itself fails or exits immediately, falls through to the normal notice
+// rather than risking a retry loop.
+async function handlePtyExit(agentPath, isReattachAttempt = false) {
+  const session = ptySessions.get(agentPath);
+  if (!session) return;
+  // A "starting" placeholder (see start-terminal below) isn't a dead session
+  // to tear down - it's one that hasn't finished being created yet. A write/
+  // resize landing in that brief dispatch window would otherwise throw on
+  // session.proc being undefined, land here, and delete the placeholder out
+  // from under the in-flight startTerminalSession call that's about to fill
+  // it in - producing a false "[session ended]" notice for a session that
+  // never actually started. Nothing to clean up here; just drop the signal.
+  if (session.starting) return;
+  clearInterval(session.archiveTimer);
+  try {
+    syncArchive(agentPath, session.sessionCwd);
+  } catch (e) {}
+  ptySessions.delete(agentPath);
+
+  let failReason = "the attach process ended";
+  if (!isReattachAttempt && session.shell && session.spawnEnv) {
+    const stillAlive = await findAliveBackgroundAgent(session.shell, session.spawnEnv, session.sessionCwd).catch(() => null);
+    if (stillAlive) {
+      try {
+        await startTerminalSession(agentPath, session.sessionCwd, session.cols, session.rows, stillAlive.id, /* isReattach */ true, false, "pty-exit-silent-reattach");
+        return; // reconnected silently, don't notify the renderer
+      } catch (e) {
+        failReason = e && e.message ? e.message : String(e);
+        /* fall through to the reconnect-with-backoff takeover / normal "session ended" notice below */
+      }
+    }
+  }
+
+  // v1.67.0: keep trying instead of leaving a dead end. When the connection-health module takes over, the
+  // renderer is told through "connection-state" (not terminal-exit), so no misleading "restart the app" notice.
+  try {
+    if (connHealth.onAttachFailed(agentPath, failReason, { cols: session.cols, rows: session.rows })) return;
+  } catch (e) { /* fall through to the old notice */ }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("terminal-exit", { agentPath });
+  }
+}
+
+// Reads an agent's chosen display name from its agent_config.json, falling
+// back to the folder name (the app's oldest agents predate that file - see
+// agents.js's loadAgentConfig for the same fallback). Kept local rather than
+// importing from agents.js since only the one field is needed here.
+function agentDisplayName(agentPath) {
+  try {
+    const cfg = readJsonFile(path.join(agentPath, "agent_config.json"));
+    if (cfg && typeof cfg.display_name === "string" && cfg.display_name.trim()) {
+      return cfg.display_name.trim();
+    }
+  } catch (e) {
+    /* no/unreadable config - fall through to the folder name */
+  }
+  return path.basename(agentPath);
+}
+
+// When a brand-new background conversation is dispatched for an agent, give
+// it a recognizable title right away - "<Agent name> · <YYYY-MM-DD>" -
+// instead of leaving it to Claude Code's own auto-generated (and often
+// stale) name. This is the title the Chats panel shows and, because this
+// runs immediately after registerRemoteControl() made this the live Remote
+// Control session, the one claude.ai/code's "Recents" and the mobile app
+// read too - so a roster of many agents stays identifiable there without
+// renaming each by hand. Best-effort and silent: any failure (or a title
+// the user/CLI already set) just leaves the conversation as-is; it never
+// blocks the session opening. The <sessionId>.jsonl file exists by now
+// because registerRemoteControl() already wrote to the session, but a short
+// retry covers the write still settling on disk.
+async function autoTitleFreshConversation(agentPath, sessionCwd) {
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const current = getCurrentConversation(sessionCwd);
+      if (current && current.sessionId) {
+        // Never clobber a title someone deliberately set (a user rename, or
+        // a resumed conversation that already carried one).
+        if (current.titleSource === "custom") return;
+        const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, tz-stable enough
+        setConversationTitle(sessionCwd, current.sessionId, `${agentDisplayName(agentPath)} · ${stamp}`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  } catch (e) {
+    /* best-effort - a missing auto-title is not worth surfacing or retrying harder */
+  }
+}
+
+// Core session-connection logic, shared by the start-terminal IPC handler
+// (a fresh open) and handlePtyExit's own silent-reattach path above. When
+// knownAgentId is omitted, finds or dispatches a background agent for this
+// cwd first; when provided (the reattach path), skips straight to attaching
+// since the caller already confirmed it's alive.
+// v1.69.4: the ONE place that spawns `claude attach`. Two attaches to the same session kick each other (the older client exits and
+// later writes into it reach nothing), so a second concurrent spawn for the same agent is refused here; pathName says who asked.
+const attachSpawning = new Map(); // agentPath -> pathName of the attach being spawned
+async function startTerminalSession(agentPath, sessionCwd, cols, rows, knownAgentId, isReattachAttempt = false, isLoginRecoveryAttempt = false, pathName = "unnamed") {
+  if (attachSpawning.has(agentPath)) throw new Error("[attach stage] another attach for this agent is already starting (" + attachSpawning.get(agentPath) + ", asked by " + pathName + ")");
+  attachSpawning.set(agentPath, pathName);
+  try {
+    return await startTerminalSessionInner(agentPath, sessionCwd, cols, rows, knownAgentId, isReattachAttempt, isLoginRecoveryAttempt, pathName);
+  } finally {
+    attachSpawning.delete(agentPath);
+  }
+}
+async function startTerminalSessionInner(agentPath, sessionCwd, cols, rows, knownAgentId, isReattachAttempt = false, isLoginRecoveryAttempt = false, pathName = "unnamed") {
+  const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+  // See the CLAUDE_CODE_FORCE_SESSION_PERSISTENCE comment further up this
+  // file - same reasoning applies to background-dispatched agents.
+  const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+
+  let agentId;
+  let freshlyDispatched = false;
+  try {
+    if (knownAgentId) {
+      agentId = knownAgentId;
+    } else {
+      const found = await findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwd);
+      agentId = found.id;
+      freshlyDispatched = found.freshlyDispatched;
+    }
+  } catch (e) {
+    throw new Error("[find/dispatch stage] " + e.message);
+  }
+
+  let proc;
+  try {
+    if (testMode.TEST_MODE) {
+      // Sandbox-only fault injection: a file holding N makes the next N attach attempts time out.
+      try {
+        const ff = testFaultFile("fail-attach");
+        const n = parseInt(fs.readFileSync(ff, "utf-8"), 10) || 0;
+        if (n > 0) { fs.writeFileSync(ff, String(n - 1)); throw new Error("Error launching WinPTY agent: agent timed out (injected by sandbox test)"); }
+      } catch (e) { if (/injected/.test(e.message)) throw e; }
+    }
+    proc = await spawnPtyWithRetry(shell, ["attach", agentId], {
+      name: "xterm-color",
+      cols: cols || 80,
+      rows: rows || 30,
+      cwd: sessionCwd,
+      env: spawnEnv,
+    });
+  } catch (e) {
+    throw new Error("[attach stage, agentId=" + agentId + "] " + e.message);
+  }
+
+  // See the LOGIN_EXPIRED_RE comment further up this file. Skipped on a
+  // recovery attempt's own retry so a genuinely broken credential (not
+  // just one stale session) can't loop forever redispatching new sessions
+  // - if the fresh session hits the same wall, the user sees the real
+  // "Not logged in" prompt directly instead of this silently retrying.
+  let peekTail = ""; // what the attach drew during the peek: becomes the first screen text (tracked screen was empty after a re-attach)
+  let peekBytes = 0; // v1.69.4: size of what the attach drew during the peek (liveness seed); declared outside the block below
+  if (!isLoginRecoveryAttempt) {
+    let peekBuffer = "";
+    let peekProcExited = false;
+    const peekDataDisposable = proc.onData((d) => {
+      peekBuffer += d;
+    });
+    const peekExitDisposable = proc.onExit(() => {
+      peekProcExited = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, LOGIN_EXPIRED_PEEK_MS));
+    peekDataDisposable.dispose();
+    peekExitDisposable.dispose();
+
+    if (LOGIN_EXPIRED_RE.test(stripTerminalCodes(peekBuffer))) {
+      try {
+        proc.kill();
+      } catch (e) {}
+      try {
+        // A short override, not the default 90s: this runs synchronously on
+        // the interactive "open this agent's tab" path (startTerminalSession
+        // is called straight from the start-terminal IPC handler, and the
+        // renderer shows no spinner/cancel while it awaits), so the normal
+        // <2s `claude stop` case must stay fast - 5s matches the bound
+        // stopBackgroundAgentForCwd's own outer race already uses for the
+        // same command. The surrounding catch only protects against a thrown
+        // error, not a hang, so without a timeout of some kind a stuck
+        // `claude stop` would block this whole login-recovery path forever
+        // instead of falling through to the fresh dispatch below.
+        // Known tradeoff, not fully closed here: if the stop times out
+        // because it's genuinely just slow rather than hung, the dispatch
+        // below can still fire while the old process is alive, leaving two
+        // live `claude --bg` daemons for the same cwd - the same
+        // orphaned-process class this file works to prevent elsewhere.
+        // Properly closing that needs an alive-check before dispatching, not
+        // just a shorter timeout; tracked as a follow-up, not blocking this
+        // fix (the alternative - hanging forever - is strictly worse).
+        await stopClaudeAgent(shell, agentId, spawnEnv, { timeoutMs: 5000 });
+      } catch (e) {}
+      const freshAgentId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { urgent: true });
+      return startTerminalSessionInner(agentPath, sessionCwd, cols, rows, freshAgentId, isReattachAttempt, /* isLoginRecoveryAttempt */ true, pathName + "+login-recovery");
+    }
+
+    // See the RESUME_DIALOG_RE comment further up this file. Unlike the
+    // login-expiry case, this doesn't need a fresh session - the existing
+    // one just needs its already-open menu answered. Re-opens the data
+    // listener (the peek one above was already disposed) to capture the
+    // resumed session's own redraw so it isn't lost the same way the
+    // pre-dialog output below is deliberately preserved.
+    if (RESUME_DIALOG_RE.test(stripTerminalCodes(peekBuffer))) {
+      let postDialogBuffer = "";
+      const postDialogDisposable = proc.onData((d) => {
+        postDialogBuffer += d;
+      });
+      proc.write("3");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      proc.write("\r");
+      await new Promise((resolve) => setTimeout(resolve, RESUME_DIALOG_PEEK_MS));
+      postDialogDisposable.dispose();
+      peekBuffer += postDialogBuffer;
+    }
+
+    // node-pty's onExit doesn't fire retroactively for a listener attached
+    // after the event already happened, so if the process died during our
+    // own peek window (unrelated to the login-expiry check above), the
+    // permanent proc.onExit() registered further down would never see it -
+    // this session would sit in ptySessions as a phantom "still open"
+    // placeholder forever, permanently blocking this agent from ever
+    // starting again (start-terminal's own ptySessions.has() guard would
+    // keep returning alreadyRunning for it). Throwing here instead routes
+    // through the exact same, already-correct cleanup both of this
+    // function's callers already have: start-terminal's IPC handler
+    // deletes the placeholder and surfaces the error, and handlePtyExit's
+    // own silent-reattach call falls through to its normal "[session
+    // ended]" notice.
+    if (peekProcExited) {
+      throw new Error("[attach stage, agentId=" + agentId + "] process exited during startup");
+    }
+    // Nothing anomalous - forward what we buffered so the user doesn't
+    // lose the first couple seconds of output (the "Welcome back" banner,
+    // etc.) that arrived while we were peeking at it instead of streaming
+    // it through live.
+    peekBytes = peekBuffer.length;
+    peekTail = stripTerminalCodes(peekBuffer).slice(-1500);
+    if (peekBuffer && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", { agentPath, data: peekBuffer });
+    }
+
+    // Only for a genuinely new bg process - see registerRemoteControl()'s
+    // own comment above for why reattaching to one that's still alive is
+    // deliberately skipped (already registered when it was first dispatched).
+    if (freshlyDispatched) {
+      await registerRemoteControl(proc);
+      // Name this fresh conversation after the agent so it's identifiable in
+      // the Chats panel and (via the Remote Control registration just done)
+      // in claude.ai/code's "Recents" / the mobile app. Awaited so its own
+      // JSONL append can't race the permanent onData listener / archive tick
+      // attached below, but it's fully self-contained and never throws.
+      await autoTitleFreshConversation(agentPath, sessionCwd);
+    }
+  }
+
+  // Anything typed while this was still a "starting" placeholder (see the
+  // terminal-input handler's own comment) needs replaying once the real
+  // proc exists - but the pty object existing isn't the same as the actual
+  // Claude Code process behind it being ready to read stdin. Confirmed
+  // directly, live, twice: flushing right after pty.spawn() returns loses
+  // the input every time, even staggered 80ms apart - the CLI is still mid-
+  // boot (rendering its "Welcome back" banner takes real seconds) and isn't
+  // listening yet, so the write lands before anything is there to read it.
+  // Gating the flush on the pty's own output actually going quiet - the
+  // same idle-detection renderer.js already uses (IDLE_TIMEOUT_MS there) to
+  // know when a *running* session is done responding and ready for the next
+  // message - reuses that same signal for "ready for the first message."
+  const FLUSH_IDLE_MS = 900;
+  const priorSession = ptySessions.get(agentPath);
+  const pendingInput = priorSession && priorSession.pendingInput;
+  let flushIdleTimer = null;
+
+  function flushPendingInput() {
+    if (!pendingInput || !pendingInput.length) return;
+    // splice() both copies the queued items AND empties pendingInput in
+    // place (it's a reference into the placeholder's own array) - without
+    // this, the queue was never actually drained: proc.onData() below fires
+    // again on the CLI's very next output chunk, and since a streaming
+    // response has output gaps >= FLUSH_IDLE_MS constantly (between tokens,
+    // around tool calls), the idle timer kept re-firing and replaying the
+    // same already-sent input over and over. Confirmed directly, live: one
+    // Enter press became 53 duplicate submissions of the same message
+    // before this fix, visible as 53 near-identical entries in the
+    // session's own JSONL transcript.
+    const toSend = pendingInput.splice(0, pendingInput.length);
+    // v1.67.3: same gaps as the renderer's submitToAgent (30 ms before the paste end, 200 ms before Enter); the old
+    // flat 80 ms let a slow CLI read the replayed Enter as part of the paste, so the next message merged into it
+    let at = 0;
+    toSend.forEach((data, i) => {
+      const myAt = at;
+      at += /^.?\[200~/.test(String(data)) || /\[200~/.test(String(data)) ? 30 : /\[201~/.test(String(data)) ? 200 : 80;
+      // Still staggered, not blasted as one synchronous burst - see
+      // submitToAgent() in renderer.js for why a composed message and its
+      // trailing "\r" must land as two separately-timed writes. Each
+      // individual item is itself now chunked if long - see
+      // writeToPtyChunked()'s own comment for why a large single write can
+      // arrive at the CLI garbled or truncated.
+      setTimeout(() => writeToPtyChunked(proc, agentPath, data), myAt);
+    });
+    // v1.67.3: a replayed message whose Enter was swallowed (CLI still booting) would sit in the input box and
+    // merge with the next message. Two seconds after the replay: if the screen still shows the last message
+    // text and no prompt/dialog is open, press Enter once (an empty prompt ignores it).
+    const lastMsg = toSend.filter((d) => /\[200~/.test(String(d))).pop();
+    if (lastMsg) {
+      setTimeout(() => {
+        try {
+          const strip = (x) => String(x).replace(/\s+/g, "");
+          const want = strip(String(lastMsg).replace(/^.*\[200~/, "")).slice(-30);
+          const tail = strip(dialogTails.get(agentPath) || "");
+          if (want.length >= 3 && !promptLikelyOpen(agentPath) && tail.includes(want) && !/Presstoeditqueuedmessages/.test(tail)) {
+            logStuckWatchdog(`replay: ${agentPath} replayed message still shown in the input box - pressing Enter once`);
+            writeToPtyChunked(proc, agentPath, "\r");
+          }
+        } catch (e) { /* best effort */ }
+      }, at + 2000);
+    }
+  }
+
+  // Unconditionally arm one flush attempt up front, not just reactively
+  // inside proc.onData() below. Found 2026-08-23 while investigating a
+  // "message sent right after opening an agent just vanishes, no error, no
+  // trace anywhere" report: anything typed during the login/resume-dialog
+  // peek above (lines ~848-919) is already sitting in this same
+  // pendingInput array by the time we get here, but the peek's own onData
+  // listener was already disposed before this point - it never reaches the
+  // one below. If this attach's entire redraw already happened during that
+  // peek window (the common case for reattaching to an agent that's just
+  // sitting idle with nothing new to draw), proc.onData() may never fire
+  // again at all, so flushIdleTimer would never get armed and this input
+  // would sit queued forever with zero feedback - never even reaching the
+  // pty, so it never shows up in the CLI's own JSONL transcript either.
+  // This timer covers that silent case; the onData-driven rearm below still
+  // wins for a genuinely busy attach, pushing the flush out until real
+  // output actually goes quiet instead of writing into a mid-redraw banner.
+  if (pendingInput && pendingInput.length) {
+    flushIdleTimer = setTimeout(flushPendingInput, FLUSH_IDLE_MS);
+  }
+
+  proc.onData((data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", { agentPath, data });
+    }
+    try { trackDialog(agentPath, data); } catch (e) { /* best effort */ }
+    { const ps = ptySessions.get(agentPath); if (ps && ps.proc === proc) ps.dataBytes = (ps.dataBytes || 0) + data.length; } // v1.69.4 liveness
+    if (pendingInput && pendingInput.length) {
+      clearTimeout(flushIdleTimer);
+      flushIdleTimer = setTimeout(flushPendingInput, FLUSH_IDLE_MS);
+    }
+  });
+
+  // Synced from Claude Code's own structured JSONL transcript, not the raw
+  // terminal stream - periodically while the session runs (so long sessions
+  // are progressively archived, not lost on a crash) and once more on exit.
+  const archiveTimer = setInterval(() => {
+    try {
+      syncArchive(agentPath, sessionCwd);
+    } catch (e) {}
+  }, ARCHIVE_SYNC_INTERVAL_MS);
+
+  proc.onExit(() => {
+    clearTimeout(flushIdleTimer);
+    const cur = ptySessions.get(agentPath);
+    if (cur && cur.proc && cur.proc !== proc) return; // replaced by a newer attach client: not this one's exit to handle
+    logStuckWatchdog(`attach: ${agentPath} client pid=${proc.pid} EXITED (path=${pathName})`);
+    handlePtyExit(agentPath, isReattachAttempt);
+  });
+
+  // never two attach clients for one agent: a live older client is killed first (it would be kicked anyway)
+  { const ex = ptySessions.get(agentPath); if (ex && ex.proc && !ex.starting && ex.proc !== proc) { try { clearInterval(ex.archiveTimer); ex.proc.kill(); } catch (e) {} logStuckWatchdog(`attach: ${agentPath} path=${pathName} killed an older attach client pid=${ex.proc.pid}`); } }
+  dialogTails.set(agentPath, peekTail);
+  logStuckWatchdog(`attach: ${agentPath} path=${pathName} pid=${proc.pid} agentId=${agentId}`);
+  ptySessions.set(agentPath, { proc, sessionCwd, archiveTimer, shell, spawnEnv, agentId, cols, rows, attachedAt: Date.now(), dataBytes: peekBytes });
+  connHealth.onConnected(agentPath, { delayMs: pendingInput && pendingInput.length ? 5000 : 0 });
+}
+
+ipcMain.handle("start-terminal", async (event, { agentPath, cols, rows, knownAgentId }) => {
+  if (ptySessions.has(agentPath)) {
+    return { alreadyRunning: true };
+  }
+  // Found by using the sandbox for the first time (2026-09-22): gating the
+  // keep-alive sweep was not enough. Opening an agent's tab reaches dispatch
+  // by a completely different path, so a single click on a fixture agent
+  // would have started a real `claude --bg` against a fake folder and spent
+  // real tokens - in the tier that is supposed to spend nothing.
+  if (!testMode.liveAgentsPermitted()) {
+    const why = testMode.budgetExhausted()
+      ? "the sandbox token budget is spent - ask the owner of this app before raising it"
+      : "this sandbox runs on fixtures only; relaunch with `Start-TestDesktop.bat live` to allow a real agent";
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data: `\r\n\x1b[33m[Agent Desktop SANDBOX: not starting a Claude process - ${why}.\r\n` +
+              `The transcript below is a fixture, so the UI still renders exactly as it would for a real agent.]\x1b[0m\r\n\r\n`,
+      });
+    }
+    return { alreadyRunning: false, testModeBlocked: true, reason: why };
+  }
+  // Dispatching is now async (see startTerminalSession below), so a second
+  // start-terminal call for the same agent could otherwise race past this
+  // has() check before the first call's real session lands, dispatching a
+  // duplicate background agent for the same folder. Claiming the slot with
+  // a placeholder synchronously, before any await, closes that window - the
+  // real session object overwrites it once startTerminalSession finishes.
+  ptySessions.set(agentPath, { starting: true, pendingInput: [] });
+
+  // --continue resumes this agent's most recent conversation in its own folder,
+  // so reopening an agent's chat picks up where you left off. Only passed when
+  // a prior session actually exists though - Claude Code exits immediately with
+  // "No conversation found to continue" rather than falling back to a fresh
+  // session when there's nothing to resume, which would otherwise skip the
+  // fresh-session CLAUDE.md handoff read entirely on an agent's very first open.
+  // (dispatchBackgroundAgent() applies this same condition internally now.)
+  const sessionCwd = sessionCwdFor(agentPath);
+  try {
+    // knownAgentId (set only right after switch-conversation dispatched a
+    // specific fresh/resumed session - see the renderer's switchToConversation)
+    // skips the normal find-or-dispatch discovery entirely. That discovery
+    // picks by --continue's own "most recent conversation with real content"
+    // heuristic, which a conversation that was *just* forceFresh-dispatched
+    // with zero messages yet doesn't qualify for - confirmed live: a
+    // standalone forceFresh dispatch was correctly created and left running,
+    // but the very next plain "open this agent" ended up dispatching ANOTHER
+    // session and resuming the old conversation instead, never finding the
+    // fresh one at all. Passing the id we already know we just created
+    // removes the guessing entirely.
+    await startTerminalSession(agentPath, sessionCwd, cols, rows, knownAgentId || undefined, false, false, "start-terminal");
+  } catch (e) {
+    ptySessions.delete(agentPath);
+    // v1.67.0: an attach timeout on a tab open is retried in the background too (find/dispatch failures are not).
+    if (/\[attach stage/.test(e && e.message)) { try { connHealth.onAttachFailed(agentPath, e.message, { cols, rows }); } catch (e2) {} }
+    throw e;
+  }
+  return { alreadyRunning: false };
+});
+
+ipcMain.handle("list-archived-days", (event, { agentPath }) => {
+  const session = ptySessions.get(agentPath);
+  if (session) {
+    try {
+      syncArchive(agentPath, session.sessionCwd);
+    } catch (e) {}
+  }
+  return listArchivedDays(agentPath);
+});
+
+ipcMain.handle("read-archived-day", (event, { agentPath, dateKey }) => readArchivedDay(agentPath, dateKey));
+
+ipcMain.handle("get-context-usage", (event, { agentPath }) => getLatestUsage(sessionCwdPath(agentPath)));
+
+// v1.68.0: the memoised blocks array is the same object while the transcript files are unchanged. A renderer that
+// already holds the last array it was sent (ifChanged) gets a one-word answer instead of the whole transcript
+// copied over IPC again every 4 s poll.
+const lastLiveSent = new Map(); // agentPath -> last blocks array handed to the renderer
+// v1.116.0 OPEN QUESTIONS: agents register what waits for the owner with shared_tools\ask_owner.py (one small .json per question in
+// <root>\shared_state\open_questions). The "waiting for you" queue lists them; answering from the queue moves the file to answered\.
+function openQuestionsDir() { return path.join(AGENTS_ROOT, "shared_state", "open_questions"); }
+ipcMain.handle("list-open-questions", () => {
+  const dir = openQuestionsDir(), out = [];
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (e) { return out; }
+  for (const f of names) {
+    if (!/^[\w.-]+\.json$/.test(f)) continue;
+    try { const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8").replace(/^\uFEFF/, "")); if (d && d.id && d.agent && d.question) out.push(d); } catch (e) { /* half-written or bad file: skip */ }
+  }
+  return out.slice(0, 100);
+});
+ipcMain.handle("resolve-open-question", (event, id) => {
+  if (!/^[\w-]+$/.test(String(id || ""))) return false;
+  const dir = openQuestionsDir(), src = path.join(dir, id + ".json");
+  try { fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(src, path.join(dir, "answered", id + ".json")); return true; } catch (e) { return false; }
+});
+// v1.119.0 FLEET CONVERSATIONS (configurable since v1.121.0): read-only view of the shared mailbox with another person's agents; the only write is a new reply file.
+// src/fleetMain.js registers fleet-settings / fleet-list / fleet-read / fleet-timeline / fleet-reply. Folder: AGENT_DESKTOP_FLEET_DIR (sandbox/tests) or appConfig exchangeDir; IRIS dir: AGENT_DESKTOP_IRIS_DIR.
+// Async fs with 8 in flight; a re-list is two readdirs + a few stats unless the fingerprint changed; the renderer polls every 5 min (60 s while the pane is open), and not at all while the feature is not set up.
+require("./fleetMain").register({ ipcMain, cfg: require("./appConfig"), userDataDir: app.getPath("userData"), path });
+ipcMain.handle("get-live-transcript", (event, { agentPath, ifChanged, peek }) => {
+  const blocks = getLiveTranscriptBlocks(sessionCwdPath(agentPath));
+  // v1.115.0: a PEEK (the waiting-for-you queue) neither compares with nor records lastLiveSent, so it can never make the agent's own chat
+  // view miss an update (or be told "unchanged" when the chat view already took the latest array). It returns only the last 14 blocks.
+  if (peek) return Array.isArray(blocks) ? blocks.slice(-14) : blocks;
+  startupMark("first chat transcript answered");
+  if (ifChanged && lastLiveSent.get(agentPath) === blocks) return { unchanged: true };
+  lastLiveSent.set(agentPath, blocks);
+  return blocks;
+});
+// v1.68.0 timing probes (renderer, off by default - localStorage.perfProbes = "1"): one short line per probe.
+ipcMain.on("perf-log", (event, { lines }) => {
+  try {
+    const f = path.join(app.getPath("userData"), "ui-timing.log");
+    try { if (fs.statSync(f).size > 1024 * 1024) fs.renameSync(f, f + ".old"); } catch (e) {}
+    const ts = new Date().toISOString();
+    fs.appendFileSync(f, (Array.isArray(lines) ? lines : []).slice(0, 200).map((l) => ts + " " + String(l).slice(0, 300)).join("\n") + "\n");
+  } catch (e) { /* diagnostics only */ }
+});
+
+ipcMain.handle("get-session-activity", (event, { agentPath }) => getSessionActivity(sessionCwdPath(agentPath)));
+// 2026-09-23: how long the agent's transcript has been quiet. The delivery
+// check needs this because "is it working" is a heuristic that goes false in
+// every gap between two tool calls, while a transcript that is still growing
+// is direct evidence the agent is alive and mid-run - and therefore that a
+// message sitting unmatched is queued behind that run, not lost.
+ipcMain.handle("get-transcript-quiet-ms", (event, { agentPath }) => {
+  try {
+    const mtime = getLatestTranscriptMtimeMs(sessionCwdPath(agentPath));
+    return mtime == null ? null : Math.max(0, Date.now() - mtime);
+  } catch (e) {
+    return null;
+  }
+});
+// Tasks panel + sidebar state rings (v1.37.0) - see overview.js.
+// v1.65.0: the stuck-Enter retry may press Enter ONLY when the screen shows the unsent message text in the
+// CLI input box and nothing that looks like a prompt waiting for an answer (Enter would accept its default).
+function inputHoldsUnsentText(agentPath, snippet) {
+  if (promptLikelyOpen(agentPath)) return false;
+  const strip = (x) => String(x).replace(/\s+/g, "");
+  const tail = strip((dialogTails.get(agentPath) || "").slice(-900));
+  const want = strip(snippet || "").slice(-40);
+  if (want.length < 3 || !tail.includes(want)) return false;
+  // v1.69.4: a message the CLI QUEUED behind a running turn (footer "Press up to edit queued messages") or already
+  // submitted (working indicator) also shows as "> text" - that is not an unsent box, never press Enter for it
+  if (!deliveryScreen.inputHolds(dialogTails.get(agentPath) || "", snippet)) return false;
+  const after = tail.slice(tail.lastIndexOf(want) + want.length);
+  return !/Esctocancel|Entertoconfirm|\(y\/n\)|\[Y\/n\]|Doyouwant|Yes,|No,/i.test(after) && !/Esctocancel|Entertoconfirm|\(y\/n\)|\[Y\/n\]/i.test(tail.slice(-250));
+}
+ipcMain.handle("agent-input-holds-text", (event, { agentPath, snippet }) => inputHoldsUnsentText(agentPath, snippet));
+// v1.68.0: a message that was delivered another way (message channel) can still sit unsent in the CLI input box.
+// Once the bubble has settled, clear that leftover (Ctrl+C = "clear input" in the CLI) - only when the box holds
+// exactly this text, no prompt is open and the agent is idle (Ctrl+C would interrupt a working turn).
+const staleClearedAt = new Map();
+ipcMain.handle("clear-stale-input", (event, { agentPath, text }) => {
+  try {
+    const s = ptySessions.get(agentPath);
+    if (!s || !s.proc) return false;
+    if (Date.now() - (staleClearedAt.get(agentPath) || 0) < 20000) return false;
+    const act = getSessionActivity(sessionCwdPath(agentPath));
+    if (act && act.working) return false;
+    if (!inputHoldsUnsentText(agentPath, text)) return false;
+    // the text must be the LAST thing on the screen (the live input line), not an older echo with output after it
+    const strip = (x) => String(x).replace(/\s+/g, "");
+    const tailS = strip((dialogTails.get(agentPath) || "").slice(-900));
+    const wantS = strip(text || "").slice(-40);
+    const after = tailS.slice(tailS.lastIndexOf(wantS) + wantS.length);
+    if (after.length > 120 || /Working|Thinking|esctointerrupt|tokens/i.test(after)) return false;
+    const mt = getLatestTranscriptMtimeMs(sessionCwdPath(agentPath));
+    if (mt != null && Date.now() - mt < 5000) return false; // the agent wrote very recently: do not touch its input
+    if (!ctrlCAllowed(agentPath, text)) return false; // v1.69.4: shared Ctrl+C rule (one per 10 s, never on an empty box)
+    staleClearedAt.set(agentPath, Date.now());
+    writeToPtyChunked(s.proc, agentPath, "\x03");
+    logStuckWatchdog(`stale-input: ${agentPath} - the message was delivered another way but its text sat unsent in the input box; cleared it`);
+    return true;
+  } catch (e) { return false; }
+});
+// v1.69.4: the Terminal tab was opened (renderer reports whether its xterm buffer is empty). Evidence the attach client is dead
+// (kicked / dashboard) -> re-attach it. A blank buffer alone: first the cheap redraw (a resize probe makes the CLI repaint), twice,
+// and only if `claude logs` then shows a different screen is the client re-attached. The bg agent is never restarted from here and
+// nothing is touched while it works. Per-agent 60 s limit plus a global one (opening many tabs must not re-attach many agents).
+const blankCheckAt = new Map();
+let lastBlankReattachAt = 0;
+ipcMain.handle("terminal-blank-check", async (event, { agentPath, blank }) => {
+  try {
+    const s = ptySessions.get(agentPath);
+    if (!s || !s.proc || s.starting) return "no-session";
+    if (connHealth.getState(agentPath).state !== "connected") return "reconnecting";
+    const ev = deliveryScreen.attachEvidence(dialogTails.get(agentPath) || "");
+    if (!ev && !blank) return "ok";
+    if (Date.now() - (blankCheckAt.get(agentPath) || 0) < 60000) return "recent";
+    blankCheckAt.set(agentPath, Date.now());
+    const doReattach = (why) => {
+      if (Date.now() - lastBlankReattachAt < 10000) return "global-limit";
+      lastBlankReattachAt = Date.now();
+      logStuckWatchdog(`dead-attach: ${agentPath} - Terminal tab: ${why}. screen: ${deliveryScreen.lastLines(dialogTails.get(agentPath) || "", 25, 1200)}`.slice(0, 2400));
+      return connHealth.deadAttach(agentPath, "Terminal tab: " + why) ? "reattaching" : "not-reattached";
+    };
+    if (ev) return doReattach(ev);
+    if (isWorkingNow(agentPath)) return "working";
+    for (let i = 0; i < 2; i++) {
+      const before = s.dataBytes || 0;
+      const cols = s.cols || 120, rows = s.rows || 30;
+      try { s.proc.resize(cols, Math.max(5, rows - 1)); await new Promise((r) => setTimeout(r, 150)); s.proc.resize(cols, rows); } catch (e) {}
+      await new Promise((r) => setTimeout(r, i === 0 ? 1500 : 6000));
+      if ((s.dataBytes || 0) > before) return "redrawn";
+      if (ptySessions.get(agentPath) !== s || isWorkingNow(agentPath)) return "changed";
+    }
+    const logs = await claudeLogsTail(agentPath);
+    if (!logs || !deliveryScreen.screensDiffer(dialogTails.get(agentPath) || "", logs)) return "logs-same";
+    return doReattach("blank, no redraw after two resize probes and claude logs shows a different screen");
+  } catch (e) { return "error"; }
+});
+ipcMain.handle("agent-dialog-open", (event, { agentPath }) => promptLikelyOpen(agentPath)); // v1.65.0: mid-turn send must not type into a permission prompt
+ipcMain.handle("get-agent-overview", () => overview.getAgentOverview(listAgents({ noAvatar: true }), sessionCwdPath, dialogOpenFor));
+// ARGUS / the Bridge (v1.39.0) - see argus-data.js. The workspace root, not
+// AGENTS_ROOT: in the sandbox the agents are fixtures but the report files are
+// real, and they are only ever read here.
+const ARGUS_WORKSPACE = testGuard.workspaceRoot() || AGENTS_ROOT; // shared root for the Library/open-path roots below; ARGUS itself and Memory read featureCtx (needs-setup when not configured) // v1.77.2: sandbox root in test mode, the real workspace otherwise (unchanged)
+ipcMain.handle("argus-data", (event, opts) => argus.getArgusData(featureCtx.argus(), opts || {}));
+ipcMain.handle("argus-decision-count", () => argus.getDecisionCount(featureCtx.argus()));
+ipcMain.handle("memory-data", () => memoryData.getMemoryData(featureCtx.memory()));
+ipcMain.handle("memory-open-folder", (event, key) => memoryData.openMemoryFolder(featureCtx.memory(), key));
+// Drill-down (v1.42.0): opening the report behind a number. argus-data
+// validates the path against the links the status files themselves publish,
+// so a renderer cannot ask for an arbitrary file.
+ipcMain.handle("argus-open-source", (event, { file }) => argus.openSource(featureCtx.argus(), file));
+// the owner's verdict on a weekly idea (v1.44.0). The only write path the Argus
+// view has into an agent-owned file, and argus-data validates every field
+// before touching it - see setIdeaDecision.
+ipcMain.handle("argus-set-idea-decision", (event, payload) => argus.setIdeaDecision(featureCtx.argus(), payload || {}));
+// Library tabs (v1.38.0) - see registry.js. Opening is by entry id only.
+// v1.121.0: the registry lives in <workspaceRoot>\shared_registry; the root comes from the configuration (sandbox/demo: their own root).
+const cfgList = (key) => { const v = require("./appConfig").get(key); return Array.isArray(v) ? v : v ? [v] : []; };
+const uniqRoots = (a) => a.filter((x, i) => x && a.findIndex((y) => String(y).toLowerCase() === String(x).toLowerCase()) === i);
+const registryBase = () => (demo.ON || testMode.TEST_MODE ? AGENTS_ROOT : require("./appConfig").get("workspaceRoot")) || AGENTS_ROOT;
+ipcMain.handle("registry-list", () => registry.listRegistry(registryBase()));
+// v1.121.0: the Library is "ready" when its workspace folder is configured. The demo and a sandbox (which run on their own root) count as ready only once that root has a registry folder.
+ipcMain.handle("library-ready", () => {
+  try {
+    if (demo.ON || testMode.TEST_MODE) return { ready: require("./appConfig").isReady("library") || fs.existsSync(path.join(AGENTS_ROOT, "shared_registry")) };
+    return { ready: require("./appConfig").isReady("library") };
+  } catch (e) { return { ready: true }; }
+});
+ipcMain.handle("registry-action", (event, { id, action }) =>
+  ["open", "reveal", "copy", "view", "openPdf"].includes(action)
+    ? registry.registryAction(registryBase(), String(id || ""), action)
+    : { ok: false, error: "Unknown action." });
+// Library read-state + per-document send history (v1.64.0): per-user, in userData, never the shared registry.
+const libraryState = require("./libraryState").create(path.join(app.getPath("userData"), "library-state.json"));
+ipcMain.handle("library-state-get", () => libraryState.get());
+ipcMain.handle("library-state-op", (event, op) => libraryState.apply(op));
+// Per-agent "Agent documents" panel (v1.75.0): read-only list of what one agent produced; opening goes by id.
+const agentDocs = require("./agentDocs").create({
+  // v1.92.0: the sandbox (test mode) lists only its own root too, like demo mode - never the real <scratch> folders.
+  outputRoot: () => (demo.ON || testMode.TEST_MODE ? AGENTS_ROOT : cfgList("outputRoots")[0] || null),
+  roots: () => (demo.ON || testMode.TEST_MODE ? [AGENTS_ROOT] : uniqRoots([ARGUS_WORKSPACE, ...cfgList("outputRoots"), AGENTS_ROOT, ...cfgList("documentRoots")])), // demo mode: only the demo root, // v1.75.4: Word articles written there by Acmeco Talk, Review Writer, EiC
+  // v1.92.0: the same cached list the Library reads (registry-list), so ids, read state and the Library's image
+  // thumbnails are shared; it answers in a few ms while the registry folder is unchanged.
+  loadRegistry: () => registry.listRegistry(registryBase()),
+  libraryState,
+  shell,
+  nativeImage: require("electron").nativeImage,
+  thumbDir: path.join(app.getPath("userData"), "agent-docs-thumbs"),
+});
+// v1.92.0: per-agent open/closed + list/grid, in userData (not localStorage).
+const agentDocsPrefs = require("./agentDocsPrefs").create(path.join(app.getPath("userData"), "agent-docs-prefs.json"));
+// The renderer names an agent by its folder name only (never a path); main resolves it against its own agent list,
+// rebuilt at most every 5 s (one listAgents() per burst of IPC calls, not per call).
+const { resolveAgent: resolveDocsAgent } = require("./agentDocs");
+let agentDocsList = { at: 0, list: [] };
+function agentForDocs(agentKey) {
+  try {
+    if (Date.now() - agentDocsList.at > 5000) agentDocsList = { at: Date.now(), list: listAgents({ noAvatar: true }) };
+    return resolveDocsAgent(agentDocsList.list, agentKey);
+  } catch (e) { return null; }
+}
+const ADOC_HOW = ["view", "open", "reveal"];
+ipcMain.handle("agent-docs-list", async (event, { agent: key, query } = {}) => {
+  const agent = agentForDocs(key);
+  const q = query && typeof query === "object" ? query : {};
+  return agent ? agentDocs.list(agent, {
+    type: typeof q.type === "string" ? q.type.slice(0, 20) : undefined,
+    search: typeof q.search === "string" ? q.search.slice(0, 200) : "",
+    sort: q.sort === "oldest" ? "oldest" : "newest",
+    offset: Math.max(0, Math.min(100000, Number(q.offset) || 0)),
+    refresh: !!q.refresh, stack: !!q.stack,
+  }) : { items: [], total: 0, counts: {}, unread: 0 };
+});
+ipcMain.handle("agent-docs-summary", async (event, { agent: key } = {}) => {
+  const agent = agentForDocs(key);
+  return agent ? agentDocs.summary(agent) : { total: 0, unread: 0 };
+});
+ipcMain.handle("agent-docs-open", async (event, { agent: key, id, how } = {}) => {
+  const agent = agentForDocs(key);
+  if (!agent || !ADOC_HOW.includes(how)) return { ok: false, error: "Unknown agent or action." };
+  return agentDocs.open(agent, String(id || "").slice(0, 200), how);
+});
+ipcMain.handle("agent-docs-thumb", async (event, { agent: key, id } = {}) => {
+  const agent = agentForDocs(key);
+  return agent ? agentDocs.thumbnail(agent, String(id || "").slice(0, 200)) : { ok: false };
+});
+ipcMain.handle("agent-docs-prefs-get", () => agentDocsPrefs.get());
+ipcMain.handle("agent-docs-prefs-set", (event, patch = {}) => {
+  if (!patch || !agentForDocs(patch.agent)) return { ok: false, error: "Unknown agent." };
+  return agentDocsPrefs.set({ agent: patch.agent, open: patch.open, view: patch.view, type: patch.type });
+});
+// Clickable file paths in chat (v1.52.0 PDFs, generalized in v1.109.0). The text comes from an agent's reply, so
+// src/openPath.js treats it as untrusted: allow-listed extensions or folders, existing, under these roots only; every
+// open/refusal is logged (path only) to pdf-links.log. In test mode shell.openPath is replaced by a recorder
+// (open-path-stub.jsonl in userData) so the sandbox can be clicked without launching anything.
+function openPathRoots() {
+  if (demo.ON) return [AGENTS_ROOT];
+  const reports = require("./appConfig").get("sharedReports");
+  const roots = uniqRoots([ARGUS_WORKSPACE, ...cfgList("outputRoots"), AGENTS_ROOT, reports || path.join(ARGUS_WORKSPACE, "shared_reports"), ...cfgList("openPathRoots")]);
+  for (const n of ["desktop", "documents", "downloads", "pictures"]) {
+    try { roots.push(app.getPath(n)); } catch (e) { /* folder not available */ }
+  }
+  if (testMode.TEST_MODE && process.env.AGENT_DESKTOP_OPEN_ROOT) roots.push(process.env.AGENT_DESKTOP_OPEN_ROOT);
+  return roots;
+}
+const PDF_LINK_LOG = path.join(app.getPath("userData"), "pdf-links.log");
+function logPdfLink(line) {
+  console.log("[open-path] " + line);
+  try {
+    fs.appendFileSync(PDF_LINK_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch (e) {
+    /* logging must never be why a click fails */
+  }
+}
+const pathOpener = require("./openPath").createOpener({
+  roots: openPathRoots,
+  log: logPdfLink,
+  shell: testMode.TEST_MODE
+    ? { openPath: async (p) => { try { fs.appendFileSync(path.join(app.getPath("userData"), "open-path-stub.jsonl"), JSON.stringify({ t: Date.now(), openPath: p }) + "\n"); } catch (e) { /* ignore */ } return ""; } }
+    : shell,
+});
+ipcMain.handle("open-path", (event, { filePath } = {}) => pathOpener.open(filePath));
+ipcMain.handle("open-local-pdf", (event, { filePath } = {}) => pathOpener.open(filePath)); // old name, same pipeline
+ipcMain.handle("resolve-paths", (event, { guesses } = {}) => pathOpener.resolve(guesses));
+ipcMain.handle("approve-telegram-tasks", (event, { ids }) => overview.approveTelegramTasks(ids)); // v1.121.0: bridge folder + python from Setup (feature "telegram")
+
+// v1.76.0: the account-wide usage scan runs in a worker thread (src/usageWorker.js) with its per-file
+// records persisted in userData, so a launch no longer blocks the main thread for ~21 s on the first
+// usage refresh. If the worker cannot start, the old main-thread call is used.
+const USAGE_SCAN_CACHE_PATH = path.join(app.getPath("userData"), "usage-scan-cache.json");
+let usageWorker = null;
+let usageWorkerBroken = false;
+let usageReqSeq = 0;
+const usagePending = new Map(); // id -> { resolve, reject }
+function failUsagePending(err) {
+  for (const [, p] of usagePending) p.reject(err);
+  usagePending.clear();
+}
+function getUsageWindowsOffThread() {
+  if (usageWorkerBroken) return Promise.resolve(getUsageWindows());
+  try {
+    if (!usageWorker) {
+      const { Worker } = require("worker_threads");
+      usageWorker = new Worker(path.join(__dirname, "usageWorker.js"), { workerData: { cacheFile: USAGE_SCAN_CACHE_PATH } });
+      usageWorker.on("message", (m) => {
+        const p = m && usagePending.get(m.id);
+        if (!p) return;
+        usagePending.delete(m.id);
+        if (m.id === 1) logStuckWatchdog(`startup: first usage scan answered by the worker in ${m.ms} ms (${m.loaded} file records restored from the cache)`);
+        if (m.error) p.reject(new Error(m.error));
+        else p.resolve(m.result);
+      });
+      usageWorker.on("error", (e) => {
+        logStuckWatchdog(`usage worker error: ${e && e.message}`);
+        usageWorkerBroken = true; // main-thread fallback from now on
+        failUsagePending(e);
+        usageWorker = null;
+      });
+      usageWorker.on("exit", (code) => {
+        if (code !== 0) logStuckWatchdog(`usage worker exited with code ${code}`);
+        failUsagePending(new Error("usage worker exited"));
+        usageWorker = null;
+      });
+      usageWorker.unref();
+    }
+    const id = ++usageReqSeq;
+    return new Promise((resolve, reject) => {
+      usagePending.set(id, { resolve, reject });
+      usageWorker.postMessage({ type: "get-usage-windows", id, usageNowFile: testGuard.usageNowPath() });
+    }).catch((e) => {
+      logStuckWatchdog(`usage worker request failed (${e && e.message}) - answered on the main thread`);
+      return getUsageWindows();
+    });
+  } catch (e) {
+    logStuckWatchdog(`usage worker could not start: ${e && e.message} - main-thread scan`);
+    usageWorkerBroken = true;
+    return Promise.resolve(getUsageWindows());
+  }
+}
+ipcMain.handle("get-usage-windows", () => getUsageWindowsOffThread());
+
+// renderer.js's PLAN_FIVE_HOUR_ESTIMATES fallback (used only when Anthropic's own confirmed rate_limits figure is not available) needs to know the
+// plan. It used to be inferred from a line in one person's facts file (2026-09-20); it is now the planTier setting.
+// v1.121.0: the plan comes from the configuration layer (planTier: pro | max5x | max20x), set in Setup. Not set = null: the renderer then shows
+// the usage count without a percentage instead of assuming a plan.
+function getInferredPlanId() { try { return require("./appConfig").get("planTier") || null; } catch (e) { return null; } }
+ipcMain.handle("get-inferred-plan-id", () => getInferredPlanId());
+
+// 2026-09-20: pairs with renderer.js's rebuildChatView() pendingSent-expiry
+// handling - a message that never landed in the transcript within
+// PENDING_SENT_TIMEOUT_MS used to just silently vanish from the chat view
+// with no signal anywhere. the owner lost a long, detailed reply to the Trade
+// Show agent this way and only noticed because the agent's next reply
+// didn't reflect it. This fires an OS notification so a delivery failure is
+// visible even if Agent Desktop isn't the focused window at the time.
+// v1.68.0: name the CAUSE of a failed delivery in one short line. dead link = the pty is gone or the connection module is
+// reconnecting; stuck Enter = the text still sits in the CLI input box; queued mid-turn = the agent is working and
+// the CLI has the message queued behind the turn; unknown = none of the above (the claude-logs tail line below helps).
+function classifySendFailure(agentPath, info) {
+  const i = info || {};
+  const st = connHealth.getState(agentPath).state;
+  const s = ptySessions.get(agentPath);
+  if (st !== "connected") return "dead-link(" + st + ")";
+  if (!s || !s.proc) return "dead-link(no-pty)";
+  if (inputHoldsUnsentText(agentPath, i.text || "")) return "stuck-enter";
+  if (deliveryScreen.isQueued(dialogTails.get(agentPath) || "", i.text || "")) return "queued-mid-turn";
+  if (i.received || (i.midTurn && i.working) || i.busyWait) return "queued-mid-turn";
+  return "unknown";
+}
+ipcMain.handle("notify-send-failed", (event, { agentPath, text, info }) => {
+  // v1.69.4: the message sits in the CLI's own queue (screen shows the queued-messages footer): it is not lost, so no
+  // "not confirmed" alarm - the transcript receipt arrives when the turn ends. Still logged below.
+  let scr = null;
+  try { scr = screenStateFor(agentPath, String(text || "").slice(-40), text); } catch (e) {}
+  try {
+    if (Notification.isSupported() && !(scr && scr.cause === "queued")) {
+      const agentName = path.basename(agentPath);
+      const preview = (text || "").replace(/\s+/g, " ").trim().slice(0, 120);
+      const n = new Notification({
+        title: `${agentName}: message not confirmed`,
+        body: `It has not appeared in the agent's transcript and the agent has gone quiet - open Agent Desktop and check the conversation before resending. "${preview}${text && text.length > 120 ? "â€¦" : ""}"`,
+      });
+      n.on("click", () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+      n.show();
+    }
+  } catch (e) {
+    /* a notification failure must never break anything else */
+  }
+  let cause = "unknown";
+  try { cause = classifySendFailure(agentPath, Object.assign({}, info, { text })); } catch (e) {}
+  const inf = info || {};
+  if (scr) logStuckWatchdog(`notify-send-failed: ${agentPath} screen-cause=${scr.cause}${scr.cause === "queued" ? " (notification suppressed)" : ""} screen: ${scr.lines}`.slice(0, 2400));
+  logStuckWatchdog(`notify-send-failed: ${agentPath} - message never landed in transcript, re-queued [cause=${cause} why=${inf.why || "?"} age=${inf.ageSec != null ? inf.ageSec + "s" : "?"} midTurn=${inf.midTurn ? 1 : 0} received=${inf.received ? 1 : 0} nudges=${inf.nudges || 0} working=${inf.working ? 1 : 0}]`);
+  // v1.67.0: the log never said WHY. Snapshot the agent's own screen (`claude logs <id>`) at failure time:
+  // idle + empty input box = dead link, text in the box = stuck Enter, a dialog = prompt waiting.
+  try {
+    const sess = ptySessions.get(agentPath);
+    const id = sess && sess.agentId ? String(sess.agentId).slice(0, 8) : null;
+    if (id && /^[0-9a-f]{8}$/i.test(id) && sess.shell) {
+      execFile(sess.shell, ["logs", id], { windowsHide: true, timeout: 8000, env: sess.spawnEnv, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        const tail = stripTerminalCodes(String(stdout || "")).replace(/\s+/g, " ").trim().slice(-500);
+        logStuckWatchdog(`notify-send-failed: ${agentPath} claude logs ${id} tail: ${err && !tail ? "(unavailable: " + err.message + ")" : deliveryScreen.lastLines(stdout, 12, 500, text)}`);
+        // v1.69.4: the CLI itself shows the text (claude logs) but our attach screen does not = dead / blank attach
+        try {
+          const want = deliveryScreen.squash(String(text || "")).slice(-40);
+          if (want.length >= 3 && deliveryScreen.squash(tail).includes(want) && !deliveryScreen.hasSnippet(dialogTails.get(agentPath) || "", want)) {
+            logStuckWatchdog(`notify-send-failed: ${agentPath} cause=dead-attach (claude logs shows the message text, the attach screen does not) screen: ${deliveryScreen.lastLines(dialogTails.get(agentPath) || "", 25, 1000, text)}`.slice(0, 2400));
+          }
+        } catch (e) {}
+      });
+    }
+  } catch (e) { /* diagnostics only */ }
+  return { ok: true };
+});
+
+// v1.23.0 guards (handoff-reset + usage-limit warnings) - isolated module, loaded
+// defensively so a bug there can only disable the guards, never the app.
+try {
+  require("./guards-main").init({
+    ipcMain,
+    Notification,
+    getMainWindow: () => mainWindow,
+    sessionCwdFor: sessionCwdPath, // v1.93.0: guards only read transcripts
+    archive: require("./archive"),
+    log: (line) => logStuckWatchdog(line),
+    resolveClaudeExecutable,
+  });
+} catch (e) {
+  console.error("guards-main failed to load:", e);
+}
+
+// v1.111.0 PC health panel: live collector process, only while the panel is open (src/pcHealthMain.js).
+try {
+  require("./pcHealthMain").init({ ipcMain, app, getMainWindow: () => mainWindow, testMode: testMode.TEST_MODE, log: (line) => logStuckWatchdog(line) });
+} catch (e) {
+  console.error("pc health failed to load:", e);
+}
+
+// v1.108.0 Predicted replies: a Haiku-suggested reply shown as ghost text in the message box (src/predict.js).
+try {
+  require("./predictMain").init({ ipcMain, app, getMainWindow: () => mainWindow, privateCliDir, testMode: testMode.TEST_MODE });
+} catch (e) {
+  console.error("predict failed to load:", e);
+}
+
+try {
+  require("./voice-main").init({ ipcMain, app, log: (line) => logStuckWatchdog(line) });
+} catch (e) {
+  console.error("voice-main failed to load:", e);
+}
+
+// v1.55.0 IRIS - Agent Desktop-to-Agent Desktop link. Off until the user turns
+// it on in the Links view. After app ready because it needs safeStorage (DPAPI)
+// for its keys; isolated like the guards so a fault only disables IRIS.
+// v1.121.0: IRIS listens on the local network, so it starts only with a consent record (iris.enabled AND iris.consentAt in app-config.json,
+// written by the Setup UI, the one-time existing-pairing rule, or the deploy tool; src/irisGate.js). Until then its IPC channels answer "off".
+let irisStarted = false;
+function startIrisIfAllowed() {
+  if (demo.ON || irisStarted) return;
+  const cfg = require("./appConfig");
+  if (!cfg.isConsented("iris")) return;
+  irisStarted = true;
+  require("./irisGate").removeStubs(ipcMain);
+  try {
+    require("./iris/main-iris").init({
+      ipcMain,
+      app,
+      safeStorage: require("electron").safeStorage,
+      Notification,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),
+      testMode: testMode.TEST_MODE,
+    });
+  } catch (e) {
+    console.error("iris failed to load:", e);
+    try { logStuckWatchdog(`iris failed to load: ${e.message}`); } catch (e2) {}
+  }
+}
+app.whenReady().then(() => {
+  if (demo.ON) return; // v1.86.0 demo mode: no IRIS (no network port, no pairing data)
+  try {
+    const cfg = require("./appConfig"); const gate = require("./irisGate");
+    const g = gate.grandfather({ cfg, userDataDir: app.getPath("userData") });
+    if (g.granted) { try { logStuckWatchdog("iris: consent recorded from the existing pairing"); } catch (e2) {} }
+    gate.registerStubs(ipcMain);
+    cfg.onChange(() => startIrisIfAllowed());
+    startIrisIfAllowed();
+  } catch (e) { console.error("iris gate failed (IRIS stays off):", e && e.message); }
+});
+
+// v1.96.0 wake-agent: pipe command so the COO / Security agent can wake a stopped or idle agent (guardrails in src/wakeAgent.js).
+// Isolated like IRIS and PHEME: a fault here can only disable the pipe. The caller is identified by process ancestry up to
+// the COO / Security bg session (ids recorded by wakeNoteSession); no secret is handed to any session.
+app.whenReady().then(() => {
+  if (demo.ON) return; // demo mode: no wake pipe (fictional agents, and nothing for a live CLI to find)
+  try {
+    require("./wakeAgentMain").init({
+      ipcMain,
+      app,
+      getMainWindow: () => mainWindow,
+      listAgents: () => listAgents({ noAvatar: true }),
+      listBgAgents: () => listBackgroundAgents(resolveClaudeExecutable(), { ...process.env, ...CLAUDE_AUTOUPDATER_DISABLE_ENV }, { fresh: true }),
+      workspace: AGENTS_ROOT,
+      log: (line) => logStuckWatchdog(line),
+      testMode: testMode.TEST_MODE,
+    });
+  } catch (e) {
+    console.error("wake-agent failed to load:", e);
+    try { logStuckWatchdog(`wake-agent failed to load: ${e.message}`); } catch (e2) {}
+  }
+});
+
+// v1.113.0 voice inbox: a dictation is addressed to the agent that was selected when the key was pressed (active-agent.json) and
+// dropped into <userData>\voice-inbox; the renderer delivers it to THAT agent through the outbox, whatever tab is open.
+app.whenReady().then(() => {
+  if (demo.ON) return; // v1.86.0 demo mode: no dictation inbox
+  try {
+    require("./voiceInbox").init({ app, ipcMain, getMainWindow: () => mainWindow, log: (line) => logStuckWatchdog(line) });
+  } catch (e) {
+    console.error("voice inbox failed to load:", e);
+    try { logStuckWatchdog(`voice inbox failed to load: ${e.message}`); } catch (e2) {}
+  }
+});
+
+// v1.77.4 PHEME delivery: the Stream Deck dictation tool hands its text to the selected agent over a local token-guarded pipe
+// (src/phemeDelivery.js); the renderer sends it through the normal Send path, this side verifies it landed. Isolated like IRIS.
+app.whenReady().then(() => {
+  if (demo.ON) return; // v1.86.0 demo mode: no PHEME dictation pipe
+  try {
+    require("./phemeMain").init({
+      ipcMain,
+      app,
+      getMainWindow: () => mainWindow,
+      ptyState: (p) => { const s = ptySessions.get(p); return !s ? "none" : s.starting ? "starting" : s.proc ? "attached" : "none"; },
+      transcriptHas: (p, text, sinceMs) => transcriptTailHasText(p, text, sinceMs),
+      sentLogSince: (p, sinceMs) => (lastSentAt.get(p) || 0) >= sinceMs,
+      log: (line) => logStuckWatchdog(line),
+      testMode: testMode.TEST_MODE,
+    });
+  } catch (e) {
+    console.error("pheme delivery failed to load:", e);
+    try { logStuckWatchdog(`pheme delivery failed to load: ${e.message}`); } catch (e2) {}
+  }
+});
+
+// v1.72.0 My Daily - tasks, schedule, shopping and email overview. No timers; loads on demand (see daily/main-daily.js).
+try {
+  require("./daily/main-daily").init({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    cfg: require("./appConfig"),   // v1.121.0: every location, name and helper program of My Daily comes from the configuration layer
+    runPython: demo.ON ? async () => "" : undefined, // v1.86.0 demo mode: task edits never run a script
+    dataDir: app.getPath("userData"),
+    safeStorage: require("electron").safeStorage,
+    openExternal: (u) => require("electron").shell.openExternal(u),
+    testMode: testMode.TEST_MODE,
+    log: (line) => logStuckWatchdog(line),
+    // v1.78.0 Decisions tab: answers reach the agent through the same verified path as Keep going (message channel, pty fallback, transcript check)
+    deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Daily decision answer", { ttlSec: 600 }),
+    knownAgent: (agentPath) => kgKnownAgent(agentPath),
+  });
+} catch (e) {
+  console.error("my daily failed to load:", e);
+}
+
+// v1.81.0 My Health (HYGIEIA) stage 1 - handlers only; the store and importers load on first use (health/main-health.js).
+try {
+  const healthMain = require("./health/main-health").init({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    dialog,
+    openExternal: (u) => require("electron").shell.openExternal(u),
+    userData: app.getPath("userData"),
+    testMode: testMode.TEST_MODE,
+    log: (line) => logStuckWatchdog(line),   // counts and ids only, never a value (tests/health.test.js enforces it)
+    // Routine reminders (v1.82.0): NEUTRAL fixed text only (reminders.js), never a routine name or any health detail. Sandbox: no real toast.
+    notify: (text) => {
+      if (testMode.TEST_MODE || !Notification.isSupported()) return;
+      const n = new Notification({ title: "Routine", body: text });
+      n.on("click", () => { try { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } } catch (e) { /* window gone */ } });
+      n.show();
+    },
+  });
+  // One small read of routines.json after start; arms a single timer only if a reminder is enabled. No timer otherwise.
+  global.__healthMain = healthMain;
+  app.whenReady().then(() => healthMain.boot()).catch(() => {});
+} catch (e) {
+  console.error("my health failed to load:", e && e.code);
+}
+
+// v1.83.0 TOOLS v1 - handlers only; the catalogue, launcher and stats code load on first use (tools/main-tools.js).
+try {
+  require("./tools/main-tools").init({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    dialog,
+    openExternal: (u) => require("electron").shell.openExternal(u),
+    nativeImage: require("electron").nativeImage,
+    userData: app.getPath("userData"),
+    workspaceRoot: AGENTS_ROOT,
+    testMode: testMode.TEST_MODE,
+    log: (line) => logStuckWatchdog(line),   // ids and counts only
+  });
+} catch (e) {
+  console.error("tools failed to load:", e && e.code);
+}
+
+// v1.87.0 MY RESEARCH tab - handlers only; the service loads on the first call (research/main-research.js).
+try {
+  const researchMain = require("./research/main-research").init({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    workspaceRoot: AGENTS_ROOT,
+    userData: app.getPath("userData"),
+    openExternal: (u) => require("electron").shell.openExternal(u),
+    testMode: testMode.TEST_MODE,
+    log: (line) => logStuckWatchdog(line),   // codes only
+    // v1.89.0 "Write to <agent>": the SAME verified delivery and classification as My Daily > Tasks "Write an answer"
+    deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Research message", { ttlSec: 600 }),
+    classifyDelivery: (r) => require("./daily/decisions-main").classifyDelivery(r),
+    resolveAgent: (name) => {   // an agent NAME from a digest -> its folder in the app's own agent list (folder or display name), else null
+      const low = String(name || "").trim().toLowerCase();
+      const a = listAgents({ noAvatar: true }).find((x) => x.folderName.toLowerCase() === low || String(x.displayName || "").toLowerCase() === low);
+      return a && kgKnownAgent(a.path) ? a.path : null;
+    },
+    isAgentRunning: (agentPath) => {   // a live pty in this app, or a live Claude session with a message socket for this folder
+      for (const [p, s] of ptySessions) if (s && s.proc && norm_kg(p) === norm_kg(agentPath)) return true;
+      try { return !!require("./agentChannel").resolveAddress(agentPath); } catch (e) { return false; }
+    },
+  });
+  app.on("before-quit", () => { try { researchMain.flushImages(); } catch (x) { /* best effort */ } });   // v1.91.0: keep the image index
+} catch (e) {
+  console.error("research failed to load:", e && e.code);
+}
+
+// v1.90.0 MY FINANCE skeleton - handlers only; the service loads on the first call (finance/main-finance.js). Not in demo mode (the demo
+// has its own invented My Finance mock-up and must never read a real folder).
+if (!demo.ON) {
+  try {
+    require("./finance/main-finance").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      userData: app.getPath("userData"),
+      appDir: path.join(__dirname, ".."),
+      testMode: testMode.TEST_MODE,
+      openPath: (p) => require("electron").shell.openPath(p),
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never amounts
+    });
+  } catch (e) {
+    console.error("finance failed to load:", e && e.code);
+  }
+}
+
+// --- Chats panel (per-agent conversation list / switch / rename) -----------
+//
+// Each agent's `.claude-session` cwd accumulates one <sessionId>.jsonl per
+// distinct conversation (a fresh one on first open, another on every
+// /clear). listConversations() turns that pile into a titled list; the
+// panel lets the user resume any of them or start a new one - the same
+// model as claude.ai/code's "Recents", from the same on-disk data.
+
+ipcMain.handle("list-conversations", (event, { agentPath }) => {
+  const sessionCwd = sessionCwdFor(agentPath);
+  // Same freshness courtesy as list-archived-days: fold in anything the
+  // live session has written since the last 30s archive tick before listing.
+  const session = ptySessions.get(agentPath);
+  if (session && !session.starting) {
+    try {
+      syncArchive(agentPath, sessionCwd);
+    } catch (e) {}
+  }
+  return listConversations(sessionCwd);
+});
+
+ipcMain.handle("rename-conversation", (event, { agentPath, sessionId, title }) => {
+  // Throws (Invalid session id / empty title / file not found) surface to
+  // the renderer's catch - see archive.js setConversationTitle().
+  return setConversationTitle(sessionCwdFor(agentPath), sessionId, title);
+});
+
+// Point this agent's live session at a different past conversation
+// (resumeSessionId), or start a brand-new one (newConversation: true).
+// Either way the running `claude --bg` process has to be replaced: it's
+// bound to whatever conversation it was dispatched with, and only a fresh
+// dispatch (`--bg --resume <id>` or `--bg` with no --continue) can change
+// that. Tear down the attach pty, stop the bg daemon, dispatch a new one;
+// the renderer then re-attaches through its normal start-terminal path.
+ipcMain.handle("switch-conversation", (event, args) => switchConversationImpl(args.agentPath, args));
+async function switchConversationImpl(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
+  const sessionCwd = sessionCwdFor(agentPath);
+  // Drop the ptySessions entry BEFORE killing the pty: proc.onExit ->
+  // handlePtyExit checks `if (!session) return` first, so removing it now
+  // means the exit won't trigger handlePtyExit's auto-reattach, which would
+  // otherwise immediately reconnect to the very conversation we're leaving.
+  const live = ptySessions.get(agentPath);
+  if (live && !live.starting) {
+    if (live.archiveTimer) clearInterval(live.archiveTimer);
+    try {
+      syncArchive(agentPath, sessionCwd);
+    } catch (e) {}
+    ptySessions.delete(agentPath);
+    try {
+      if (live.proc) live.proc.kill();
+    } catch (e) {}
+  }
+  // review M1: claim the slot BEFORE the (slow) stop so input arriving meanwhile queues instead of being dropped
+  if (placeholder) ptySessions.set(agentPath, { starting: true, pendingInput: [] });
+  // Stops the underlying `claude --bg` daemon for this cwd and polls until
+  // its pid is actually gone (same helper delete-agent uses).
+  try {
+    await stopBackgroundAgentForCwd(sessionCwd);
+  } catch (e) {
+    if (placeholder) dropPlaceholder(agentPath);
+    throw e;
+  }
+  const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+  const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+  const opts = newConversation ? { forceFresh: true, initialPrompt, urgent: true } : { resumeSessionId, urgent: true };
+  let newId;
+  try {
+    newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, opts);
+  } catch (e) {
+    if (placeholder) dropPlaceholder(agentPath);
+    throw e;
+  }
+  return { ok: true, agentId: newId };
+}
+
+// Caught live (2026-08-20): a real crash, not a hang. If the underlying
+// claude process has already died on its own (crashed, or one of the
+// documented Claude Code Windows CLI hangs), the pty object can still sit
+// in ptySessions until proc.onExit() gets around to cleaning it up -
+// node-pty's own internal "exited" state can flip slightly before that JS
+// callback actually fires, leaving a real, if narrow, race window. A
+// resize or write landing in that window throws synchronously
+// ("Cannot resize a pty that has already exited"), uncaught, which crashes
+// the entire Electron main process with a blocking error dialog - looking
+// exactly like "nothing is responding" when what actually happened is the
+// process died and touching its corpse crashed the app.
+//
+// Catching alone isn't enough, found the same day: it stops the crash but
+// leaves a second gap - if onExit is ever slow to fire relative to this
+// failed write/resize (observed live: a Reset Session click went out to an
+// already-dead process, produced no crash, but also never showed the
+// "[session ended]" notice for several minutes), the session just sits
+// silent with no crash *and* no signal, which is exactly the confusing
+// "is it stuck or not" state this whole night was about. So this calls
+// handlePtyExit() proactively the moment a write/resize proves the process
+// is dead, instead of passively waiting on onExit alone - whichever signal
+// arrives first wins, and calling it twice is safe (see its own comment).
+// Sent-message log (v1.23.2): a long message once reached the CLI with its head missing and no
+// copy existed anywhere to recover it. Every multi-character write to a session is appended here
+// BEFORE it goes to the pty, so a cut message can always be recovered/compared. JSONL, rotated at 5 MB.
+const SENT_LOG_PATH = path.join(app.getPath("userData"), "sent-messages.jsonl");
+const lastSentAt = new Map(); // agentPath -> ms of the last multi-character pty write (v1.77.4: PHEME delivery proof)
+function logSentInput(agentPath, data) {
+  try {
+    if (typeof data !== "string" || data.length < 2) return; // skip lone "\r" / keystrokes
+    lastSentAt.set(agentPath, Date.now());
+    try {
+      if (fs.statSync(SENT_LOG_PATH).size > 5 * 1024 * 1024) fs.renameSync(SENT_LOG_PATH, SENT_LOG_PATH + ".old");
+    } catch (e) {}
+    // Redact obvious secret shapes (API keys / bearer tokens / key=value secrets); the rest is kept verbatim on purpose.
+    const text = data
+      .replace(/\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]")
+      .replace(/(bearer\s+)[A-Za-z0-9._~+\/=-]{16,}/gi, "$1[REDACTED]")
+      .replace(/((?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]");
+    fs.appendFileSync(SENT_LOG_PATH, JSON.stringify({ t: new Date().toISOString(), agent: path.basename(agentPath || ""), len: data.length, text }) + "\n", { mode: 0o600 });
+  } catch (e) {}
+}
+
+ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp }) => {
+  logSentInput(agentPath, data);
+  const session = ptySessions.get(agentPath);
+  if (!session) {
+    // No tracked session at all for this agent (as opposed to the "starting"
+    // placeholder case below, which IS tracked and queues correctly) - found
+    // 2026-09-17 while investigating a report of a typed message just
+    // vanishing with no error and no trace anywhere. Previously this branch
+    // silently dropped the input entirely; now it at least surfaces the loss
+    // visibly instead of eating it silently, so a future occurrence reads as
+    // an obvious error to retry rather than an unexplained disappearance.
+    // Root trigger for how ptySessions can lack an entry while the user is
+    // still looking at this agent's chat isn't confirmed - flagging rather
+    // than guessing further.
+    // v1.67.2: while the connection-health module is reconnecting, keep the input and replay it on attach.
+    if (connHealth.getState(agentPath).state !== "connected") {
+      if (!lateInputs.has(agentPath)) lateInputs.set(agentPath, []);
+      lateInputs.get(agentPath).push(data);
+      lateInputsAt.set(agentPath, Date.now());
+      return;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("terminal-data", {
+        agentPath,
+        data: "\r\n\x1b[31m[Agent Desktop: this message could not be delivered - no active session found. Please resend.]\x1b[0m\r\n\r\n",
+      });
+    }
+    return;
+  }
+  // A "starting" placeholder has no real proc yet (background-agent dispatch
+  // is async now - see start-terminal below). Confirmed directly, live: a
+  // message sent right after opening an agent can land in this brief window
+  // and, before this queue existed, was silently dropped - session.proc.write
+  // threw on undefined, handlePtyExit() correctly no-op'd on the placeholder
+  // (see its own comment) so there was no false "[session ended]" notice
+  // either, but the typed message just vanished with zero feedback. Queuing
+  // it here and flushing in startTerminalSession() once the real proc exists
+  // fixes that without reintroducing the false-notice problem.
+  if (session.starting) {
+    session.pendingInput.push(data);
+    return;
+  }
+  // v1.69.4: liveness check by EVIDENCE before a message is typed (attachDeadEvidence: kicked client, detached client / dashboard,
+  // blank attach confirmed by `claude logs`): re-spawn only the attach client, wait for its screen (the placeholder queue replays
+  // after the CLI has drawn), then the message is typed ONCE. The message and its end marker / Enter go into the placeholder queue.
+  if (fromApp && String(data).indexOf("\x1b[200~") === 0 && String(data).length > 6 && !reattaching.has(agentPath) && !isWorkingNow(agentPath)) {
+    const why = attachDeadEvidence(agentPath);
+    if (why) {
+      logStuckWatchdog(`dead-attach: ${agentPath} - before sending: ${why}; re-attaching the client first. screen: ${deliveryScreen.lastLines(dialogTails.get(agentPath) || "", 25, 1200, String(data).replace(/^\x1b\[200~/, ""))}`.slice(0, 2400));
+      const pr = reattachClient(agentPath, "before send: " + why);
+      const ph = ptySessions.get(agentPath);
+      if (ph && ph.starting) {
+        ph.pendingInput.push(data);
+        pr.then((ok) => {
+          if (ok === true) { setTimeout(() => { try { connHealth.noteWrite(agentPath, data); } catch (e) {} }, 1500); return; } // replayed by the new client: track it for stuck-Enter / ladder
+          // not delivered: remove ONLY this message's chunks from the replay queue; the renderer's Not-confirmed notice offers Resend
+          const li = lateInputs.get(agentPath);
+          if (li) { const i = li.indexOf(data); if (i >= 0) { let n = 1; while (i + n < li.length && (li[i + n] === "\x1b[201~" || li[i + n] === "\r") && n < 3) n++; li.splice(i, n); } if (!li.length) lateInputs.delete(agentPath); }
+        });
+        return;
+      }
+    }
+  }
+  if (fromApp) connHealth.noteWrite(agentPath, data); // v1.68.1: only the app's own message writes, never Terminal-tab typing/pastes
+  if (testMode.TEST_MODE && fs.existsSync(testFaultFile("mute-" + path.basename(agentPath)))) return; // sandbox: simulate a dead pty
+  writeToPtyChunked(session.proc, agentPath, data);
+});
+
+// 2026-09-20: root-caused a long-running "long messages arrive garbled or
+// truncated" report by checking sent-messages.jsonl (logSentInput, above) -
+// the FULL, correct text was already being handed to this handler every
+// single time, byte for byte, confirmed on repeated failing attempts. So
+// the corruption was never in this app's own code up to this point; it was
+// happening downstream of one single large synchronous session.proc.write()
+// call, somewhere in node-pty's ConPTY layer or in Claude Code's own stdin
+// reading on the other end of the pipe - a large one-shot burst (over
+// 2KB in the confirmed failures) apparently doesn't survive intact.
+// Mitigation at the time: write it in small chunks with a short delay
+// between them instead of one synchronous call.
+//
+// 2026-09-21 correction (part 1): that diagnosis was half-confounded. A
+// second, independent mechanism was ALSO in play - a raw pty write with no
+// bracketed-paste marker is exactly what a real terminal never sends for an
+// actual paste, so the CLI's own heuristics for telling "one paste" apart
+// from "fast individual keystrokes" had nothing to go on. submitToAgent()
+// in renderer.js now wraps long sends in the standard \x1b[200~ ... \x1b[201~
+// bracketed-paste escape codes for exactly that reason. First attempt at
+// this fix made this function do one synchronous proc.write() of the whole
+// bracket-wrapped string, no chunking at all, on the theory that the ORIGINAL
+// ~2KB failure boundary was entirely a symptom of the missing bracket marker
+// and would disappear once that was fixed.
+//
+// 2026-09-21 correction (part 2, same night): it didn't disappear. Live-
+// bisected against the Testing agent post-bracket-paste: 1000/2000/2200
+// bytes landed clean, 2500/3000/5866 bytes silently vanished - never reached
+// the CLI at all (confirmed via `claude agents --json` showing the process
+// idle/done, and the Raw Terminal view showing no trace of the message
+// arriving). That boundary lines up almost exactly with the ORIGINAL
+// pre-bracket-paste measurement two sections up (~1800 safe / ~2420+ fails),
+// which means that measurement was never fully explained by the missing
+// bracket marker - there is a genuine separate size ceiling on one raw
+// synchronous write to this pty (node-pty's ConPTY layer on Windows, or a
+// buffer somewhere in Claude Code's own stdin reading), independent of the
+// paste-vs-typing ambiguity bracketed paste addresses. The two bugs happened
+// to share the same rough byte count, which is what made this look solved
+// after v1.32.0 when it wasn't.
+//
+// 2026-09-21 correction (part 3, same night): tried chunking at a safe size
+// with zero artificial delay (1500-byte pieces via setImmediate, replacing
+// the theory above) and re-bisected. It did NOT help - a fresh 2500-char
+// message, chunked this way, failed identically to an unchunked one. That
+// rules out single-write byte size as the mechanism entirely: however this
+// app writes the bytes, in whatever pieces, at whatever cadence, the CLI's
+// own reading side still can't handle the same total ~2.2-2.5KB of pasted
+// input. This is not fixable from this app's write path - it's a limit on
+// Claude Code's own side, outside this repo. The one thing that actually
+// worked both nights was never attempting it: `LONG_MESSAGE_FILE_THRESHOLD`
+// in renderer.js is now set safely under this boundary (1800), so anything
+// long enough to be at risk is written to a file and read instead of typed.
+// Back to a single plain write - no chunking, since chunking demonstrably
+// doesn't address the real cause and only adds complexity.
+function writeToPtyChunked(proc, agentPath, data) {
+  try {
+    proc.write(data);
+  } catch (e) {
+    handlePtyExit(agentPath);
+  }
+}
+
+ipcMain.on("terminal-resize", (event, { agentPath, cols, rows }) => {
+  const session = ptySessions.get(agentPath);
+  if (session) {
+    try {
+      session.proc.resize(cols, rows);
+      session.cols = cols; session.rows = rows; // v1.69.4: the blank-tab resize probe uses the current size
+    } catch (e) {
+      handlePtyExit(agentPath);
+    }
+  }
+});

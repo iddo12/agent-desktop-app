@@ -1,0 +1,103 @@
+/* PC health panel (v1.111.0). Dark theme "A" from UI-UX's mockup pc_health_panel_concepts_v3. The rest of the app is light; this panel
+   carries its own tokens (--pch-*) so nothing else is affected. Colour is never the only signal: every state has a symbol and a word. */
+#pchealth-view.pch {
+  --pch-bg: #15161a; --pch-card: #1f2127; --pch-ink: #f1f1ef; --pch-mut: #aeb0b6; --pch-line: #3a3d46; --pch-trk: #3a3d46; --pch-ndl: #f1f1ef;
+  --pch-ok: #4cc27d; --pch-warn: #f0a53a; --pch-bad: #ff6b5f; --pch-okbg: #17301f; --pch-warnbg: #3a2a10; --pch-badbg: #42191a;
+  position: absolute; inset: 0; z-index: 45; display: flex; flex-direction: column;
+  background: var(--pch-bg); color: var(--pch-ink); font: 14px "Segoe UI", sans-serif;
+}
+#pchealth-view.pch.hidden { display: none; }
+.pch * { box-sizing: border-box; }
+.pch-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--pch-line); flex: none; }
+.pch-top h2 { margin: 0; font: 600 18px "Segoe UI", sans-serif; flex: 1; min-width: 90px; color: var(--pch-ink); }
+.pch-btn { border: 2px solid var(--pch-ink); background: var(--pch-ink); color: var(--pch-bg); font: 600 14px "Segoe UI", sans-serif; padding: 7px 14px; border-radius: 4px; cursor: pointer; }
+.pch-btn.o { background: transparent; color: var(--pch-ink); }
+.pch-btn:hover:not(:disabled) { filter: brightness(1.15); }
+.pch-btn:disabled { opacity: .45; cursor: default; }
+.pch-btn:focus-visible, .pch-icon:focus-visible, .pch-tab:focus-visible { outline: 2px solid var(--pch-warn, #f0a53a); outline-offset: 2px; }
+.pch-stamp { color: var(--pch-mut); font-size: 12.5px; }
+.pch-live { display: inline-flex; align-items: center; gap: 6px; font: 700 12px "Segoe UI", sans-serif; letter-spacing: .06em; border: 2px solid var(--pch-ok); color: var(--pch-ok); padding: 3px 10px; border-radius: 14px; }
+.pch-live .pch-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pch-ok); animation: pch-pulse 1.2s infinite; }
+.pch-live.pz { border-color: var(--pch-mut); color: var(--pch-mut); }
+.pch-live.pz .pch-dot { background: none; border: 2px solid var(--pch-mut); animation: none; width: 6px; height: 6px; border-radius: 0; }
+.pch-live.busy { border-color: var(--pch-warn); color: var(--pch-warn); }
+.pch-live.busy .pch-dot { background: var(--pch-warn); }
+.pch-live.err { border-color: var(--pch-bad); color: var(--pch-bad); }
+.pch-live.err .pch-dot { background: none; border: 2px solid var(--pch-bad); animation: none; width: 6px; height: 6px; }
+@keyframes pch-pulse { 50% { opacity: .25; } }
+
+.pch-body { flex: 1; overflow-y: auto; padding: 12px 16px 24px; }
+.pch-body.dim .pch-gc svg { opacity: .35; }
+.pch-body.dim .pch-chip { visibility: hidden; }
+.pch-err { margin: 0 0 10px; padding: 10px 14px; border: 2px solid var(--pch-bad); background: var(--pch-badbg); border-radius: 4px; color: var(--pch-ink); }
+.pch-err.hidden, .pch-prog.hidden { display: none; }
+.pch-err.calm { border-color: var(--pch-line, currentColor); background: transparent; }
+.pch-err .pch-btn { margin-inline-start: 8px; }
+.pch-prog { height: 14px; background: var(--pch-trk); border-radius: 7px; overflow: hidden; margin: 0 0 10px; }
+.pch-prog i { display: block; height: 100%; width: 0; background: var(--pch-warn); animation: pch-fill 15s linear forwards; }
+@keyframes pch-fill { to { width: 100%; } }
+
+.pch-sum { display: flex; gap: 12px; align-items: center; margin: 0 0 12px; padding: 10px 14px; border: 2px solid var(--pch-mut); background: var(--pch-card); border-radius: 4px; }
+.pch-sum .ic { font: 700 26px/1 "Segoe UI", sans-serif; width: 38px; height: 38px; border-radius: 50%; background: var(--pch-mut); color: var(--pch-card); display: flex; align-items: center; justify-content: center; flex: none; }
+.pch-sum b { font-size: 16px; }
+.pch-sum span { color: var(--pch-mut); font-size: 13px; display: block; }
+.pch-sum.ok { border-color: var(--pch-ok); background: var(--pch-okbg); } .pch-sum.ok .ic { background: var(--pch-ok); }
+.pch-sum.warn { border-color: var(--pch-warn); background: var(--pch-warnbg); } .pch-sum.warn .ic { background: var(--pch-warn); }
+.pch-sum.bad { border-color: var(--pch-bad); background: var(--pch-badbg); } .pch-sum.bad .ic { background: var(--pch-bad); }
+
+.pch-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pch-card { background: var(--pch-card); border: 1px solid var(--pch-line); padding: 10px 12px; border-radius: 4px; flex: 1; min-width: 280px; }
+.pch-card h3 { margin: 0 0 6px; font: 600 12px "Segoe UI", sans-serif; letter-spacing: .06em; text-transform: uppercase; color: var(--pch-mut); }
+.pch-gc { width: 200px; text-align: center; flex: 1; min-width: 160px; }
+.pch-gl { font: 600 13px "Segoe UI", sans-serif; letter-spacing: .06em; text-transform: uppercase; color: var(--pch-mut); margin-bottom: 12px; }
+.pch-gc svg { display: block; margin: 0 auto; overflow: visible; max-width: 100%; height: auto; }
+.pch-trk { fill: none; stroke: var(--pch-trk); stroke-width: 14; stroke-linecap: round; }
+.pch-val { fill: none; stroke-width: 14; stroke-linecap: round; transition: stroke-dashoffset 1s ease, stroke 1s ease; }
+.pch-val.ok { stroke: var(--pch-ok); } .pch-val.warn { stroke: var(--pch-warn); } .pch-val.bad { stroke: var(--pch-bad); } .pch-val.na { stroke: var(--pch-mut); }
+.pch-tk { stroke: var(--pch-mut); stroke-width: 1.5; }
+.pch-tkl { fill: var(--pch-mut); font: 11px "Segoe UI", sans-serif; }
+.pch-ndl { stroke: var(--pch-ndl); stroke-width: 3; stroke-linecap: round; transform-origin: 100px 100px; transition: transform 1s ease, opacity 1s ease; }
+.pch-hub { fill: var(--pch-ndl); }
+.pch-big { fill: var(--pch-ink); font: 600 28px "Segoe UI", sans-serif; }
+.pch-sub { fill: var(--pch-mut); font: 12px "Segoe UI", sans-serif; }
+.pch-chip { display: inline-block; font: 600 12px "Segoe UI", sans-serif; padding: 2px 9px; border-radius: 12px; border: 1.5px solid; }
+.pch-chip.s { padding: 0 6px; font-size: 11px; margin-left: 6px; }
+.pch-chip.ok { color: var(--pch-ok); background: var(--pch-okbg); border-color: var(--pch-ok); }
+.pch-chip.warn { color: var(--pch-warn); background: var(--pch-warnbg); border-color: var(--pch-warn); }
+.pch-chip.bad { color: var(--pch-bad); background: var(--pch-badbg); border-color: var(--pch-bad); }
+.pch-chip.na { color: var(--pch-mut); background: transparent; border-color: var(--pch-line); }
+
+.pch-br { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 13px; }
+.pch-br .bl { width: 96px; flex: none; }
+.pch-br .bt { flex: 1; height: 12px; background: var(--pch-trk); border-radius: 6px; overflow: hidden; min-width: 40px; }
+.pch-br .bt i { display: block; height: 100%; transition: width 1s ease, background-color 1s ease; }
+.pch-br .bt i.ok { background: var(--pch-ok); } .pch-br .bt i.warn { background: var(--pch-warn); } .pch-br .bt i.bad { background: var(--pch-bad); } .pch-br .bt i.na { background: var(--pch-mut); }
+.pch-br .bv { width: 170px; text-align: right; color: var(--pch-mut); font-size: 12.5px; flex: none; }
+.pch-br .bv.ink { width: auto; text-align: left; color: var(--pch-ink); }
+.pch-cores { display: flex; gap: 5px; align-items: flex-end; height: 84px; }
+.pch-cores > div { flex: 1; text-align: center; font-size: 9.5px; color: var(--pch-mut); min-width: 0; }
+.pch-cores i { display: block; background: var(--pch-ok); margin: 0 auto 2px; width: 100%; border-radius: 2px 2px 0 0; transition: height 1s ease; height: 3px; }
+.pch-cores .e i { background: var(--pch-mut); }
+.pch-grp { font-size: 11.5px; color: var(--pch-mut); margin: 2px 0 4px; white-space: pre; }
+.pch-note { font-size: 12px; color: var(--pch-mut); margin-top: 6px; }
+.pch table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.pch td, .pch th { padding: 4px 6px; border-bottom: 1px solid var(--pch-line); text-align: left; }
+.pch th { color: var(--pch-mut); font-weight: 600; font-size: 12px; }
+.pch td.n, .pch th.n { text-align: right; }
+.pch tr.ph td { color: var(--pch-mut); font-style: italic; }
+.pch-leg { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--pch-mut); align-items: center; margin-top: 8px; }
+.pch-leg .pch-chip { margin-right: 4px; }
+
+/* entry points */
+.pch-tab { display: inline-flex; align-items: center; gap: 4px; }
+.pch-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--text-muted); cursor: pointer; flex: none; }
+.pch-icon:hover { background: var(--bg-hover); color: var(--text); }
+body.pchealth-open .pch-icon { border-color: var(--accent); color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pch-val, .pch-ndl, .pch-br .bt i, .pch-cores i { transition: none; }
+  .pch-live .pch-dot { animation: none; }
+  .pch-prog i { animation: none; width: 100%; }
+}
+@media (max-width: 760px) { .pch-br .bv { width: 120px; } .pch-br .bl { width: 74px; } }

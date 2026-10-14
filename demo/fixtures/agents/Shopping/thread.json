@@ -1,0 +1,29 @@
+{
+  "tail": "idle",
+  "contextTokens": 26000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "I need a new 35 mm lens for portraits. Budget up to $900.",
+      "minsAgo": 400
+    },
+    {
+      "role": "agent",
+      "text": "I collected two quotes:\n\n| Option | Shop | Price | Delivery |\n|---|---|---|---|\n| Lens X 35 mm f/1.8 | Shop North | $780 | 3 days |\n| Lens Y 35 mm f/1.4 | Shop South | $890 | 5 days |\n\nLens Y is sharper wide open but heavier. Which one should I order?",
+      "minsAgo": 380
+    }
+  ],
+  "replyRules": [
+    {
+      "match": "\\bX\\b|first|cheaper|780",
+      "text": "Lens X it is - I'll order it from Shop North and send you the confirmation."
+    },
+    {
+      "match": "\\bY\\b|second|1\\.4|890",
+      "text": "Lens Y it is - I'll place the order with Shop South and send you the confirmation."
+    }
+  ],
+  "replies": [
+    "Thanks - tell me which of the two lenses you prefer and I'll order it."
+  ]
+}

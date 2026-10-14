@@ -1,0 +1,1963 @@
+﻿// Turns Claude Code's own structured JSONL session transcripts into clean,
+// human-readable, dated markdown files saved locally in each agent's own
+// folder - not relying on Claude Code's internal session storage for
+// long-term readability, and not the raw ANSI-laden terminal log (which is
+// what this replaces - see agent-desktop\CLAUDE.md for why).
+
+const fs = require("fs");
+const { readJsonFile } = require("./jsonfile");
+const path = require("path");
+const os = require("os");
+const { withFsRetry } = require("./fsRetry");
+
+// Diagnosed 2026-08-22, the real root cause behind a whole day of "the
+// Chat View just shows nothing" reports for one specific agent (Acmeco
+// Business Context, folder name "Master_Context"): Claude Code
+// CLI's own project-directory encoding also turns underscores into
+// hyphens, not just colons/backslashes/spaces/dots - confirmed directly
+// by listing the real ~/.claude/projects folder, where this agent's
+// actual directory is "...Acmeco-Master-Context--claude-session" (dashes
+// throughout) while this function was producing "...Master_Context--
+// claude-session" (underscores preserved) for the exact same cwd.
+//
+// 2026-09-08: hit again with an agent named "System Optimization &
+// Maintenance Agent" - Claude Code's real dir is
+// "...System-Optimization---Maintenance-Agent--claude-session" ("&" and its
+// surrounding spaces each became a dash), while the old
+// character-class regex (`[:\\/ ._]`) left the "&" intact, so History and
+// the live chat view read an empty/nonexistent directory and rendered a
+// blank conversation for that agent. Rather than keep adding one punctuation
+// character at a time as new agent names expose them, replace EVERY
+// character that isn't a letter, digit, or hyphen - which is exactly what
+// every real directory under ~/.claude/projects/ is already made of. If
+// Claude Code ever starts preserving some other character, widen the
+// keep-set here to match a freshly-listed real directory name.
+function encodeProjectPath(cwd) {
+  return cwd.replace(/[^A-Za-z0-9-]/g, "-");
+}
+
+function projectDirFor(cwd) {
+  return path.join(os.homedir(), ".claude", "projects", encodeProjectPath(cwd));
+}
+
+// v1.77.3: shared short-lived stat/readdir cache. The 10 s overview pass asked for the same folder's file list and
+// the same files' size/mtime four to five times per agent (findJsonlFiles + memoByFiles + newestTranscript +
+// getLatestTranscript* + getHaltInfo), ~2,400 stats per pass. Everything here answers from one directory listing and
+// one stat per file per TTL window. A real change is therefore visible within STAT_TTL_MS (1.5 s) plus the caller's own
+// poll interval. Errors are never cached (a missing file throws exactly like fs.statSync). invalidateStatCache()
+// drops everything; archive.js calls it after its own writes to a transcript.
+let STAT_TTL_MS = 1500;
+const dirCache = new Map();  // dir -> { at, names }
+const statCache = new Map(); // file -> { at, st: { size, mtimeMs, ino } }
+function setStatCacheTtl(ms) { STAT_TTL_MS = ms; dirCache.clear(); statCache.clear(); }
+function invalidateStatCache() { dirCache.clear(); statCache.clear(); }
+function pruneStatCaches(now) {
+  if (statCache.size < 4000 && dirCache.size < 400) return;
+  for (const [k, v] of statCache) if (now - v.at > STAT_TTL_MS) statCache.delete(k);
+  for (const [k, v] of dirCache) if (now - v.at > STAT_TTL_MS) dirCache.delete(k);
+}
+function cachedStat(file) {
+  const now = Date.now();
+  const hit = statCache.get(file);
+  if (hit && now - hit.at < STAT_TTL_MS) return hit.st;
+  const s = fs.statSync(file);
+  const st = { size: s.size, mtimeMs: s.mtimeMs, ino: s.ino };
+  pruneStatCaches(now);
+  statCache.set(file, { at: now, st });
+  return st;
+}
+function cachedJsonlNames(dir) {
+  const now = Date.now();
+  const hit = dirCache.get(dir);
+  if (hit && now - hit.at < STAT_TTL_MS) return hit.names;
+  const names = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+  dirCache.set(dir, { at: now, names });
+  return names;
+}
+
+function findJsonlFiles(sessionCwd) {
+  const dir = projectDirFor(sessionCwd);
+  try {
+    return cachedJsonlNames(dir).map((f) => path.join(dir, f));
+  } catch (e) {
+    return [];
+  }
+}
+
+// Memoize a pure function of a set of transcript files: recompute only when
+// a file's size/mtime changed. The chat view polls every 4s, the stuck-turn
+// watchdog every 30s per agent and the usage badge account-wide - each used
+// to re-read and re-JSON.parse every transcript in full each time (hundreds
+// of MB across all projects), pinning the Electron MAIN thread at ~100% CPU
+// and making the whole UI sluggish (found 2026-09-19 by CPU-profiling it).
+const fileMemo = new Map();
+function memoByFiles(tag, files, compute) {
+  let sig;
+  try {
+    sig = files
+      .map((f) => {
+        const st = cachedStat(f);
+        return `${f}:${st.size}:${st.mtimeMs}`;
+      })
+      .join("|");
+  } catch (e) {
+    return compute();
+  }
+  const hit = fileMemo.get(tag);
+  if (hit && hit.sig === sig) return hit.value;
+  const value = compute();
+  fileMemo.set(tag, { sig, value });
+  return value;
+}
+
+// Assistant message content can be a plain string or an array of content
+// blocks (text / tool_use / tool_result / etc.) - only text is kept for a
+// readable transcript; tool calls are noted briefly rather than dumped raw.
+function extractText(content) {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  const parts = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "text" && block.text) {
+      parts.push(block.text.trim());
+    } else if (block.type === "tool_use" && block.name) {
+      parts.push(`_[used tool: ${block.name}]_`);
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+
+// v1.97.0 (review N4): a transcript line that is valid JSON but not an object ("null", "123") throws here, so every
+// reader's existing catch skips it like a broken line. Before, "null" passed JSON.parse and the next obj.timestamp threw
+// out of the reader (activity/usage lost the rest of that chunk; the conversation list lost the whole file).
+function parseJsonLine(line) {
+  const obj = JSON.parse(line);
+  if (obj === null || typeof obj !== "object") throw new Error("not a JSON object");
+  return obj;
+}
+
+function parseTranscriptEntries(jsonlPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(jsonlPath, "utf-8");
+  } catch (e) {
+    return [];
+  }
+
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = parseJsonLine(line);
+    } catch (e) {
+      continue;
+    }
+    if (obj.type !== "user" && obj.type !== "assistant") continue;
+    if (!obj.message || !obj.timestamp) continue;
+    const text = extractText(obj.message.content);
+    if (!text) continue;
+    entries.push({ timestamp: obj.timestamp, role: obj.type, text });
+  }
+  return entries;
+}
+
+// The Chat View used to render live by scraping xterm.js's own terminal
+// buffer (see agent-desktop\CLAUDE.md, "Chat View went completely blank
+// mid-conversation" for the incident that forced this rethink) - fragile by
+// nature, since it's re-derived from whatever the terminal currently shows
+// rather than any persistent record, and a bad read (a mid-redraw sample, an
+// alternate screen buffer, a bounded scrollback on a long session) could
+// wipe a real, already-shown conversation. This is the replacement data
+// source: read directly from Claude Code's own JSONL transcript, the exact
+// same file History already reads reliably, instead of the terminal.
+//
+// Originally avoided for the live view specifically because JSONL entries
+// were assumed to only get written once a turn fully completes, which would
+// have lost the "watching it respond live" feel raw terminal output has.
+// That assumption turned out to be wrong - confirmed directly (2026-08-19)
+// by inspecting a real session's JSONL while a multi-step answer was being
+// generated: every distinct content block (a thinking segment, a text
+// segment, each individual tool call) gets appended as its own JSONL line
+// as soon as that block finishes, with real sub-second-to-low-single-digit-
+// second gaps between them matching genuine generation timing - not one
+// giant write at the very end. So this can genuinely tail live, just at
+// block granularity (a whole tool call, a whole finished text segment)
+// rather than token-by-token like the raw terminal shows - a real trade
+// worth making, especially now that the live "thinking" seconds counter
+// (see CLAUDE.md, same day) already covers the "is anything happening at
+// all" gap this would otherwise leave during a long tool-heavy stretch with
+// no new text block yet.
+//
+// Produces the same {role, lines} block shape classifyTerminalLines() used
+// to produce (renderer.js), specifically so renderChatBlocks() - including
+// the [[DETAILS]]/[[WARNING]]/[[KEY]] marker-splitting, which only cares
+// about a role and its text, not where the text came from - needed zero
+// changes to consume this instead. Deliberately simpler than
+// parseTranscriptEntries() below (History's own reader): no need to
+// dedupe/group by date, no markdown-italic tool-call wrapping (this is
+// plain text, not a saved .md file), and thinking blocks are skipped
+// entirely, same as parseTranscriptEntries() already does - not meant for
+// display, consistent with how the terminal UI itself never showed them.
+// Caught live (2026-08-20): `/clear` doesn't append a "cleared" marker to
+// the same file - it starts an entirely new JSONL file with its own fresh
+// session ID, leaving the old one (with the full pre-clear conversation)
+// sitting untouched on disk. findJsonlFiles() returns every file for this
+// cwd, which is exactly right for getLatestUsage() below (it just wants
+// whichever single entry has the latest timestamp, so old files are
+// harmless noise it naturally ignores) and for History (which deliberately
+// wants the full historical record across every past session). It's wrong
+// here: merging every file's entries together for the live Chat View meant
+// Reset Session appeared to do nothing - the "cleared" conversation still
+// showed the entire old one glued in front of it, confirmed directly (a
+// tiny ~2KB fresh file sitting next to a 4.8MB historical one, both for the
+// same agent). Fixed by scoping to only the single file that's actually
+// being written to right now - found by comparing each file's own latest
+// entry timestamp (not filesystem mtime, which can be touched by things
+// unrelated to real writes) and keeping only that one file's entries. That
+// scoping still stands for a plain manual reset (see computeLiveTranscriptBlocks
+// below) - a `/clear` has no marker of its own, so gluing the old file back
+// in front would reintroduce exactly this "did it even do anything" bug.
+// 1.23.0 handoff-reset support (see guards.js). The first message of a fresh
+// session after "Save handoff & reset" starts with this tag followed by the
+// absolute path of the archived handoff file; the Chat View turns it into a
+// red reset marker that lists that handoff's LESSONS section. Because that
+// marker exists now, computeLiveTranscriptBlocks() below merges in one file
+// of prior history specifically when it sees this marker - see the
+// 2026-09-28 comment there for why that's safe where the general case above
+// still isn't.
+const HANDOFF_RESUME_TAG = "[[HANDOFF-RESUME]]";
+function lessonsForResume(text) {
+  try {
+    const m = /^\[\[HANDOFF-RESUME\]\]\s*(.+?\.md)/m.exec(text);
+    if (m) return extractLessons(fs.readFileSync(m[1].trim(), "utf-8"));
+  } catch (e) {
+    /* fall through */
+  }
+  return "(lessons for this reset could not be read from the handoff file)";
+}
+function extractLessons(md) {
+  const out = [];
+  let inSec = false;
+  for (const line of String(md).split(/\r?\n/)) {
+    if (/^##\s*LESSONS/i.test(line)) { inSec = true; continue; }
+    if (inSec && /^##\s/.test(line)) break;
+    if (inSec) out.push(line);
+  }
+  const t = out.join("\n").trim();
+  return t || "(the handoff file has no LESSONS section)";
+}
+
+function getLiveTranscriptBlocks(sessionCwd) {
+  return memoByFiles("blocks:" + sessionCwd, findJsonlFiles(sessionCwd), () => computeLiveTranscriptBlocks(sessionCwd));
+}
+
+// --- Tail-ranked file selection (v1.76.0) ------------------------------------
+// Measured 2026-10-06: the three live readers below (blocks, activity, usage)
+// each parsed EVERY .jsonl in an agent's folder in full on their first call
+// after launch - 563 files, 2.2 GB, ~52 s of main-thread time across the 22
+// agents, all of it inside the first minute (the 10 s overview poll and the
+// auto-handoff sweep ask for every agent). Yet the newest file per agent is
+// 0.25-6 MB (30 MB in all): every reader only ever needs the newest one or
+// two files, and the old files were parsed purely to learn they are old.
+//
+// tailLatestTs() answers "newest timestamp in this file" from its last 64 KB
+// (growing x8 when the tail holds no timestamped line, e.g. only custom-title /
+// agent-name records appended by setConversationTitle, up to a full read), and
+// is memoised per (path, size, inode). Transcripts are append-only and written
+// in time order, so the tail holds the file's maximum timestamp; the readers
+// rank files by it and parse only the ones they need. The full forward parse of
+// the chosen files is unchanged, so their output is byte-identical to before
+// (checked on all 22 real agent folders: tools/compare-archive-readers.js).
+const TAIL_TS_BYTES = 64 * 1024;
+const tailTsCache = new Map(); // path -> { size, ino, ts }
+function tailLatestTs(jsonlPath) {
+  let st;
+  try { st = fs.statSync(jsonlPath); } catch (e) { return null; }
+  const hit = tailTsCache.get(jsonlPath);
+  if (hit && hit.size === st.size && hit.ino === st.ino) return hit;
+  let ts = -Infinity;
+  let fd;
+  try {
+    fd = fs.openSync(jsonlPath, "r");
+    for (let bytes = TAIL_TS_BYTES; ; bytes *= 8) {
+      const start = Math.max(0, st.size - bytes);
+      const buf = Buffer.alloc(st.size - start);
+      const n = fs.readSync(fd, buf, 0, buf.length, start);
+      const lines = buf.subarray(0, n).toString("utf-8").split("\n");
+      // The first line of a mid-file window is almost always cut: skip it (the next bigger window covers it).
+      for (let i = start > 0 ? 1 : 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        let obj;
+        try { obj = parseJsonLine(lines[i]); } catch (e) { continue; }
+        if (!obj.timestamp) continue;
+        const t = new Date(obj.timestamp).getTime();
+        if (t > ts) ts = t;
+      }
+      if (ts > -Infinity || start === 0) break;
+    }
+  } catch (e) {
+    /* unreadable: ranks last */
+  } finally {
+    if (fd != null) try { fs.closeSync(fd); } catch (e) {}
+  }
+  const rec = { size: st.size, ino: st.ino, ts };
+  tailTsCache.set(jsonlPath, rec);
+  return rec;
+}
+// Files of a session folder, newest first by tail timestamp (ties keep readdir order). Unreadable files rank last.
+function rankFilesByTail(paths) {
+  const ranked = paths.map((jsonlPath, i) => ({ jsonlPath, i, ts: (tailLatestTs(jsonlPath) || { ts: -Infinity }).ts }));
+  ranked.sort((x, y) => (x.ts === y.ts ? x.i - y.i : y.ts > x.ts ? 1 : -1));
+  return ranked;
+}
+// 2026-10-02: incremental + slim. Used to re-read and re-parse EVERY transcript in the folder
+// (old 16 MB sessions included) on each change to the live one, on the main thread, every few
+// seconds while an agent works. Now each file keeps a byte offset and its newest timestamp; only
+// the two newest files keep (slimmed) entries, and only appended bytes are parsed. "Slim" drops
+// what blocksFromEntries never reads (tool_result bodies, thinking, tool inputs other than the two
+// it renders), which also keeps memory small.
+const liveFileState = new Map(); // path -> { offset, carryBuf, latestTs, entries|null }
+function slimEntry(obj) {
+  if (obj.type === "user") {
+    const m = obj.message;
+    let content = m && m.content;
+    if (Array.isArray(content)) {
+      content = content
+        .filter((b) => b && typeof b === "object" && (b.type === "text" || b.type === "tool_use" ||
+          (b.type === "tool_result" && typeof b.content === "string" && /^Your questions have been answered/.test(b.content))))
+        .map((b) => (b.type === "tool_use" ? { type: "tool_use", name: b.name } : b));
+    }
+    return { type: "user", origin: obj.origin ? { kind: obj.origin.kind } : undefined, timestamp: obj.timestamp, message: { content } };
+  }
+  if (obj.type === "assistant" && obj.message) {
+    const c = obj.message.content;
+    const content = Array.isArray(c)
+      ? c
+          .filter((b) => b && typeof b === "object" && (b.type === "text" || b.type === "tool_use"))
+          .map((b) => (b.type === "tool_use"
+            ? { type: "tool_use", name: b.name, input: b.name === "AskUserQuestion" || b.name === "SendUserFile" ? b.input : undefined }
+            : { type: "text", text: b.text }))
+      : c;
+    return { type: "assistant", timestamp: obj.timestamp, message: { model: obj.message.model, content } };
+  }
+  // v1.65.0: a message typed while the agent is mid-turn is queued by the CLI and recorded as an
+  // attachment (no "user" entry) when the agent picks it up at its next step; the human ones become
+  // ordinary user entries so the chat shows them and the pending bubble matches them.
+  if (obj.type === "attachment" && obj.attachment && obj.attachment.type === "queued_command" &&
+      obj.attachment.origin && obj.attachment.origin.kind === "human" && typeof obj.attachment.prompt === "string") {
+    return { type: "user", origin: { kind: "human" }, timestamp: obj.timestamp, message: { content: obj.attachment.prompt } };
+  }
+  // The CLI logs "enqueue" the moment it RECEIVES input (also mid-turn), long before the agent reads it.
+  // That is proof of delivery for the pending bubble, so it is kept as a hidden "queued" entry.
+  if (obj.type === "queue-operation" && (obj.operation === "enqueue" || obj.operation === "remove") && typeof obj.content === "string") {
+    // memory: keep head and tail only (receipt matching needs the exact short text or the last 80 chars)
+    const c = obj.content.length > 1500 ? obj.content.slice(0, 600) + " ... " + obj.content.slice(-600) : obj.content;
+    return { type: obj.operation === "remove" ? "queue-remove" : "queue-enqueue", timestamp: obj.timestamp, content: c };
+  }
+  return null; // other entry types never produce blocks
+}
+function foldLiveLine(cur, line) {
+  if (!line.trim()) return;
+  let obj;
+  try { obj = parseJsonLine(line); } catch (e) { return; }
+  if (!obj.timestamp) return;
+  const ts = new Date(obj.timestamp).getTime();
+  if (ts > cur.latestTs) cur.latestTs = ts;
+  if (cur.entries) {
+    const e = slimEntry(obj);
+    if (e) cur.entries.push(e);
+  }
+}
+function advanceLiveFile(jsonlPath, cur) {
+  let size, ino;
+  try { const fst = fs.statSync(jsonlPath); size = fst.size; ino = fst.ino; } catch (e) { return; }
+  if (cur.ino !== undefined && cur.ino !== ino) cur.offset = size + 1; // same path, different file: force the reset below
+  cur.ino = ino;
+  if (size < cur.offset) { cur.offset = 0; cur.carryBuf = null; cur.latestTs = -Infinity; if (cur.entries) cur.entries = []; }
+  if (size === cur.offset) return;
+  let fd;
+  try {
+    fd = fs.openSync(jsonlPath, "r");
+    const CHUNK = 8 * 1024 * 1024;
+    while (cur.offset < size) {
+      const len = Math.min(CHUNK, size - cur.offset);
+      const buf = Buffer.alloc(len);
+      const n = fs.readSync(fd, buf, 0, len, cur.offset);
+      if (n <= 0) break;
+      cur.offset += n;
+      const data = Buffer.concat([cur.carryBuf || Buffer.alloc(0), buf.subarray(0, n)]);
+      const lastNl = data.lastIndexOf(10);
+      if (lastNl < 0) { cur.carryBuf = data; continue; }
+      const complete = data.subarray(0, lastNl).toString("utf-8");
+      cur.carryBuf = Buffer.from(data.subarray(lastNl + 1));
+      for (const line of complete.split("\n")) foldLiveLine(cur, line);
+    }
+  } catch (e) {
+    /* keep what was folded so far */
+  } finally {
+    if (fd != null) try { fs.closeSync(fd); } catch (e) {}
+  }
+}
+function computeLiveTranscriptBlocks(sessionCwd) {
+  // v1.76.0: rank by tail timestamp first (see tailLatestTs); only the two newest files are ever
+  // parsed. Before, every file in the folder was parsed in full once per launch just to be ranked.
+  // Only the two newest files can ever be shown (current + one hop back after a handoff reset).
+  const ranked = rankFilesByTail(findJsonlFiles(sessionCwd));
+  const files = [];
+  for (let i = 0; i < ranked.length; i++) {
+    const { jsonlPath } = ranked[i];
+    let cur = liveFileState.get(jsonlPath);
+    if (i < 2) {
+      if (!cur) { cur = { offset: 0, carryBuf: null, latestTs: -Infinity, entries: [] }; liveFileState.set(jsonlPath, cur); }
+      if (!cur.entries) {
+        // fell back into the top two after being dropped: rebuild once from the start
+        cur.entries = []; cur.offset = 0; cur.carryBuf = null; cur.latestTs = -Infinity;
+      }
+      advanceLiveFile(jsonlPath, cur);
+      files.push({ entries: cur.entries, latestTs: cur.latestTs });
+    } else if (cur && cur.entries) {
+      cur.entries = null; // free memory; offset/latestTs kept so it costs nothing while unchanged
+    }
+  }
+  // Most-recently-active file first, so files[0] is the one being written to
+  // right now and files[1] (if any) is the session immediately before it.
+  files.sort((a, b) => b.latestTs - a.latestTs);
+
+  const current = files[0];
+  let blocks = current ? blocksFromEntries(current.entries) : [];
+
+  // 2026-09-28: a handoff-driven reset (see guards.js/1.23.0) now gets one
+  // hop of merge instead of the full wipe below being final. The wipe was a
+  // deliberate fix (see the long comment above) for a real problem, but that
+  // problem was "no marker exists, so a reset looks identical to nothing
+  // happening" - and a marker exists now (the red chat-reset-marker line
+  // built from role:"reset" below). With the marker in place, showing the
+  // file immediately before the reset alongside it reads as one continuous
+  // scroll with a clear seam, not a wipe - which is what a reset the agent
+  // chose for itself (to keep working, not to start over) should look like.
+  // Capped at exactly one hop on purpose: this is about not hiding the turn
+  // that just happened, not about reconstructing full history - that's what
+  // the History view is for. A manual, no-handoff Reset Session has no
+  // role:"reset" first block and is untouched: it still wipes clean, because
+  // that one *is* meant to read as a deliberate fresh start.
+  const firstReal = blocks.find((b) => b.role !== "queued" && b.role !== "queued-removed");
+  if (firstReal && firstReal.role === "reset" && files.length > 1) {
+    blocks = blocksFromEntries(files[1].entries).concat(blocks);
+  }
+
+  return blocks;
+}
+
+function blocksFromEntries(fileEntries) {
+  const entries = fileEntries.slice();
+  entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+  const blocks = [];
+  for (const obj of entries) {
+    if (obj.type === "user" && obj.origin && obj.origin.kind === "human") {
+      // Mirrors the same human-vs-tool-result "user" entry filter already
+      // proven correct in getUsageWindows() below - a tool_result is also
+      // type:"user" in this format but isn't a real message from the user.
+      // The CLI wraps a long typed message in <pasted_content id="N">...</pasted_content id="N">;
+      // strip the wrapper so the bubble matches the optimistic one (no "shown twice") and reads clean.
+      const text = (extractText(obj.message && obj.message.content) || "").replace(/<\/?pasted_content[^>]*>/g, "").trim();
+      if (text && text.startsWith(HANDOFF_RESUME_TAG)) {
+        blocks.push({ role: "reset", lines: [lessonsForResume(text)], timestamp: obj.timestamp });
+      } else if (text) blocks.push({ role: "user", lines: [text], timestamp: obj.timestamp });
+    } else if (obj.type === "queue-enqueue" || obj.type === "queue-remove") {
+      const qt = String(obj.content || "").replace(/<\/?pasted_content[^>]*>/g, "").trim();
+      if (qt) blocks.push({ role: obj.type === "queue-remove" ? "queued-removed" : "queued", lines: [qt], timestamp: obj.timestamp });
+    } else if (obj.type === "assistant" && obj.message && Array.isArray(obj.message.content)) {
+      // Caught live (2026-08-19): a `model:"<synthetic>"` entry is Claude
+      // Code's own internal harness bookkeeping (seen once with the literal
+      // text "No response requested.") - not a real generated reply, and
+      // was rendering as if it were one. Skip these entirely.
+      if (obj.message.model === "<synthetic>") continue;
+      for (const block of obj.message.content) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "text" && block.text && block.text.trim()) {
+          blocks.push({ role: "agent", lines: [block.text.trim()], timestamp: obj.timestamp });
+        } else if (block.type === "tool_use" && block.name === "AskUserQuestion") {
+          // Caught live the same day: this tool doesn't actually pause for
+          // real interactive input in Agent Desktop's non-interactive pty -
+          // it auto-resolves itself with a guessed answer a beat later (see
+          // the tool_result branch below) without ever showing the user what it
+          // asked. Rendering just "[used tool: AskUserQuestion]" left the
+          // entire question invisible - he'd see the tool ran, never see
+          // what it was actually asking. Surface the real question text
+          // instead, one status line per question in the call.
+          const questions = (block.input && block.input.questions) || [];
+          for (const q of questions) {
+            if (q && q.question) blocks.push({ role: "status", lines: [`[asked: "${q.question}"]`], timestamp: obj.timestamp });
+          }
+        } else if (block.type === "tool_use" && block.name === "SendUserFile") {
+          // Files an agent "sends" were invisible here (just "ran
+          // SendUserFile"). Surface them as an agent message: images render
+          // inline (quoted absolute path = IMAGE_PATH_RE in renderer.js),
+          // other files are listed by path.
+          const input = block.input || {};
+          const files = Array.isArray(input.files) ? input.files : [];
+          const lines = [];
+          if (input.caption) lines.push(String(input.caption), "");
+          for (const f of files) {
+            const p = String(f);
+            if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(p) && /^[A-Za-z]:\\/.test(p)) lines.push(`"${p}"`);
+            else lines.push(`File: \`${p}\``);
+          }
+          if (lines.length) blocks.push({ role: "agent", lines: [lines.join("\n")], timestamp: obj.timestamp });
+        } else if (block.type === "tool_use" && block.name) {
+          blocks.push({ role: "status", lines: [`[used tool: ${block.name}]`], timestamp: obj.timestamp });
+        }
+      }
+    } else if (obj.type === "user" && Array.isArray(obj.message && obj.message.content)) {
+      // A tool_result for the AskUserQuestion case above specifically -
+      // shows what it auto-answered, since that resolution happens
+      // invisibly (see the tool_use branch above) and the user has no other way
+      // to see what was actually decided on his behalf.
+      for (const block of obj.message.content) {
+        if (block && block.type === "tool_result" && typeof block.content === "string" && /^Your questions have been answered/.test(block.content)) {
+          blocks.push({ role: "status", lines: [`[${block.content}]`], timestamp: obj.timestamp });
+        }
+      }
+    }
+  }
+  return blocks;
+}
+
+// Is the agent still working? Derived from the transcript, not from pty
+// output timing - so it stays reliable through the quiet stretches (a slow
+// tool, the model generating with nothing streaming yet, a permission
+// prompt) that used to make the "thinking" indicator flicker off.
+//
+// Rule: look at the chronologically LAST user/assistant entry. The agent is
+// idle only if that entry is an assistant message that stopped cleanly
+// (stop_reason end_turn / stop_sequence). Anything else means it still has
+// something to act on: a fresh human prompt, a tool_result to consume, an
+// assistant `tool_use` turn about to run tools, or an assistant turn that
+// kept going on its own after a prior end_turn (autonomous multi-step work).
+// Non-message entry types (attachment, metadata) are ignored.
+function getSessionActivity(sessionCwd) {
+  const { lastHumanTs, lastEndTurnTs, last, lastSessionId } = memoByFiles(
+    "activity:" + sessionCwd,
+    findJsonlFiles(sessionCwd),
+    () => readActivitySummary(sessionCwd)
+  );
+  return finishSessionActivity(lastHumanTs, lastEndTurnTs, last, lastSessionId);
+}
+
+// 2026-10-02: incremental. A live agent's transcript grows every few seconds and can be 16 MB+;
+// the old version re-read and re-parsed EVERY .jsonl in the folder in full on each change (the
+// memo above only helps when nothing changed), ~hundreds of ms of main-thread time per poll per
+// agent. Now each file keeps a running summary plus the byte offset already consumed, and only the
+// appended bytes are parsed. The reducers are order-dependent but append-only, so the result is
+// identical to a full re-parse. A shrunk/replaced file (size < offset) restarts from zero.
+const activityFileState = new Map(); // path -> { offset, carryBuf, ino, st: summary }
+function newActivityState() {
+  return { lastHumanTs: null, lastEndTurnTs: null, last: null, lastSessionId: null, latestTs: -Infinity };
+}
+function foldActivityLine(st, line) {
+  if (!line.trim()) return;
+  let obj;
+  try { obj = parseJsonLine(line); } catch (e) { return; }
+  if (!obj.timestamp) return;
+  foldActivityObj(st, obj);
+}
+function foldActivityObj(st, obj) {
+  const ts = new Date(obj.timestamp).getTime();
+  if (ts > st.latestTs) st.latestTs = ts;
+  if (obj.sessionId) st.lastSessionId = obj.sessionId;
+  if (obj.type === "assistant" && obj.message) {
+    const done = obj.message.stop_reason === "end_turn" || obj.message.stop_reason === "stop_sequence";
+    if (done && (st.lastEndTurnTs == null || ts > st.lastEndTurnTs)) st.lastEndTurnTs = ts;
+    const c = obj.message.content;
+    const toolBlock = Array.isArray(c) ? c.find((b) => b && b.type === "tool_use") : null;
+    const toolUse = !!toolBlock;
+    if (st.last == null || ts >= st.last.ts) st.last = { ts, done, toolUse, toolName: toolBlock ? String(toolBlock.name || "") : "" };
+  } else if (obj.type === "user") {
+    if (obj.origin && obj.origin.kind === "human" && !obj.isMeta) {
+      if (st.lastHumanTs == null || ts > st.lastHumanTs) st.lastHumanTs = ts;
+    }
+    // 2026-10-02: Esc / interrupt writes a user entry "[Request interrupted by user...]". It is not a
+    // new prompt; the turn is over. Left as "not done" it made an interrupted agent read as working
+    // forever, so the forced checkpoint's idle path never started the handoff.
+    const uc = obj.message && obj.message.content;
+    const utext = typeof uc === "string" ? uc : Array.isArray(uc) ? uc.map((b) => (b && b.type === "text" ? b.text || "" : "")).join("") : "";
+    const interrupted = /^\s*\[Request interrupted by user/.test(utext);
+    if (st.last == null || ts >= st.last.ts) st.last = { ts, done: interrupted, toolUse: false };
+    if (interrupted && (st.lastEndTurnTs == null || ts > st.lastEndTurnTs)) st.lastEndTurnTs = ts;
+  }
+}
+function readActivityFile(jsonlPath) {
+  let size, ino;
+  try { const fst = fs.statSync(jsonlPath); size = fst.size; ino = fst.ino; } catch (e) { return null; }
+  let cur = activityFileState.get(jsonlPath);
+  // ino check: a deleted-and-recreated file at the same path must not resume at the old offset
+  if (!cur || size < cur.offset || cur.ino !== ino) {
+    cur = { offset: 0, carryBuf: null, ino, st: newActivityState() };
+    activityFileState.set(jsonlPath, cur);
+  }
+  if (size > cur.offset) advanceActivityAndUsage(jsonlPath, size, ino, cur, null);
+  // A final line with no trailing newline yet is folded if it parses, but not consumed (it may still be growing).
+  let st = cur.st;
+  if (cur.carryBuf && cur.carryBuf.length) {
+    st = Object.assign({}, cur.st);
+    foldActivityLine(st, cur.carryBuf.toString("utf-8"));
+  }
+  return st;
+}
+
+function readActivitySummary(sessionCwd) {
+  // v1.76.0: the summary comes from the single newest file (the one with the latest timestamp), so
+  // rank by tail timestamp and parse files newest-first, stopping as soon as the parsed file's own
+  // latest timestamp is at least every remaining file's tail timestamp (their upper bound). In
+  // practice that is one file; before, every file in the folder was parsed in full.
+  let best = null;
+  const ranked = rankFilesByTail(findJsonlFiles(sessionCwd));
+  for (let i = 0; i < ranked.length; i++) {
+    if (best && best.latestTs > -Infinity && !(ranked[i].ts > best.latestTs)) break;
+    const st = readActivityFile(ranked[i].jsonlPath);
+    if (st && st.latestTs > (best ? best.latestTs : -Infinity)) best = st;
+  }
+  if (!best) return { lastHumanTs: null, lastEndTurnTs: null, last: null, lastSessionId: null };
+  return { lastHumanTs: best.lastHumanTs, lastEndTurnTs: best.lastEndTurnTs, last: best.last, lastSessionId: best.lastSessionId };
+}
+
+const pidCheckMemo = new Map(); // sessionId -> { t, alive } - the daemon pid-file probe, at most once per 3 s per session
+function finishSessionActivity(lastHumanTs, lastEndTurnTs, last, lastSessionId) {
+  let working = !!last && !last.done;
+
+  // The rule above is a pure transcript heuristic: an assistant tool_use
+  // entry with no matching tool_result yet reads as "still working" no
+  // matter how old it is - correct while a tool is genuinely still
+  // running, wrong forever if the underlying daemon process died (crashed,
+  // was killed, host machine slept) before it could write that result.
+  // Confirmed live (2026-09-15/16): the Optimization agent's last transcript
+  // entry was a mid-flight tool_use from ~17:00, Agent Desktop still showed
+  // "Working... 1594s (taking a while - still going)" at midnight, and there
+  // was no backend process for that session left running at all by then.
+  // Cross-check against the daemon's own pid file - claude's background
+  // daemon writes one to ~/.claude/daemon/pty-pids/<first 8 chars of the
+  // session id>.pid for as long as it's alive, and reliably removes it on
+  // exit (confirmed against two live sessions, one 6+ hours old, both still
+  // correctly pointing at a running process) - so a missing file, or one
+  // whose pid no longer exists, is strong direct evidence the process is
+  // actually gone, not just quiet. Deliberately conservative: only ever
+  // flips working from true to false, never the other way, and any error
+  // reading/checking the pid file leaves the transcript's own answer alone
+  // rather than risk a false "not working" for an agent that's actually fine.
+  const pidHit = working && lastSessionId ? pidCheckMemo.get(lastSessionId) : null;
+  if (pidHit && Date.now() - pidHit.t < 3000) {
+    if (!pidHit.alive) working = false; // v1.68.0: checked within the last 3 s
+  } else if (working && lastSessionId) {
+    try {
+      const daemonShort = String(lastSessionId).split("-")[0];
+      const pidFile = path.join(os.homedir(), ".claude", "daemon", "pty-pids", `${daemonShort}.pid`);
+      if (!fs.existsSync(pidFile)) {
+        working = false;
+      } else {
+        const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+        if (Number.isFinite(pid)) {
+          try {
+            process.kill(pid, 0); // throws if the process doesn't exist; doesn't actually signal it
+          } catch (e) {
+            if (e && e.code === "ESRCH") working = false;
+          }
+        }
+      }
+    } catch (e) {
+      // Leave the transcript-based answer as-is - see the conservative note above.
+    }
+    pidCheckMemo.set(lastSessionId, { t: Date.now(), alive: working });
+  }
+
+  let startTs = null;
+  if (working) {
+    startTs = lastHumanTs;
+    if (startTs == null || (lastEndTurnTs != null && lastEndTurnTs > startTs)) startTs = lastEndTurnTs;
+    if (startTs == null) startTs = last.ts;
+  }
+  const pendingToolUse = !!(working && last && last.toolUse);
+  // v1.67.0: how long the still-unanswered tool call has been running (a long foreground Bash/PowerShell
+  // command holds every queued message until it ends). Additive fields; nothing else reads them.
+  return { working, sinceMs: working ? Math.max(0, Date.now() - startTs) : 0, pendingToolUse,
+    pendingToolName: pendingToolUse ? last.toolName || "" : "", pendingToolAgeMs: pendingToolUse ? Math.max(0, Date.now() - last.ts) : 0 };
+}
+
+// Cheap companion to getSessionActivity() for the stuck-turn watchdog in
+// main.js (see checkForStuckTurns()) - a plain fs.statSync per candidate
+// file, no JSON parsing at all, safe to call every few seconds even on a
+// multi-MB transcript. Returns the newest mtime across every JSONL file for
+// this cwd (there can be more than one - old --continue-encoding-bug
+// leftovers, or genuinely multiple past conversations), or null if none
+// exist yet.
+// Size in bytes of the newest transcript (the live conversation). Used by the
+// stuck-turn watchdog to give a huge resumed session longer before it is called wedged.
+function getLatestTranscriptSizeBytes(sessionCwd) {
+  let latest = -Infinity;
+  let size = null;
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try {
+      const stat = cachedStat(jsonlPath);
+      if (stat.mtimeMs > latest) { latest = stat.mtimeMs; size = stat.size; }
+    } catch (e) {
+      /* skip */
+    }
+  }
+  return size;
+}
+
+function getLatestTranscriptMtimeMs(sessionCwd) {
+  let latest = null;
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try {
+      const stat = cachedStat(jsonlPath);
+      const mtime = stat.mtimeMs;
+      if (latest == null || mtime > latest) latest = mtime;
+    } catch (e) {
+      /* file disappeared between readdir and stat - skip it */
+    }
+  }
+  return latest;
+}
+
+// Detects whether the chronologically last transcript entry for this agent
+// is a halted turn - a synthetic message the CLI injects (model:"<synthetic>",
+// isApiErrorMessage:true) when the account's shared usage window (5-hour or
+// weekly) runs out mid-turn, instead of a normal end_turn/stop_sequence
+// completion. getSessionActivity() correctly reads a halt as "not working"
+// (the turn did stop), but that's indistinguishable from ordinary idle rest -
+// with nothing else watching for it, a halted agent just sits there silently
+// until a human happens to notice and retypes something, which is exactly
+// what prompted this (2026-09-17: the Trade Show Agent hit its 5-hour limit
+// answering "Are you working on it?" and nobody saw any signal at all).
+//
+// Only reads the tail of the newest transcript file (a bounded fs.readSync,
+// never a full JSON.parse of the whole file) since these routinely grow past
+// 10MB - safe to call on the same cadence as the stuck-turn watchdog for
+// every agent. Returns null when the last entry isn't a halt (including
+// "file has no entries yet" and "tail read landed mid-line" - a transient
+// mid-line read just means the next tick's read starts from mtime-fresh
+// bytes and gets a clean line next time).
+const HALT_TAIL_READ_BYTES = 65536;
+// v1.77.3: the answer depends only on the newest file's bytes, so it is memoized by (path,size,mtime) - the 10 s
+// overview pass used to read and parse a 64 KB tail per agent every time even when nothing had changed.
+const haltMemo = new Map(); // sessionCwd -> { sig, value }
+function getHaltInfo(sessionCwd) {
+  let newestPath = null;
+  let newestMtime = -Infinity;
+  let newestSize = 0;
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try {
+      const st = cachedStat(jsonlPath);
+      if (st.mtimeMs > newestMtime) {
+        newestMtime = st.mtimeMs;
+        newestSize = st.size;
+        newestPath = jsonlPath;
+      }
+    } catch (e) {
+      /* file disappeared mid-scan - skip it */
+    }
+  }
+  if (!newestPath) { haltMemo.delete(sessionCwd); return null; }
+  const sig = `${newestPath}:${newestSize}:${newestMtime}`;
+  const hit = haltMemo.get(sessionCwd);
+  if (hit && hit.sig === sig) return hit.value;
+  const value = computeHaltInfo(newestPath, newestSize);
+  if (value !== undefined) haltMemo.set(sessionCwd, { sig, value });
+  return value === undefined ? null : value;
+}
+// returns undefined when the file could not be read (not memoized), null for "not halted", else the halt object
+function computeHaltInfo(newestPath, cachedSize) {
+  let lines;
+  try {
+    const size = fs.statSync(newestPath).size;
+    const start = Math.max(0, size - HALT_TAIL_READ_BYTES);
+    const fd = fs.openSync(newestPath, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      lines = buf
+        .toString("utf-8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    return undefined;
+  }
+
+  // Every real assistant turn is followed by one or more bookkeeping lines
+  // (type "system"/"turn_duration", cost-state, etc.) - the true last
+  // *message* entry (what getSessionActivity() itself keys off) is rarely
+  // the literal last line of the file. Scan backwards past those and stop
+  // at the first assistant/user entry actually found, matching
+  // getSessionActivity()'s own "chronologically last user/assistant entry"
+  // rule. A user entry here means a fresh human message landed with no
+  // reply yet - genuinely working, not halted (callers already skip this
+  // case via getSessionActivity().working, but check defensively too).
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let obj;
+    try {
+      obj = parseJsonLine(lines[i]);
+    } catch (e) {
+      continue; // tail cut landed mid-line for this entry - keep scanning back
+    }
+    if (obj.type === "user") return null;
+    if (obj.type !== "assistant") continue;
+    if (!obj.isApiErrorMessage) return null;
+
+    const quota = obj.quotaLimits || {};
+    // Classify, rather than letting every API error be reported as a usage
+    // limit. 2026-09-22: the Product Development Agent showed "STOPPED -
+    // Claude usage limit reached" while its own badges read 2% of the 5-hour
+    // window and 8% of the weekly one. The real entry was
+    // {error:"server_error", apiErrorStatus:500} with no quotaLimits at all -
+    // a transient 500 that only needed the message sending again. the owner would
+    // have sat waiting for a reset that was never coming.
+    //
+    // This is the same mistake that was already fixed once for expired logins
+    // (see guards-main.js isAuthBroken) - fixed there for that one signature
+    // rather than generalised, so every other API error still fell through to
+    // the rate-limit wording. Callers must branch on `kind`, never assume.
+    let kind = "other";
+    const haltText = extractText(obj.message && obj.message.content);
+    // 2026-10-13 (the partner's COO stopped after an app restart): "Could not refresh your login because another Claude
+    // Code process is refreshing (or exited mid-refresh). Try again in a minute". Many CLI processes share one OAuth
+    // login and the refresh is single-flight, so after a restart of several agents one of them loses the race. It is
+    // transient (the other process finishes the refresh), unlike authentication_failed. Handled like a 5xx: the
+    // existing 45 s auto-retry resends once, and the banner says what it is instead of "API error".
+    const refreshRace = /another Claude Code process is refreshing/i.test(haltText || "");
+    if (quota.rateLimitType || quota.resetsAt || obj.apiErrorStatus === 429) {
+      kind = "rate_limit";
+    } else if (refreshRace) {
+      kind = "server_error";
+    } else if (obj.error === "authentication_failed") {
+      kind = "auth";
+    } else if (typeof obj.apiErrorStatus === "number" && obj.apiErrorStatus >= 500) {
+      kind = "server_error";
+    }
+    return {
+      refreshRace,
+      kind,
+      timestamp: obj.timestamp || null,
+      error: obj.error || null,
+      apiErrorStatus: obj.apiErrorStatus || null,
+      rateLimitType: quota.rateLimitType || null,
+      // Anthropic reports this in epoch SECONDS (confirmed against a real
+      // capture: 1789665600 lines up with "resets 8:20pm" the same evening,
+      // not some date decades away) - normalize to epoch ms for setTimeout/
+      // Date.now() comparisons everywhere else in this app.
+      resetsAt: typeof quota.resetsAt === "number" ? quota.resetsAt * 1000 : null,
+      text: extractText(obj.message && obj.message.content),
+    };
+  }
+  return null;
+}
+
+// Each assistant JSONL entry already carries structured token usage for
+// that turn - reused here for the live context/token indicator rather than
+// anything the CLI displays on its own (it doesn't, in the terminal UI).
+// "Context tokens" approximates what's currently sent to the model each
+// turn: cache_read + cache_creation + input (excludes output_tokens, which
+// only becomes part of context on the *next* turn once it's been read back
+// in). Scans every JSONL file for this cwd (there can be more than one from
+// past sessions before this project's own --continue encoding bug was
+// fixed) and keeps whichever entry has the latest timestamp. Deliberately
+// scoped to just this one agent's sessionCwd - context size genuinely IS
+// per-conversation, unlike the token-buffer figure that used to live here
+// too (moved to getUsageWindows() below, since that's an account-wide
+// throttle, not something a single conversation's own files can fully see -
+// see the comment there for the full story of that correction).
+function getLatestUsage(sessionCwd) {
+  return memoByFiles("usage:" + sessionCwd, findJsonlFiles(sessionCwd), () => computeLatestUsage(sessionCwd));
+}
+// Incremental like readActivityFile above: per-file running "latest usage" + consumed byte offset.
+const usageFileState = new Map(); // path -> { offset, carryBuf, st: { latest } }
+function foldUsageLine(st, line) {
+  if (!line.trim()) return;
+  let obj;
+  try { obj = parseJsonLine(line); } catch (e) { return; }
+  if (!obj.timestamp) return;
+  foldUsageObj(st, obj);
+}
+function foldUsageObj(st, obj) {
+  if (obj.type !== "assistant" || !obj.message || !obj.message.usage) return;
+  if (!st.latest || new Date(obj.timestamp) > new Date(st.latest.timestamp)) {
+    const u = obj.message.usage;
+    st.latest = {
+      timestamp: obj.timestamp,
+      contextTokens: (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.input_tokens || 0),
+      outputTokens: u.output_tokens || 0,
+      // "<synthetic>" marks CLI-generated notices, not a real model turn.
+      model: obj.message.model && !String(obj.message.model).startsWith("<") ? obj.message.model : null,
+    };
+  }
+}
+function readUsageFile(jsonlPath) {
+  let size, ino;
+  try { const fst = fs.statSync(jsonlPath); size = fst.size; ino = fst.ino; } catch (e) { return null; }
+  let cur = usageFileState.get(jsonlPath);
+  if (!cur || size < cur.offset || cur.ino !== ino) {
+    cur = { offset: 0, carryBuf: null, ino, st: { latest: null } };
+    usageFileState.set(jsonlPath, cur);
+  }
+  if (size > cur.offset) advanceActivityAndUsage(jsonlPath, size, ino, null, cur);
+  let st = cur.st;
+  if (cur.carryBuf && cur.carryBuf.length) {
+    st = { latest: cur.st.latest };
+    foldUsageLine(st, cur.carryBuf.toString("utf-8"));
+  }
+  return st.latest;
+}
+
+// v1.93.0: one read and one JSON.parse per line for BOTH per-file summaries. The overview pass asks for activity and
+// then usage of the same newest file; each used to read and parse it separately, so a cold start paid twice (the
+// 2.5 s main-thread block at +0.7 s on a 25-agent set, PERF_REPORT.md). When the other summary of this file sits at
+// the same offset with the same carry (always true on a cold start, and after both caught up), the bytes are read
+// once and every complete line is parsed once and folded into both, in the same order as before - the per-line work
+// of each fold is unchanged (foldActivityObj / foldUsageObj), so both results are identical to the separate reads.
+// Otherwise only the asked-for summary advances, exactly as before.
+function sameCarry(a, b) {
+  const la = a.carryBuf ? a.carryBuf.length : 0, lb = b.carryBuf ? b.carryBuf.length : 0;
+  return la === lb && (la === 0 || a.carryBuf.equals(b.carryBuf));
+}
+function advanceActivityAndUsage(jsonlPath, size, ino, act, use) {
+  const askedActivity = !!act;
+  if (!act) {
+    act = activityFileState.get(jsonlPath);
+    if (!act || size < act.offset || act.ino !== ino) { act = { offset: 0, carryBuf: null, ino, st: newActivityState() }; activityFileState.set(jsonlPath, act); }
+  } else {
+    use = usageFileState.get(jsonlPath);
+    if (!use || size < use.offset || use.ino !== ino) { use = { offset: 0, carryBuf: null, ino, st: { latest: null } }; usageFileState.set(jsonlPath, use); }
+  }
+  const both = act.offset === use.offset && sameCarry(act, use);
+  const curs = both ? [act, use] : [askedActivity ? act : use];
+  const lead = curs[0];
+  let fd;
+  try {
+    fd = fs.openSync(jsonlPath, "r");
+    const CHUNK = 8 * 1024 * 1024;
+    while (lead.offset < size) {
+      const len = Math.min(CHUNK, size - lead.offset);
+      const buf = Buffer.alloc(len);
+      const n = fs.readSync(fd, buf, 0, len, lead.offset);
+      if (n <= 0) break;
+      const offset = lead.offset + n;
+      // Split on the newline BYTE so a multi-byte character cut by a chunk edge is never decoded half-way.
+      const data = Buffer.concat([lead.carryBuf || Buffer.alloc(0), buf.subarray(0, n)]);
+      const lastNl = data.lastIndexOf(10);
+      if (lastNl < 0) { for (const c of curs) { c.offset = offset; c.carryBuf = data; } continue; }
+      const complete = data.subarray(0, lastNl).toString("utf-8");
+      const carry = Buffer.from(data.subarray(lastNl + 1));
+      for (const c of curs) { c.offset = offset; c.carryBuf = carry; }
+      for (const line of complete.split("\n")) {
+        if (!line.trim()) continue;
+        let obj;
+        try { obj = parseJsonLine(line); } catch (e) { continue; }
+        if (!obj.timestamp) continue;
+        if (curs.includes(act)) foldActivityObj(act.st, obj);
+        if (curs.includes(use)) foldUsageObj(use.st, obj);
+      }
+    }
+  } catch (e) {
+    /* keep what was folded so far */
+  } finally {
+    if (fd != null) try { fs.closeSync(fd); } catch (e) {}
+  }
+}
+
+function computeLatestUsage(sessionCwd) {
+  // v1.76.0: newest-first by tail timestamp; a file can only hold a newer usage entry than the one
+  // found so far if its tail timestamp (its newest line of any kind) is newer, so the walk stops there.
+  // Normally that is the newest file alone; before, every file in the folder was parsed in full.
+  let latestUsage = null;
+  let latestMs = -Infinity;
+  for (const { jsonlPath, ts } of rankFilesByTail(findJsonlFiles(sessionCwd))) {
+    if (latestUsage && !(ts > latestMs)) break;
+    const u = readUsageFile(jsonlPath);
+    if (u) {
+      const ms = new Date(u.timestamp).getTime();
+      if (!latestUsage || ms > latestMs) { latestUsage = u; latestMs = ms; }
+    }
+  }
+  return latestUsage;
+}
+
+function dateKeyFromTimestamp(ts) {
+  return new Date(ts).toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+function groupByDate(entries) {
+  const byDate = new Map();
+  for (const entry of entries) {
+    const key = dateKeyFromTimestamp(entry.timestamp);
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push(entry);
+  }
+  return byDate;
+}
+
+function formatDayMarkdown(dateKey, entries) {
+  const lines = [`# ${dateKey}`, ""];
+  for (const entry of entries) {
+    const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const who = entry.role === "user" ? "You" : "Agent";
+    lines.push(`### ${time} â€” ${who}`, "", entry.text, "");
+  }
+  return lines.join("\n");
+}
+
+function dayFilePath(agentPath, dateKey) {
+  const [year, month, day] = dateKey.split("-");
+  const dir = path.join(agentPath, "sessions", year, month);
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${day}.md`);
+}
+
+// 2026-10-02 (v1.62.9): syncArchive used to re-read and re-JSON.parse EVERY transcript of an
+// agent and rewrite EVERY day file, for every agent, every 30 s. CPU-profiled live: the main
+// process sat at ~100% of one core (parseTranscriptEntries 25%, file reads 40%,
+// formatDayMarkdown 17%), which is what made typing lag and the app freeze. Now:
+//   - first call for an agent in this run: if the newest day file is already at least as new as
+//     the newest transcript, the archive is up to date - just remember each file's size (no
+//     parsing at all). Otherwise do the old full regeneration once.
+//   - every later call: read only the bytes appended since last time (per-file offset, cut at
+//     the last newline so a half-written line is never consumed) and APPEND those entries to
+//     their day files. Nothing is re-parsed or rewritten.
+//   - a file that shrank (truncated/rewritten) triggers one full regeneration for that agent.
+const archiveOffsets = new Map(); // agentPath -> Map(jsonlPath -> consumed byte offset)
+
+function parseEntryLine(line) {
+  if (!line.trim()) return null;
+  let obj;
+  try {
+    obj = parseJsonLine(line);
+  } catch (e) {
+    return null;
+  }
+  if (obj.type !== "user" && obj.type !== "assistant") return null;
+  if (!obj.message || !obj.timestamp) return null;
+  const text = extractText(obj.message.content);
+  if (!text) return null;
+  return { timestamp: obj.timestamp, role: obj.type, text };
+}
+
+// Entries from byte `offset` of a transcript up to its last complete line.
+function readEntriesFrom(jsonlPath, offset, size) {
+  const len = size - offset;
+  if (len <= 0) return { entries: [], newOffset: offset };
+  let fd;
+  try {
+    fd = fs.openSync(jsonlPath, "r");
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, offset);
+    const lastNl = buf.lastIndexOf(10);
+    if (lastNl < 0) return { entries: [], newOffset: offset };
+    const entries = [];
+    for (const line of buf.toString("utf-8", 0, lastNl).split("\n")) {
+      const e = parseEntryLine(line);
+      if (e) entries.push(e);
+    }
+    return { entries, newOffset: offset + lastNl + 1 };
+  } catch (e) {
+    return { entries: [], newOffset: offset };
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch (e) {}
+    }
+  }
+}
+
+function formatEntryMarkdown(entry) {
+  const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const who = entry.role === "user" ? "You" : "Agent";
+  return [`### ${time} â€” ${who}`, "", entry.text, ""].join("\n");
+}
+
+function fullSyncArchive(agentPath, jsonlFiles, offsets) {
+  const allEntries = [];
+  for (const f of jsonlFiles) {
+    let size;
+    try { size = fs.statSync(f).size; } catch (e) { continue; }
+    const { entries, newOffset } = readEntriesFrom(f, 0, size);
+    for (const e of entries) allEntries.push(e);
+    offsets.set(f, newOffset);
+  }
+  if (allEntries.length === 0) return { daysWritten: 0 };
+  const byDate = groupByDate(allEntries);
+  for (const [dateKey, entries] of byDate) {
+    entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const md = formatDayMarkdown(dateKey, entries);
+    withFsRetry(() => fs.writeFileSync(dayFilePath(agentPath, dateKey), md, "utf-8"));
+  }
+  return { daysWritten: byDate.size };
+}
+
+function syncArchive(agentPath, sessionCwd) {
+  const jsonlFiles = findJsonlFiles(sessionCwd);
+  let offsets = archiveOffsets.get(agentPath);
+
+  if (!offsets) {
+    // First look at this agent in this run.
+    offsets = new Map();
+    archiveOffsets.set(agentPath, offsets);
+    let newestTranscript = 0;
+    const sizes = new Map();
+    for (const f of jsonlFiles) {
+      try {
+        const st = fs.statSync(f);
+        sizes.set(f, st.size);
+        if (st.mtimeMs > newestTranscript) newestTranscript = st.mtimeMs;
+      } catch (e) {}
+    }
+    let newestDay = 0;
+    try {
+      const days = listArchivedDays(agentPath); // newest first
+      if (days.length) {
+        const [y, m, d] = days[0].split("-");
+        newestDay = fs.statSync(path.join(agentPath, "sessions", y, m, `${d}.md`)).mtimeMs;
+      }
+    } catch (e) {}
+    if (newestDay && newestDay >= newestTranscript) {
+      for (const [f, size] of sizes) offsets.set(f, size); // archive already current: no parsing
+      return { daysWritten: 0 };
+    }
+    return fullSyncArchive(agentPath, jsonlFiles, offsets);
+  }
+
+  // Later calls: only the appended bytes.
+  const added = [];
+  for (const f of jsonlFiles) {
+    let size;
+    try { size = fs.statSync(f).size; } catch (e) { continue; }
+    const prev = offsets.get(f) || 0;
+    if (size < prev) {
+      // a transcript shrank (rewritten): regenerate this agent's archive once from scratch
+      const fresh = new Map();
+      archiveOffsets.set(agentPath, fresh);
+      return fullSyncArchive(agentPath, jsonlFiles, fresh);
+    }
+    if (size === prev) continue;
+    const { entries, newOffset } = readEntriesFrom(f, prev, size);
+    for (const e of entries) added.push(e);
+    offsets.set(f, newOffset);
+  }
+  if (added.length === 0) return { daysWritten: 0 };
+  const byDate = groupByDate(added);
+  for (const [dateKey, entries] of byDate) {
+    entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const file = dayFilePath(agentPath, dateKey);
+    const body = entries.map(formatEntryMarkdown).join("\n");
+    withFsRetry(() => {
+      if (fs.existsSync(file)) fs.appendFileSync(file, "\n" + body, "utf-8");
+      else fs.writeFileSync(file, formatDayMarkdown(dateKey, entries), "utf-8");
+    });
+  }
+  return { daysWritten: byDate.size };
+}
+
+function listArchivedDays(agentPath) {
+  const sessionsRoot = path.join(agentPath, "sessions");
+  const days = [];
+  try {
+    for (const year of fs.readdirSync(sessionsRoot)) {
+      const yearDir = path.join(sessionsRoot, year);
+      if (!fs.statSync(yearDir).isDirectory()) continue;
+      for (const month of fs.readdirSync(yearDir)) {
+        const monthDir = path.join(yearDir, month);
+        if (!fs.statSync(monthDir).isDirectory()) continue;
+        for (const file of fs.readdirSync(monthDir)) {
+          if (!file.endsWith(".md")) continue;
+          const day = file.replace(/\.md$/, "");
+          days.push(`${year}-${month}-${day}`);
+        }
+      }
+    }
+  } catch (e) {
+    /* no archive yet */
+  }
+  return days.sort().reverse(); // newest first
+}
+
+function readArchivedDay(agentPath, dateKey) {
+  try {
+    return fs.readFileSync(dayFilePath(agentPath, dateKey), "utf-8");
+  } catch (e) {
+    return null;
+  }
+}
+
+// Claude's real rate limits (a rolling 5-hour message window, and a weekly
+// cap measured in "active compute hours") are account-wide, not tied to any
+// one conversation or even to Agent Desktop specifically - usage anywhere
+// (any Claude Code session on this machine, claude.ai, Cowork) draws from
+// the same pool. Anthropic doesn't expose either figure through any API
+// this app can read, so this scans EVERY project bucket under
+// ~/.claude/projects/ (not just agents this app manages) for genuine human-
+// typed prompt counts (type:"user" entries with origin.kind === "human" -
+// this excludes tool-result "user" entries and synthetic --continue
+// markers like isMeta:true "Continue from where you left off", neither of
+// which count as an actual message sent) within two windows: the trailing
+// 5 hours and the trailing 7 days.
+//
+// First version of the weekly figure summed `turn_duration.durationMs` as
+// a proxy for "active compute hours" - found and discarded the same day:
+// direct inspection showed only 23 such entries exist across the ENTIRE
+// account, nowhere near the real number of turns that actually happened,
+// meaning Claude Code doesn't log that marker for every turn. That made it
+// a significant undercount, not a rough-but-fair estimate, so it's gone.
+// Message counting (proven reliable for the 5h window already) is reused
+// for the 7-day window instead - real and comprehensive, even though the
+// unit (messages) doesn't match what Anthropic's real weekly cap actually
+// measures (compute-hours). Deliberately NOT converted into a fake
+// percentage against a compute-hours limit - a percentage built by
+// dividing two different units together would be a second layer of
+// fabrication on top of the first. The raw count is shown instead.
+//
+// The token-buffer figure (see getLatestUsage() above for what it is and
+// why it's framed as a short-term throttle, not a plan budget) also lives
+// here now, not there - moved the same day the user asked "this buffer, is
+// that the specific agent's buffer?" and the honest answer was "yes, and
+// it shouldn't be." The underlying throttle is realistically account-wide
+// (Claude's rate limiting operates per account/API key, not per
+// conversation), so scoping it to one agent's own JSONL files could only
+// ever see a partial picture - bursts from other agents or other sessions
+// on this machine wouldn't register. Tracked in the same account-wide scan
+// as the message counts, for the same reason.
+// Real, Anthropic-reported rate-limit usage, read from the cache file
+// src/statusline.cjs writes every time ANY interactive `claude` session on
+// this machine (this app's own, or a terminal the owner opens himself) receives
+// an API response - see that file's own comment for why this is
+// account-wide by design, and CLAUDE.md's "Real design flaw found and fixed"
+// section for why the message-count heuristic below has to stay account-wide
+// too. Returns nulls if the statusLine was never installed, has never fired
+// yet (e.g. right after a fresh install, before any session has completed a
+// turn), or - deliberately - if the window it describes has already reset
+// (`resets_at` in the past), since a stale figure from an expired window is
+// actively misleading, not just imprecise.
+// 2026-10-05: the statusLine cache froze for 22 h (settings.json BOM) and the badge kept showing 74% against a
+// real 84%. When the statusLine figures are missing or older than 15 min, fall back to the Optimization agent's
+// usage model (UsageModel/data/usage_now.json, refreshed every ~5 min from real readings plus usage since).
+// Only used when that file itself is fresh; the 5h window only when its basis is not "model only". Silently
+// absent on machines without that agent (e.g. the partner's), where behaviour is unchanged.
+const FRESH_FALLBACK_SECONDS = 15 * 60;
+function usageModelFallback(kind) {
+  try {
+    const p = require("./testGuard").usageNowPath();
+    const d = JSON.parse(fs.readFileSync(p, "utf-8").replace(/^\uFEFF/, ""));
+    const ageSeconds = Math.max(0, Math.round((Date.now() - Date.parse(d.at)) / 1000));
+    if (!(ageSeconds <= FRESH_FALLBACK_SECONDS)) return null;
+    const w = d.windows && d.windows[kind];
+    if (!w || typeof w.usedPct !== "number") return null;
+    if (kind === "5h" && /^model only/i.test(w.basis || "")) return null;
+    const resetsParsed = w.resetsAt ? Math.round(Date.parse(w.resetsAt) / 1000) : null;
+    const resetsAt = Number.isFinite(resetsParsed) ? resetsParsed : null;
+    if (resetsAt && resetsAt < Date.now() / 1000) return null;
+    return { usedPct: w.usedPct, resetsAt, ageSeconds, source: "usage-model" };
+  } catch (e) {
+    return null;
+  }
+}
+
+function getConfirmedRateLimits() {
+  const r = getConfirmedRateLimitsFromStatusLine();
+  const old = (x) => !x || typeof x.ageSeconds !== "number" || x.ageSeconds > FRESH_FALLBACK_SECONDS;
+  if (old(r.fiveHour)) r.fiveHour = usageModelFallback("5h") || r.fiveHour;
+  if (old(r.sevenDay)) r.sevenDay = usageModelFallback("7d") || r.sevenDay;
+  return r;
+}
+
+function getConfirmedRateLimitsFromStatusLine() {
+  const nowSec0 = Date.now() / 1000;
+  // v1.54.1: prefer statusline.cjs's per-session record. The single cache below
+  // is rewritten every 60 s by EVERY open session, idle ones included, each
+  // with whatever % it last heard - so the badge flip-flopped (weekly showed
+  // 25% for six hours while the truth was 37%). In the per-session file an
+  // entry's changedAt only moves when that session's value really changes, so
+  // "changedAt > firstSeenAt" proves the session was live when it heard it.
+  // Same rule as the usage model's sampler.js. Per window: the most recently
+  // changed live session that has a value for it and whose window hasn't reset.
+  try {
+    const bySess = readJsonFile(path.join(os.homedir(), ".claude", "agent-desktop-rate-limits-by-session.json"));
+    const live = Object.values(bySess || {})
+      .filter((e) => e && e.changedAt && e.firstSeenAt && Date.parse(e.changedAt) > Date.parse(e.firstSeenAt))
+      .sort((a, b) => Date.parse(b.changedAt) - Date.parse(a.changedAt));
+    const pick = (pk, rk) => {
+      const e = live.find((x) => typeof x[pk] === "number" && !(x[rk] && x[rk] < nowSec0));
+      if (!e) return null;
+      return { usedPct: e[pk], resetsAt: e[rk] || null, ageSeconds: Math.max(0, Math.round(nowSec0 - Date.parse(e.changedAt) / 1000)), source: "session" };
+    };
+    const fiveHour = pick("p5", "r5");
+    const sevenDay = pick("p7", "r7");
+    if (fiveHour || sevenDay) {
+      const legacy = getLegacyRateLimits();
+      return { fiveHour: fiveHour || legacy.fiveHour, sevenDay: sevenDay || legacy.sevenDay };
+    }
+  } catch (e) {
+    /* no per-session file yet - fall back to the single cache */
+  }
+  return getLegacyRateLimits();
+}
+
+function getLegacyRateLimits() {
+  const cachePath = path.join(os.homedir(), ".claude", "agent-desktop-rate-limits.json");
+  let cache;
+  try {
+    cache = readJsonFile(cachePath);
+  } catch (e) {
+    return { fiveHour: null, sevenDay: null };
+  }
+  const nowSec = Date.now() / 1000;
+  // How long ago statusline.cjs last wrote this cache - surfaced so the UI
+  // can show real freshness instead of implying a live figure. Found to
+  // matter directly, 2026-08-23: the owner saw a 69% badge at the same moment
+  // Claude's own native app was already showing "approaching weekly
+  // limit" - not a wrong number, a ~20-minute-stale one (the cache only
+  // updated on real interactive turns before RATE_LIMIT_REFRESH_INTERVAL_
+  // SECONDS was added in main.js). That refresh interval now bounds the
+  // worst case going forward, but showing the age directly means the owner
+  // never has to just trust it.
+  const ageSeconds = cache.updatedAt ? Math.max(0, Math.round(nowSec - new Date(cache.updatedAt).getTime() / 1000)) : null;
+  const fiveHour =
+    typeof cache.fiveHourUsedPct === "number" && !(cache.fiveHourResetsAt && cache.fiveHourResetsAt < nowSec)
+      ? { usedPct: cache.fiveHourUsedPct, resetsAt: cache.fiveHourResetsAt || null, ageSeconds }
+      : null;
+  const sevenDay =
+    typeof cache.sevenDayUsedPct === "number" && !(cache.sevenDayResetsAt && cache.sevenDayResetsAt < nowSec)
+      ? { usedPct: cache.sevenDayUsedPct, resetsAt: cache.sevenDayResetsAt || null, ageSeconds }
+      : null;
+  return { fiveHour, sevenDay };
+}
+
+// Incremental per-file scan for getUsageWindows(). That function runs
+// account-wide (every project's transcripts, hundreds of MB) on every usage
+// refresh; re-reading and JSON.parsing all of it each time pinned the main
+// process at ~100% CPU. Now each file is remembered as a small record
+// (human-message timestamps + token-reminder maxima) and only bytes appended
+// since the last call are read. A shrunk file (rewritten/rotated) is rescanned
+// from scratch. Only complete lines are consumed, so a half-written last
+// line is picked up on the next call.
+const usageFileCache = new Map();
+// v1.76.0: the per-file records survive a restart. Cold, this scan read every transcript of every
+// project on the machine (3+ GB, 21 s measured on 2026-10-06) on the main thread, on the first usage
+// refresh after launch. With the records saved to disk (main.js hands the file in, the scan runs in a
+// worker thread) a restart only reads what was appended since. A record is reused only for the same
+// inode with at least `offset` bytes still there; anything else is rescanned from zero, as before.
+let usageFileCacheDirty = false;
+function loadUsageFileCache(file) {
+  try {
+    const doc = readJsonFile(file);
+    if (!doc || doc.version !== 1 || !Array.isArray(doc.files)) return 0;
+    let n = 0;
+    for (const f of doc.files) {
+      if (!f || typeof f.path !== "string" || !Number.isFinite(f.offset)) continue;
+      usageFileCache.set(f.path, {
+        offset: f.offset, ino: f.ino, humanTs: Array.isArray(f.humanTs) ? f.humanTs : [],
+        dayCounts: new Map(Array.isArray(f.dayCounts) ? f.dayCounts : []), earliestMs: f.earliestMs == null ? null : f.earliestMs,
+        maxTokens: f.maxTokens || 0, latestTokens: f.latestTokens || null,
+      });
+      n++;
+    }
+    return n;
+  } catch (e) {
+    return 0; // no cache yet, or unreadable: scan from scratch, exactly as before
+  }
+}
+function saveUsageFileCache(file) {
+  const files = [];
+  for (const [p, r] of usageFileCache) {
+    files.push({ path: p, offset: r.offset, ino: r.ino, humanTs: r.humanTs, dayCounts: [...r.dayCounts], earliestMs: r.earliestMs, maxTokens: r.maxTokens, latestTokens: r.latestTokens });
+  }
+  const tmp = file + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ version: 1, savedAt: new Date().toISOString(), files }), "utf-8");
+  fs.renameSync(tmp, file);
+  usageFileCacheDirty = false;
+}
+function isUsageFileCacheDirty() { return usageFileCacheDirty; }
+let usageScanChunk = 8 * 1024 * 1024; // v1.93.0, see below; tests set it small/huge to prove chunking changes nothing
+function updateUsageFileRecord(filePath) {
+  let st;
+  try {
+    st = fs.statSync(filePath);
+  } catch (e) {
+    return null;
+  }
+  let rec = usageFileCache.get(filePath);
+  if (!rec || st.size < rec.offset || (rec.ino !== undefined && st.ino !== rec.ino)) {
+    rec = { offset: 0, ino: st.ino, humanTs: [], dayCounts: new Map(), earliestMs: null, maxTokens: 0, latestTokens: null };
+    usageFileCache.set(filePath, rec);
+  }
+  if (st.size === rec.offset) return rec;
+  usageFileCacheDirty = true;
+  // v1.93.0: read in 8 MB chunks. The whole unread remainder used to be one Buffer, then one string, then one
+  // array of lines - a cold 300 MB transcript took the process (this runs in the usage worker, which shares the
+  // main process's memory) to 1.1-1.5 GB private for the first ~20 s after launch (PERF_REPORT.md). The same
+  // complete lines are folded in the same order and the offset still stops after the last newline, so the record
+  // is identical; at most one chunk plus one unterminated line is held at a time.
+  const CHUNK = usageScanChunk;
+  let fd;
+  try {
+    fd = fs.openSync(filePath, "r");
+    let pos = rec.offset;
+    let carry = null;
+    while (pos < st.size) {
+      const len = Math.min(CHUNK, st.size - pos);
+      const buf = Buffer.alloc(len);
+      const n = fs.readSync(fd, buf, 0, len, pos);
+      if (n <= 0) break;
+      pos += n;
+      const data = carry ? Buffer.concat([carry, buf.subarray(0, n)]) : buf.subarray(0, n);
+      const lastNl = data.lastIndexOf(10);
+      if (lastNl < 0) { carry = data; continue; } // no complete line in this chunk yet
+      const text = data.toString("utf-8", 0, lastNl + 1);
+      carry = Buffer.from(data.subarray(lastNl + 1));
+      rec.offset = pos - carry.length;
+      foldUsageScanText(rec, text);
+    }
+  } catch (e) {
+    /* keep what was folded so far; rec.offset only ever covers folded lines */
+  } finally {
+    if (fd != null) try { fs.closeSync(fd); } catch (e) {}
+  }
+  return rec;
+}
+function foldUsageScanText(rec, text) {
+  for (const line of text.split("\n")) {
+    // Cheap pre-filter: skip the JSON.parse for the vast majority of lines.
+    if (!line || !(/"kind"\s*:\s*"human"/.test(line) || line.includes("total_tokens_reminder"))) continue;
+    let obj;
+    try {
+      obj = parseJsonLine(line);
+    } catch (e) {
+      continue;
+    }
+    if (!obj.timestamp) continue;
+    if (obj.type === "user" && obj.origin && obj.origin.kind === "human") {
+      const t = new Date(obj.timestamp).getTime();
+      if (!Number.isNaN(t)) {
+        rec.humanTs.push(t);
+        if (rec.earliestMs === null || t < rec.earliestMs) rec.earliestMs = t;
+        const d = new Date(t);
+        const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        rec.dayCounts.set(dayKey, (rec.dayCounts.get(dayKey) || 0) + 1);
+      }
+    }
+    if (obj.type === "attachment" && obj.attachment && obj.attachment.type === "total_tokens_reminder") {
+      const match = /total_tokens>\s*([\d,]+)/.exec(obj.attachment.text || "");
+      if (match) {
+        const value = parseInt(match[1].replace(/,/g, ""), 10);
+        if (value > rec.maxTokens) rec.maxTokens = value;
+        if (!rec.latestTokens || new Date(obj.timestamp) > new Date(rec.latestTokens.timestamp)) {
+          rec.latestTokens = { timestamp: obj.timestamp, remaining: value };
+        }
+      }
+    }
+  }
+  return rec;
+}
+
+function getUsageWindows() {
+  const now = Date.now();
+  const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+  let messagesInLast5h = 0;
+  let messagesInLast7d = 0;
+  let latestPlanTokens = null;
+  let maxPlanTokensSeen = 0;
+  // Per-calendar-day message counts, for the "this month" view the owner asked
+  // for on top of the 5h/7d windows above. Built in the same scan pass
+  // (not a separate re-scan of every JSONL file in the account) purely for
+  // efficiency - this account-wide scan already reads every line once.
+  const dailyMessageCounts = new Map(); // "YYYY-MM-DD" (local time) -> count
+  let earliestTimestampMs = null;
+
+  const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+  let projectDirs;
+  try {
+    projectDirs = fs.readdirSync(projectsRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch (e) {
+    return {
+      messagesInLast5h: 0,
+      messagesInLast7d: 0,
+      planTokenBufferPct: null,
+      fiveHourConfirmed: null,
+      sevenDayConfirmed: null,
+      monthly: buildMonthlyUsage(new Map(), null, Date.now()),
+    };
+  }
+
+  for (const projectDir of projectDirs) {
+    const dirPath = path.join(projectsRoot, projectDir.name);
+    let files;
+    try {
+      files = fs.readdirSync(dirPath).filter((f) => f.endsWith(".jsonl"));
+    } catch (e) {
+      continue;
+    }
+    for (const file of files) {
+      const rec = updateUsageFileRecord(path.join(dirPath, file));
+      if (!rec) continue;
+      for (const t of rec.humanTs) {
+        if (now - t <= SEVEN_DAYS_MS) {
+          messagesInLast7d++;
+          if (now - t <= FIVE_HOURS_MS) messagesInLast5h++;
+        }
+      }
+      for (const [dayKey, n] of rec.dayCounts) dailyMessageCounts.set(dayKey, (dailyMessageCounts.get(dayKey) || 0) + n);
+      if (rec.earliestMs !== null && (earliestTimestampMs === null || rec.earliestMs < earliestTimestampMs)) earliestTimestampMs = rec.earliestMs;
+      if (rec.maxTokens > maxPlanTokensSeen) maxPlanTokensSeen = rec.maxTokens;
+      if (rec.latestTokens && (!latestPlanTokens || new Date(rec.latestTokens.timestamp) > new Date(latestPlanTokens.timestamp))) {
+        latestPlanTokens = rec.latestTokens;
+      }
+    }
+  }
+
+  const confirmed = getConfirmedRateLimits();
+
+  return {
+    messagesInLast5h,
+    messagesInLast7d,
+    planTokenBufferPct:
+      latestPlanTokens && maxPlanTokensSeen > 0
+        ? Math.round((latestPlanTokens.remaining / maxPlanTokensSeen) * 100)
+        : null,
+    planTokenBufferRemaining: latestPlanTokens ? latestPlanTokens.remaining : null,
+    planTokenBufferCeiling: maxPlanTokensSeen || null,
+    // Real Anthropic-reported figures when available (see
+    // getConfirmedRateLimits() above) - renderer.js prefers these over the
+    // messagesInLast5h/7d heuristic whenever present, since they're an
+    // actual reported percentage rather than an estimate against a
+    // community-sourced message-count guess.
+    fiveHourConfirmed: confirmed.fiveHour,
+    sevenDayConfirmed: confirmed.sevenDay,
+    monthly: buildMonthlyUsage(dailyMessageCounts, earliestTimestampMs, now, confirmed.sevenDay, messagesInLast7d),
+  };
+}
+
+// Real numbers (messages/pace/projection) plus one labeled ESTIMATED
+// percentage - researched first, not guessed: checked the most
+// sophisticated community tool in this space (Claude Code Usage Monitor /
+// claude-monitor, the one with ML burn-rate predictions) directly against
+// its own docs, and confirmed even it explicitly scopes itself to the 5h/
+// weekly windows only and states monthly percentages aren't calculated,
+// "because there's no monthly limit in Claude Code's architecture to
+// calculate one against." Same story with ccusage - its "monthly" view is
+// raw token/cost totals, never a percentage. Nobody has solved this
+// because Anthropic doesn't publish a monthly cap to solve it against - so
+// estimatedMonthlyCapacityPct below is exactly that, an estimate, built by
+// extrapolating the one real number that DOES exist (the confirmed 7-day
+// percentage) across a month's worth of weeks, not a claim about a real
+// limit. the owner explicitly asked for this after being shown the research and
+// the alternative (wait for real month-over-month comparison data) -
+// chose "build the best available estimate now."
+function buildMonthlyUsage(dailyMessageCounts, earliestTimestampMs, now, sevenDayConfirmed, messagesInLast7d) {
+  const nowDate = new Date(now);
+  const year = nowDate.getFullYear();
+  const month = nowDate.getMonth(); // 0-indexed
+  const dayOfMonth = nowDate.getDate(); // 1-indexed - also "days elapsed so far," today included
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const dayKey = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+  let messagesThisMonth = 0;
+  for (let day = 1; day <= dayOfMonth; day++) {
+    messagesThisMonth += dailyMessageCounts.get(dayKey(year, month, day)) || 0;
+  }
+
+  const prevMonthDate = new Date(year, month - 1, 1);
+  const prevYear = prevMonthDate.getFullYear();
+  const prevMonth = prevMonthDate.getMonth();
+  const daysInPrevMonth = new Date(prevYear, prevMonth + 1, 0).getDate();
+  const dataGoesBackToPrevMonth = earliestTimestampMs !== null && earliestTimestampMs <= new Date(prevYear, prevMonth, 1).getTime();
+
+  let messagesLastMonth = null;
+  if (dataGoesBackToPrevMonth) {
+    messagesLastMonth = 0;
+    for (let day = 1; day <= daysInPrevMonth; day++) {
+      messagesLastMonth += dailyMessageCounts.get(dayKey(prevYear, prevMonth, day)) || 0;
+    }
+  }
+
+  // Derive an implied "messages per 100% of the weekly cap" from the one
+  // real data point available (the confirmed 7-day percentage and the real
+  // message count behind it), then scale by weeks-per-month to get an
+  // implied monthly-equivalent capacity - anchored to Anthropic's own real
+  // figure rather than invented outright, but still fundamentally an
+  // extrapolation, not a fact. Guarded against sevenDayUsedPct being 0
+  // (division by zero) and against a missing confirmed figure entirely
+  // (falls back to null - no estimate shown rather than a wrong one).
+  let estimatedMonthlyCapacityPct = null;
+  if (sevenDayConfirmed && sevenDayConfirmed.usedPct > 0 && messagesInLast7d > 0) {
+    const impliedMessagesPerFullWeek = messagesInLast7d / (sevenDayConfirmed.usedPct / 100);
+    const WEEKS_PER_MONTH = daysInMonth / 7;
+    const impliedMonthlyCapacityMessages = impliedMessagesPerFullWeek * WEEKS_PER_MONTH;
+    estimatedMonthlyCapacityPct = Math.round((messagesThisMonth / impliedMonthlyCapacityMessages) * 100);
+  }
+
+  return {
+    messagesThisMonth,
+    daysElapsedThisMonth: dayOfMonth,
+    daysInMonth,
+    dailyAverageThisMonth: dayOfMonth > 0 ? Math.round((messagesThisMonth / dayOfMonth) * 10) / 10 : 0,
+    // Plain linear projection from the pace so far this month - not a
+    // prediction that accounts for weekday patterns or anything fancier,
+    // just "if this rate holds." Framed as a projection everywhere it's
+    // shown, not a claim about a real limit.
+    projectedMonthTotal: dayOfMonth > 0 ? Math.round((messagesThisMonth / dayOfMonth) * daysInMonth) : 0,
+    messagesLastMonth,
+    estimatedMonthlyCapacityPct,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent conversation list (the "Chats" panel)
+// ---------------------------------------------------------------------------
+//
+// Every Agent Desktop agent's `.claude-session` cwd accumulates one
+// `<sessionId>.jsonl` file per distinct conversation: a fresh one is started
+// whenever the agent is opened with no prior session, and `/clear` (Reset
+// Session) also starts a brand-new file rather than appending a marker (see
+// getLiveTranscriptBlocks above for that discovery). Claude Code's own
+// `--continue` always resumes whichever file has the most recent activity;
+// `--resume <sessionId>` targets a specific one. This function turns that
+// pile of files into a titled, dated list the renderer can show so the user
+// can switch between past conversations or start a new one - the same
+// mental model as claude.ai/code's "Recents", built from the same on-disk
+// data Claude Code itself uses.
+//
+// Title precedence mirrors what Claude Code shows in its own /resume picker:
+// a user-set custom title wins, then the AI-generated title, then a snippet
+// of the first real user message, then a plain fallback. All three of
+// custom-title / ai-title / agent-name are plain JSONL control records
+// ({"type":"custom-title","customTitle":"..."} etc.) that can appear more
+// than once in a file as the title changes over the session's life - the
+// last occurrence of each is the current value.
+function summarizeText(s, max) {
+  const collapsed = String(s || "").replace(/\s+/g, " ").trim();
+  if (collapsed.length <= max) return collapsed;
+  return collapsed.slice(0, max - 1).trimEnd() + "…";
+}
+
+// v1.77.3: per-file memo of the parsed meta keyed on (path,size,mtimeMs) - taken from a fresh stat, not the TTL stat cache.
+// Old transcripts never change, so only the live file is ever re-parsed; callers get copies (listConversations mutates).
+const convMetaMemo = new Map(); // path -> { sig, meta }
+function readConversationMeta(jsonlPath) {
+  let sig;
+  try { const st = fs.statSync(jsonlPath); sig = st.size + ":" + st.mtimeMs; } catch (e) { convMetaMemo.delete(jsonlPath); return null; }
+  const hit = convMetaMemo.get(jsonlPath);
+  if (hit && hit.sig === sig) return hit.meta ? { ...hit.meta } : null;
+  const meta = parseConversationMeta(jsonlPath);
+  if (convMetaMemo.size > 4000) convMetaMemo.clear();
+  convMetaMemo.set(jsonlPath, { sig, meta });
+  return meta ? { ...meta } : null;
+}
+// v1.93.0: every line of a file, in order, read in 8 MB chunks (split on the newline BYTE, so a UTF-8 character is
+// never cut). Same lines as readFileSync(p, "utf-8").split("\n"), including a last line without a newline, but
+// without holding the whole file as one string plus one array: the History panel's first open of a 200 MB
+// conversation used to take the main process up by ~1 GB for that read. Throws like readFileSync on open errors.
+function forEachLineSync(filePath, fn, chunk) {
+  const CHUNK = chunk || 8 * 1024 * 1024;
+  const fd = fs.openSync(filePath, "r");
+  try {
+    let pos = 0;
+    let carry = null;
+    for (;;) {
+      const buf = Buffer.alloc(CHUNK);
+      const n = fs.readSync(fd, buf, 0, CHUNK, pos);
+      if (n <= 0) break;
+      pos += n;
+      const data = carry ? Buffer.concat([carry, buf.subarray(0, n)]) : buf.subarray(0, n);
+      const lastNl = data.lastIndexOf(10);
+      if (lastNl < 0) { carry = Buffer.from(data); continue; }
+      const lines = data.toString("utf-8", 0, lastNl).split("\n");
+      carry = Buffer.from(data.subarray(lastNl + 1));
+      for (const line of lines) fn(line);
+    }
+    fn(carry ? carry.toString("utf-8") : "");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function parseConversationMeta(jsonlPath) {
+  const fileSessionId = path.basename(jsonlPath, ".jsonl");
+  let ownEarliestTs = Infinity; // earliest entry actually belonging to THIS session
+  let anyEarliestTs = Infinity; // earliest entry at all (may be replayed history)
+  let latestTs = -Infinity;
+  let humanMessageCount = 0;
+  let firstHumanText = "";
+  let lastHumanText = "";
+  let customTitle = "";
+  let aiTitle = "";
+  let sessionId = "";
+  const onLine = (line) => {
+    if (!line.trim()) return;
+    let obj;
+    try {
+      obj = parseJsonLine(line);
+    } catch (e) {
+      return;
+    }
+    if (obj.sessionId) sessionId = obj.sessionId;
+    if (obj.type === "custom-title" && typeof obj.customTitle === "string") customTitle = obj.customTitle;
+    if (obj.type === "ai-title" && typeof obj.aiTitle === "string") aiTitle = obj.aiTitle;
+    let ts = NaN;
+    if (obj.timestamp) {
+      ts = new Date(obj.timestamp).getTime();
+      if (!Number.isNaN(ts)) {
+        if (ts < anyEarliestTs) anyEarliestTs = ts;
+        if (ts > latestTs) latestTs = ts;
+        // Resuming a conversation replays the prior transcript into the new
+        // file with its original (old) timestamps, so the plain minimum
+        // isn't "when this conversation started". Entries stamped with this
+        // file's own session id are the ones that actually happened in it.
+        if (obj.sessionId === fileSessionId && ts < ownEarliestTs) ownEarliestTs = ts;
+      }
+    }
+    // A real human turn: type:"user" with origin.kind "human" (a tool_result
+    // is also type:"user" but has no such origin) - same filter proven
+    // correct in getLiveTranscriptBlocks / getUsageWindows.
+    if (obj.type === "user" && obj.origin && obj.origin.kind === "human") {
+      const text = extractText(obj.message && obj.message.content);
+      if (text) {
+        humanMessageCount++;
+        if (!firstHumanText) firstHumanText = text;
+        lastHumanText = text;
+      }
+    }
+  };
+  try {
+    forEachLineSync(jsonlPath, onLine);
+  } catch (e) {
+    return null;
+  }
+  if (latestTs === -Infinity) return null; // empty / no real activity yet
+  const title =
+    summarizeText(customTitle, 120) ||
+    summarizeText(aiTitle, 120) ||
+    summarizeText(firstHumanText, 80) ||
+    "(untitled conversation)";
+  const titleSource = customTitle ? "custom" : aiTitle ? "ai" : firstHumanText ? "first-message" : "none";
+  let startedAt = ownEarliestTs;
+  if (startedAt === Infinity) startedAt = anyEarliestTs === Infinity ? latestTs : anyEarliestTs;
+  return {
+    sessionId: sessionId || fileSessionId,
+    title,
+    titleSource,
+    // Where the conversation currently stands reads better on a "which one
+    // do I want to resume" list than its opening line, which is often
+    // replayed setup text - fall back to the first if there's only one.
+    preview: summarizeText(lastHumanText || firstHumanText, 140),
+    startedAt,
+    lastActivityAt: latestTs,
+    humanMessageCount,
+  };
+}
+
+function listConversations(sessionCwd) {
+  const metas = [];
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    const meta = readConversationMeta(jsonlPath);
+    if (meta) metas.push(meta);
+  }
+  metas.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+  // The most recently active conversation is the one `--continue` resumes,
+  // i.e. what a plain "reopen this agent" lands on - flag it so the UI can
+  // show which row is "current" without the renderer re-deriving the rule.
+  if (metas.length) metas[0].isCurrent = true;
+  return metas;
+}
+
+// v1.77.3: the conversation `--continue` resumes (what listConversations() flags isCurrent) without parsing every
+// transcript of the agent: files are ranked by their tail timestamp (same ranking as the live readers), then only the
+// top one is parsed (memoized). Same answer as listConversations()[0]; falls back to the full list when no ranked file
+// yields a meta (empty folder, files without timestamps), so the result never differs from the old behaviour.
+function getCurrentConversation(sessionCwd) {
+  invalidateStatCache(); // a conversation file created a moment ago (fresh session) must be seen
+  const ranked = rankFilesByTail(findJsonlFiles(sessionCwd));
+  for (const r of ranked.slice(0, 3)) {
+    const meta = readConversationMeta(r.jsonlPath);
+    if (meta) { meta.isCurrent = true; return meta; }
+  }
+  const all = listConversations(sessionCwd);
+  return all[0] || null;
+}
+
+// A session id is always a UUID (hex + dashes). Enforced before it's ever
+// used to build a file path so a malformed value from the renderer can't
+// walk out of the project directory.
+const SESSION_ID_RE = /^[0-9a-fA-F-]{16,64}$/;
+
+// Rename a conversation by appending the same JSONL control records Claude
+// Code's own `-n/--name` flag writes ({"type":"custom-title",...} plus
+// {"type":"agent-name",...}). Appending rather than rewriting keeps the file
+// an append-only log exactly as the CLI treats it, and the last occurrence
+// wins on read (both here and in Claude Code itself). The new title reaches
+// claude.ai/code the next time that conversation is the live Remote Control
+// session, since the web reads the same records.
+function setConversationTitle(sessionCwd, sessionId, title) {
+  if (!SESSION_ID_RE.test(String(sessionId || ""))) {
+    throw new Error("Invalid session id");
+  }
+  const clean = String(title || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+  if (!clean) throw new Error("Title cannot be empty");
+  const jsonlPath = path.join(projectDirFor(sessionCwd), `${sessionId}.jsonl`);
+  if (!fs.existsSync(jsonlPath)) {
+    throw new Error("Conversation file not found");
+  }
+  const lines =
+    JSON.stringify({ type: "custom-title", customTitle: clean, sessionId }) +
+    "\n" +
+    JSON.stringify({ type: "agent-name", agentName: clean, sessionId }) +
+    "\n";
+  withFsRetry(() => fs.appendFileSync(jsonlPath, lines, "utf-8"));
+  invalidateStatCache(); // v1.77.3: our own append must be visible to the very next stat
+  return { ok: true, title: clean };
+}
+
+// --- Keeping an agent's cross-session name pinned (2026-09-21) -------------
+// ensureAllAgentsBackgrounded() pins each live conversation's name to the
+// agent's folder name so peers can find it by role via ListAgents/SendMessage.
+// That alone turned out not to be enough: Claude Code's own auto-namer
+// re-derives a topical name from the conversation and appends a FRESH
+// {"type":"agent-name"} record whenever the conversation moves on, and the
+// LAST such record wins. Confirmed in a live transcript (Product Development
+// Agent, session e9531ff3): the sweep wrote "Product Development Agent" at
+// lines 50-53, and the CLI overwrote it with "subscription tier migration" at
+// line 57 - so a peer searching for the agent by role found nothing, and the
+// Trade Show agent concluded "no Product Development agent is running" and
+// silently fell back to writing a pending-notes file instead of messaging it.
+//
+// A 15-minute sweep can't hold a name against that, so this is a cheap
+// dedicated check meant to run about once a minute. It never spawns a CLI
+// process and never parses a whole transcript: it stats the project dir,
+// reads only the tail of the newest .jsonl, and re-appends the rename records
+// only when the last agent-name actually differs. Files whose size+mtime are
+// unchanged since the previous pass are skipped outright, so a quiet agent
+// costs one stat per minute (the same memoization shape getUsageWindows()
+// needed after it was caught re-parsing 647 MB per call).
+const AGENT_NAME_TAIL_BYTES = 64 * 1024;
+const repinSeen = new Map(); // jsonlPath -> "<size>:<mtimeMs>" last inspected
+
+function readTail(jsonlPath, bytes) {
+  const fd = fs.openSync(jsonlPath, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Returns the chronologically newest .jsonl for this cwd - the conversation
+// `--continue` resumes, i.e. the one a peer's ListAgents actually sees.
+function newestTranscript(sessionCwd) {
+  let best = null;
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try {
+      const stat = cachedStat(jsonlPath);
+      if (!best || stat.mtimeMs > best.mtimeMs) best = { jsonlPath, mtimeMs: stat.mtimeMs, size: stat.size };
+    } catch (e) {
+      /* file disappeared between readdir and stat - skip it */
+    }
+  }
+  return best;
+}
+
+// Re-pins the newest conversation's cross-session name to `name` if the CLI
+// has renamed it since. Returns null when nothing needed doing (the common
+// case), otherwise { jsonlPath, from, to }.
+function repinAgentName(sessionCwd, name) {
+  const clean = String(name || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+  if (!clean) return null;
+  const newest = newestTranscript(sessionCwd);
+  if (!newest) return null;
+  const stamp = `${newest.size}:${newest.mtimeMs}`;
+  if (repinSeen.get(newest.jsonlPath) === stamp) return null; // untouched since last pass
+  repinSeen.set(newest.jsonlPath, stamp);
+
+  let tail;
+  try {
+    tail = readTail(newest.jsonlPath, AGENT_NAME_TAIL_BYTES);
+  } catch (e) {
+    return null;
+  }
+  // Last occurrence wins, same rule the CLI reads by.
+  let current = null;
+  const re = /"type":"agent-name","agentName":"([^"]*)"/g;
+  let m;
+  while ((m = re.exec(tail)) !== null) current = m[1];
+  // No agent-name in the tail at all means either a brand-new conversation or
+  // one whose only naming records sit further back than the tail window. Both
+  // are safe to (re)pin: an extra identical record is a no-op on read.
+  if (current !== null) {
+    let decoded = current;
+    try {
+      decoded = JSON.parse(`"${current}"`);
+    } catch (e) {
+      /* keep the raw form - only used for the equality check and the log */
+    }
+    if (decoded === clean) return null;
+    current = decoded;
+  }
+  const sessionId = path.basename(newest.jsonlPath, ".jsonl");
+  setConversationTitle(sessionCwd, sessionId, clean);
+  // Our own append just changed size/mtime; re-stamp so the next pass skips it.
+  try {
+    const stat = fs.statSync(newest.jsonlPath);
+    repinSeen.set(newest.jsonlPath, `${stat.size}:${stat.mtimeMs}`);
+  } catch (e) {
+    repinSeen.delete(newest.jsonlPath);
+  }
+  return { jsonlPath: newest.jsonlPath, from: current, to: clean };
+}
+
+module.exports = {
+  syncArchive,
+  listArchivedDays,
+  readArchivedDay,
+  encodeProjectPath,
+  getLatestUsage,
+  getUsageWindows,
+  getLiveTranscriptBlocks,
+  getSessionActivity,
+  getLatestTranscriptMtimeMs,
+  getLatestTranscriptSizeBytes,
+  loadUsageFileCache,
+  saveUsageFileCache,
+  isUsageFileCacheDirty,
+  __readActivitySummaryForTest: readActivitySummary,
+  __computeLatestUsageForTest: computeLatestUsage,
+  __computeLiveBlocksForTest: computeLiveTranscriptBlocks,
+  __blocksFromEntriesForTest: blocksFromEntries,
+  __tailLatestTsForTest: tailLatestTs,
+  __rankFilesByTailForTest: rankFilesByTail,
+  __readActivityFileForTest: readActivityFile,
+  __readUsageFileForTest: readUsageFile,
+  __foldActivityLineForTest: foldActivityLine,
+  __foldUsageLineForTest: foldUsageLine,
+  __newActivityStateForTest: newActivityState,
+  getHaltInfo,
+  getConfirmedRateLimits,
+  extractLessons,
+  lessonsForResume,
+  listConversations,
+  setConversationTitle,
+  repinAgentName,
+  newestTranscript,
+  setStatCacheTtl,
+  __setUsageScanChunkForTest: (n) => { usageScanChunk = n; },
+  __resetUsageScanForTest: () => { usageFileCache.clear(); },
+  __forEachLineSyncForTest: forEachLineSync,
+  __parseJsonLineForTest: parseJsonLine,
+  getCurrentConversation,
+  invalidateStatCache,
+};

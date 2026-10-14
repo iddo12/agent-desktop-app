@@ -1,0 +1,63 @@
+[
+  {
+    "agent": "Personal Assistant",
+    "title": "Confirm Saturday shoot location",
+    "priority": 1,
+    "daysAgo": 1,
+    "group": "Studio shoots",
+    "tags": []
+  },
+  {
+    "agent": "Finance",
+    "title": "Send quote to the garden-cafe project",
+    "priority": 1,
+    "daysAgo": 2,
+    "group": "Studio sales",
+    "tags": []
+  },
+  {
+    "agent": "Video",
+    "title": "Back up the wedding card",
+    "priority": 2,
+    "daysAgo": 1,
+    "group": "Studio shoots",
+    "tags": []
+  },
+  {
+    "agent": "Research",
+    "title": "Review gimbal comparison",
+    "priority": 2,
+    "daysAgo": 0,
+    "group": "Studio gear",
+    "tags": []
+  },
+  {
+    "agent": "Shopping",
+    "title": "Choose between two 35 mm lens quotes",
+    "priority": 1,
+    "daysAgo": 1,
+    "group": "Studio gear",
+    "needsYou": true,
+    "tags": []
+  },
+  {
+    "agent": "Health",
+    "title": "Book the yearly blood test",
+    "priority": 3,
+    "daysAgo": 3,
+    "group": "Home",
+    "tags": [
+      "personal"
+    ]
+  },
+  {
+    "agent": "Personal Assistant",
+    "title": "Renew the studio insurance",
+    "priority": 3,
+    "daysAgo": 4,
+    "group": "Studio admin",
+    "tags": [
+      "queued"
+    ]
+  }
+]

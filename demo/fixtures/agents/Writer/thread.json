@@ -1,0 +1,41 @@
+{
+  "tail": "working",
+  "tool": "Write",
+  "contextTokens": 44000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Please draft a guide for couples planning a spring wedding: timeline, light, and what to ask the photographer.",
+      "minsAgo": 260
+    },
+    {
+      "role": "agent",
+      "text": "Here is the outline I'd suggest:\n\n1. Choosing the month and the light\n2. A realistic wedding-day timeline\n3. Ten questions to ask any photographer\n4. Weather plan B\n\nShall I go ahead and write draft 1?",
+      "minsAgo": 255
+    },
+    {
+      "role": "user",
+      "text": "Yes please, friendly tone, around 1,500 words.",
+      "minsAgo": 250
+    },
+    {
+      "role": "agent",
+      "text": "Draft 1 is written. I tightened the timeline section and added a checklist at the end. Draft 2 with your edits is saved as a PDF:\n\n{{REPORTS}}\\Spring wedding guide, draft 2.pdf",
+      "minsAgo": 60
+    },
+    {
+      "role": "user",
+      "text": "Great. Can you make the opening warmer and add a short section on golden hour?",
+      "minsAgo": 20
+    },
+    {
+      "role": "agent",
+      "text": "Working on it now - the golden hour section is half written.",
+      "minsAgo": 18,
+      "interim": true
+    }
+  ],
+  "replies": [
+    "Noted - I'll fold that into draft 3. (Demo workspace: nothing real is being written.)"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "tail": "idle",
+  "contextTokens": 23000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Run the weekly site check.",
+      "minsAgo": 3000
+    },
+    {
+      "role": "agent",
+      "text": "Site check is clean: no broken links, all pages load under two seconds, and the new gallery images are compressed. Report:\n\n{{REPORTS}}\\Website health check, week 14.pdf",
+      "minsAgo": 2990
+    }
+  ],
+  "replies": [
+    "I'll re-run the check tomorrow morning."
+  ]
+}

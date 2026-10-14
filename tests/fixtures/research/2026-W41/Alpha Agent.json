@@ -1,0 +1,5 @@
+{"agent":"Alpha Agent","week":"2026-W41","generatedAt":"2026-10-07T02:00:00","spentUsd":4.5,"budgetUsd":24,"summary":"Sample summary.","findings":[
+{"id":"a-low","title":"Low item","whatChanged":"c1","soWhat":"Low matters little. Second sentence.","tier":"low","confidence":"likely","worthOwnerKnowing":false,"couldBecomeIdea":false,"sources":[{"title":"S","url":"https://example.org/a","kind":"secondary"}]},
+{"id":"a-high","title":"High item","whatChanged":"c2","soWhat":"High matters a lot.","tier":"high","confidence":"confirmed","worthOwnerKnowing":true,"couldBecomeIdea":true,"topic":"Sample topic (W41)","sources":[{"title":"P","url":"https://example.org/p","kind":"primary"},"https://example.org/bare"]},
+"not an object",
+{"nothing":"no title"}]}

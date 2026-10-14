@@ -1,0 +1,5 @@
+@echo off
+REM Copy this file to Start-TestDesktop.local.bat (same folder) and edit the two lines. The .local.bat is not committed.
+REM AGENT_DESKTOP_WORK = a scratch folder for the sandbox (big files, fixtures). AGENT_DESKTOP_ROOT = the fixture agents folder (default: %AGENT_DESKTOP_WORK%\agents).
+set "AGENT_DESKTOP_WORK=%LOCALAPPDATA%\AgentDesktopSandbox"
+REM set "AGENT_DESKTOP_ROOT=D:\path\to\fixture\agents"

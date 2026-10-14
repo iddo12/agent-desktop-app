@@ -1,0 +1,154 @@
+[
+  {
+    "id": "idea-bts-series",
+    "type": "project",
+    "title": "Behind-the-scenes mini-series",
+    "description": "Short monthly clips showing how a shoot comes together.",
+    "agent": "Video",
+    "topic": "studio",
+    "stage": "idea",
+    "daysAgo": 6
+  },
+  {
+    "id": "idea-client-gallery",
+    "type": "project",
+    "title": "Client gallery page",
+    "description": "A private page where clients pick and download their photos.",
+    "agent": "Web",
+    "topic": "studio",
+    "stage": "idea",
+    "daysAgo": 9
+  },
+  {
+    "id": "idea-print-popup",
+    "type": "project",
+    "title": "Print shop pop-up",
+    "description": "A weekend pop-up selling framed prints from the studio.",
+    "agent": "Shopping",
+    "topic": "studio",
+    "stage": "idea",
+    "daysAgo": 12
+  },
+  {
+    "id": "res-gimbals",
+    "type": "project",
+    "title": "Gimbal comparison",
+    "description": "Five gimbals compared on weight, payload, battery and price.",
+    "agent": "Research",
+    "topic": "studio",
+    "stage": "researched",
+    "daysAgo": 1,
+    "reportFile": "Gimbal comparison, spring 2027.pdf"
+  },
+  {
+    "id": "res-newsletter-tools",
+    "type": "project",
+    "title": "Email newsletter tools",
+    "description": "Four newsletter tools compared for a list of 2,000.",
+    "agent": "Writer",
+    "topic": "studio",
+    "stage": "researched",
+    "daysAgo": 5
+  },
+  {
+    "id": "res-lighting",
+    "type": "project",
+    "title": "Studio lighting kits",
+    "description": "Three continuous-light kits for small portrait sessions.",
+    "agent": "Research",
+    "topic": "studio",
+    "stage": "researched",
+    "daysAgo": 7
+  },
+  {
+    "id": "act-wedding-guide",
+    "type": "project",
+    "title": "Spring wedding guide",
+    "description": "The guide for couples planning a spring wedding (draft 2 written).",
+    "agent": "Writer",
+    "topic": "studio",
+    "stage": "active",
+    "daysAgo": 1,
+    "reportFile": "Spring wedding guide, draft 2.pdf"
+  },
+  {
+    "id": "act-gallery-build",
+    "type": "project",
+    "title": "Client gallery page build",
+    "description": "Building the private client gallery on the studio site.",
+    "agent": "Web",
+    "topic": "studio",
+    "stage": "active",
+    "daysAgo": 3
+  },
+  {
+    "id": "doc-gimbal",
+    "type": "document",
+    "title": "Gimbal comparison, spring 2027",
+    "description": "Finished report by the Research agent.",
+    "agent": "Research",
+    "topic": "reports",
+    "reportFile": "Gimbal comparison, spring 2027.pdf",
+    "daysAgo": 1
+  },
+  {
+    "id": "doc-invoices",
+    "type": "document",
+    "title": "Q1 invoices summary",
+    "description": "Finished report by the Finance agent.",
+    "agent": "Finance",
+    "topic": "reports",
+    "reportFile": "Q1 invoices summary.pdf",
+    "daysAgo": 3
+  },
+  {
+    "id": "doc-web",
+    "type": "document",
+    "title": "Website health check, week 14",
+    "description": "Finished report by the Web agent.",
+    "agent": "Web",
+    "topic": "reports",
+    "reportFile": "Website health check, week 14.pdf",
+    "daysAgo": 2
+  },
+  {
+    "id": "doc-guide",
+    "type": "document",
+    "title": "Spring wedding guide, draft 2",
+    "description": "Finished report by the Writer agent.",
+    "agent": "Writer",
+    "topic": "reports",
+    "reportFile": "Spring wedding guide, draft 2.pdf",
+    "daysAgo": 1
+  },
+  {
+    "id": "img-light-a",
+    "type": "image",
+    "title": "Window light test",
+    "description": "AI-generated concept illustration.",
+    "agent": "Video",
+    "topic": "images",
+    "imageFile": "img-light-a.png",
+    "daysAgo": 4
+  },
+  {
+    "id": "img-light-b",
+    "type": "image",
+    "title": "Terrace golden hour",
+    "description": "AI-generated concept illustration.",
+    "agent": "Video",
+    "topic": "images",
+    "imageFile": "img-light-b.png",
+    "daysAgo": 4
+  },
+  {
+    "id": "img-moodboard",
+    "type": "image",
+    "title": "Spring palette moodboard",
+    "description": "AI-generated concept illustration.",
+    "agent": "Writer",
+    "topic": "images",
+    "imageFile": "img-moodboard.png",
+    "daysAgo": 4
+  }
+]

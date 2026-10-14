@@ -1,0 +1,160 @@
+{
+  "business": "Aurora Studio",
+  "owner": "Maya",
+  "usage": {
+    "sessionPct": 38,
+    "weekPct": 54,
+    "sessionResetsInMin": 190,
+    "weekResetsInHours": 70
+  },
+  "groups": [
+    {
+      "name": "Studio",
+      "color": "#14b8a6",
+      "members": [
+        "Writer",
+        "Video",
+        "Shopping"
+      ]
+    },
+    {
+      "name": "Business",
+      "color": "#f59e0b",
+      "members": [
+        "Email",
+        "Finance"
+      ]
+    },
+    {
+      "name": "Online",
+      "color": "#8b5cf6",
+      "members": [
+        "Web",
+        "Research"
+      ]
+    },
+    {
+      "name": "Personal",
+      "color": "#ec4899",
+      "members": [
+        "Health",
+        "Personal Assistant"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "folder": "Writer",
+      "name": "Writer",
+      "role": "Blog posts and newsletters",
+      "state": "working",
+      "status": "Drafting the spring-wedding guide",
+      "recent": [
+        "Outline approved",
+        "Draft 2 of the spring wedding guide written",
+        "Newsletter subject lines tested"
+      ],
+      "reports": [
+        "Spring wedding guide, draft 2.pdf"
+      ]
+    },
+    {
+      "folder": "Video",
+      "name": "Video",
+      "role": "Edit notes and shot lists",
+      "state": "idle",
+      "status": "Waiting for the next shoot",
+      "recent": [
+        "Shot list for Saturday sent",
+        "Highlights edit notes delivered"
+      ]
+    },
+    {
+      "folder": "Shopping",
+      "name": "Shopping",
+      "role": "Gear and supplies",
+      "state": "needs",
+      "status": "Two lens quotes ready, which one?",
+      "needsText": "Two lens quotes ready - which one should I order?",
+      "recent": [
+        "Two quotes collected for the 35 mm lens",
+        "Restocked lens cloths"
+      ]
+    },
+    {
+      "folder": "Email",
+      "name": "Email",
+      "role": "Inbox triage and replies",
+      "state": "working",
+      "status": "Sorted 14 messages, 3 need a reply",
+      "recent": [
+        "14 messages sorted",
+        "3 draft replies waiting"
+      ]
+    },
+    {
+      "folder": "Finance",
+      "name": "Finance",
+      "role": "Invoices and quotes",
+      "state": "idle",
+      "status": "March invoices sent",
+      "recent": [
+        "March invoices sent",
+        "Q1 summary written"
+      ],
+      "reports": [
+        "Q1 invoices summary.pdf"
+      ]
+    },
+    {
+      "folder": "Web",
+      "name": "Web",
+      "role": "Website and search ranking",
+      "state": "idle",
+      "status": "Site check clean today",
+      "recent": [
+        "Weekly site check clean",
+        "Two image sizes fixed"
+      ],
+      "reports": [
+        "Website health check, week 14.pdf"
+      ]
+    },
+    {
+      "folder": "Research",
+      "name": "Research",
+      "role": "Market and gear research",
+      "state": "working",
+      "status": "Comparing 5 gimbals",
+      "recent": [
+        "Gimbal shortlist built",
+        "Report written"
+      ],
+      "reports": [
+        "Gimbal comparison, spring 2027.pdf"
+      ]
+    },
+    {
+      "folder": "Health",
+      "name": "Health",
+      "role": "Sleep, training and lab trends",
+      "state": "idle",
+      "status": "Weekly review ready",
+      "recent": [
+        "Weekly review written",
+        "Resting heart rate trend flagged as improving"
+      ]
+    },
+    {
+      "folder": "Personal Assistant",
+      "name": "Personal Assistant",
+      "role": "Calendar, errands and family logistics",
+      "state": "working",
+      "status": "Planning next week's schedule",
+      "recent": [
+        "Saturday shoot location checked",
+        "Dentist appointment moved"
+      ]
+    }
+  ]
+}

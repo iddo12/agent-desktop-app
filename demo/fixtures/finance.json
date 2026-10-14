@@ -1,0 +1,108 @@
+{
+  "currency": "$",
+  "months": [
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct"
+  ],
+  "moneyIn": [
+    7200,
+    8100,
+    6900,
+    9400,
+    10200,
+    8800
+  ],
+  "moneyOut": [
+    5100,
+    5400,
+    5200,
+    5900,
+    6100,
+    5700
+  ],
+  "kpis": [
+    {
+      "label": "Cash on hand",
+      "value": "$24,310",
+      "note": "up $1,860 on last month"
+    },
+    {
+      "label": "Invoiced this quarter",
+      "value": "$18,420",
+      "note": "vs $16,050 last quarter"
+    },
+    {
+      "label": "Received this quarter",
+      "value": "$15,960",
+      "note": "87% of invoiced"
+    },
+    {
+      "label": "Bills due in 14 days",
+      "value": "$2,140",
+      "note": "4 bills"
+    }
+  ],
+  "recurring": [
+    {
+      "name": "Studio rent",
+      "amount": 1450,
+      "due": "1st"
+    },
+    {
+      "name": "Editing software",
+      "amount": 64,
+      "due": "3rd"
+    },
+    {
+      "name": "Insurance",
+      "amount": 118,
+      "due": "8th"
+    },
+    {
+      "name": "Cloud storage",
+      "amount": 29,
+      "due": "12th"
+    },
+    {
+      "name": "Website hosting",
+      "amount": 22,
+      "due": "15th"
+    },
+    {
+      "name": "Phone and internet",
+      "amount": 87,
+      "due": "20th"
+    }
+  ],
+  "invoices": [
+    {
+      "client": "Garden Cafe",
+      "invoiced": 3200,
+      "received": 3200
+    },
+    {
+      "client": "Hilltop Wedding",
+      "invoiced": 4800,
+      "received": 2400
+    },
+    {
+      "client": "Nova Skincare",
+      "invoiced": 5600,
+      "received": 5600
+    },
+    {
+      "client": "Harbor Hotel",
+      "invoiced": 2900,
+      "received": 1800
+    },
+    {
+      "client": "Studio prints",
+      "invoiced": 1920,
+      "received": 1960
+    }
+  ]
+}

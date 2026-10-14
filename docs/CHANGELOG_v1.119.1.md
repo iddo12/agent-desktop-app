@@ -1,0 +1,13 @@
+## v1.119.1 - Updates install what they need by themselves (one click, never npm by hand)
+
+Fix: the partner's Agent Desktop (v1.114.0) refused to update with "needs imapflow and libmime, which is not installed (run npm install first)". The updater blocked whenever origin/main's package.json `dependencies` named a package missing from node_modules, and it never installed anything itself. Now:
+
+- `imapflow` and `libmime` moved from `dependencies` to `optionalDependencies` (old updaters only inspect `dependencies`, so her old updater passes this time). They are loaded lazily; with them missing, adding/testing a mail account says "the e-mail component is being installed" instead of crashing.
+- New `src/dep-doctor.js`: finds packages that package.json (dependencies + optionalDependencies) wants and node_modules lacks, and installs exactly those with `npm install --no-save --no-package-lock --ignore-scripts <name>@<range>` (async, below-normal priority, 8 minute timeout that kills the npm tree, npm found with `where npm`, pty-runner fallback). NOT `--omit=dev`: that prunes every installed devDependency, i.e. deletes node_modules/electron. Status in `<userData>/dep-doctor.json` {state idle|installing|done|failed, missing, error, at}.
+- `src/app-update.js` apply(): after the fast-forward merge and before reporting success it runs dep-doctor; if the install fails it rolls back with `git reset --hard <previous HEAD>` and returns "The update was undone: <reason>". Only a changed node-pty version or Electron version still blocks (plain message: needs a full reinstall, ask the owner).
+- At every app start (20 s after the window loads, async, not in test mode) the same check runs; the sidebar shows "Installing components for e-mail..." then "Ready - restart to finish" (click = restart), or "Could not install components".
+- Policy test `tests/depsPolicy.test.js`: `dependencies` must equal [@xterm/addon-fit, @xterm/xterm, node-pty, tweetnacl]; NEW packages go to `optionalDependencies` and are required lazily, because installed old updaters block on new `dependencies`. It also loads every module in src/ with imapflow/libmime absent. `tests/depDoctor.test.js`: fake npm, temp git repos with rollback, electron/node-pty refusal, timeout, scoped names, test mode.
+- `INSTALL_AND_USE_FOR_CLAUDE.md` Updating section: one click in the app; manual git pull + npm install only as a last resort.
+- package-lock.json regenerated (imapflow/libmime tree now marked optional).
+
+the partner's side: the first update from v1.114.0 should now go through with one click; after the restart the app installs imapflow/libmime by itself (needs internet and npm/Node on PATH; if npm is missing it says so and mail stays off until Node is installed).

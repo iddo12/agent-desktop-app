@@ -1,0 +1,6226 @@
+const AVATAR_PALETTE = ["#6366f1", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6", "#22c55e"];
+
+let agents = [];
+let groupsDoc = { version: 1, groups: [] };
+let activeAgentPath = null;
+let selectedAvatarPath = null;
+
+const terminals = new Map(); // agentPath -> { term, fitAddon, started }
+
+// v1.68.0 timing probes. Counters are always on (a handful of integer increments, readable from DevTools/CDP as
+// window.__perf.counts); timings are only LOGGED when localStorage.perfProbes === "1" (off by default), batched
+// into one IPC every 5 s -> <userData>\ui-timing.log. Keeps the instant-send claim measurable without weight.
+const perf = (window.__perf = { counts: {}, last: {}, on: false });
+try { perf.on = localStorage.getItem("perfProbes") === "1"; } catch (e) {}
+let perfBuf = [], perfTimer = null;
+function perfCount(name) { perf.counts[name] = (perf.counts[name] || 0) + 1; }
+function perfProbe(name, ms, extra) {
+  perf.last[name] = ms;
+  if (!perf.on) return;
+  perfBuf.push(name + " " + (Math.round(ms * 10) / 10) + "ms" + (extra ? " " + extra : ""));
+  if (!perfTimer) perfTimer = setTimeout(() => { perfTimer = null; const l = perfBuf; perfBuf = []; try { window.api.perfLog(l); } catch (e) {} }, 5000);
+}
+// no animation runs while the window is hidden or minimised
+document.addEventListener("visibilitychange", () => document.documentElement.classList.toggle("app-idle", document.hidden));
+
+const agentListEl = document.getElementById("agent-list");
+const emptyStateEl = document.getElementById("empty-state");
+const chatViewEl = document.getElementById("chat-view");
+const chatAvatarSlotEl = document.getElementById("chat-avatar-slot");
+const chatNameEl = document.getElementById("chat-name");
+const chatRoleEl = document.getElementById("chat-role");
+const terminalContainerEl = document.getElementById("terminal-container");
+const chatInputEl = document.getElementById("chat-input");
+const sendInputBtn = document.getElementById("send-input-btn");
+const resizeHandleEl = document.getElementById("chat-input-resize-handle");
+const saveToMasterBtn = document.getElementById("save-to-master-btn");
+const historyToggleBtn = document.getElementById("history-toggle-btn");
+const chatsToggleBtn = document.getElementById("chats-toggle-btn");
+const conversationsViewEl = document.getElementById("conversations-view");
+const conversationsListEl = document.getElementById("conversations-list");
+const newConversationBtn = document.getElementById("new-conversation-btn");
+const modelPickerBtn = document.getElementById("model-picker-btn");
+const rawTerminalToggleBtn = document.getElementById("raw-terminal-toggle-btn");
+const resetSessionBtn = document.getElementById("reset-session-btn");
+const chatMessagesViewEl = document.getElementById("chat-messages-view");
+const chatBodyEl = document.getElementById("chat-body");
+const historyViewEl = document.getElementById("history-view");
+const historyDayListEl = document.getElementById("history-day-list");
+const historyContentEl = document.getElementById("history-content");
+const terminalWrapperEl = document.getElementById("terminal-wrapper");
+const chatInputBarEl = document.getElementById("chat-input-bar");
+const chatAttachmentsEl = document.getElementById("chat-attachments");
+const chatQueueEl = document.getElementById("chat-queue");
+const chatThinkingIndicatorEl = document.getElementById("chat-thinking-indicator");
+const contextUsageEl = document.getElementById("context-usage");
+const modelBadgeEl = document.getElementById("model-badge");
+const cacheStatusEl = document.getElementById("cache-status");
+const fiveHourUsageEl = document.getElementById("five-hour-usage");
+const weeklyUsageEl = document.getElementById("weekly-usage");
+const monthlyUsageEl = document.getElementById("monthly-usage");
+
+const modalEl = document.getElementById("new-agent-modal");
+const nameInput = document.getElementById("new-agent-name");
+const roleInput = document.getElementById("new-agent-role");
+const avatarPreview = document.getElementById("avatar-preview");
+
+function avatarColor(name) {
+  let sum = 0;
+  for (const c of name) sum += c.charCodeAt(0);
+  return AVATAR_PALETTE[sum % AVATAR_PALETTE.length];
+}
+
+// Requested directly: a long role/description (Acmeco Business Context's
+// own is a good example) was wrapping across several lines in the chat
+// header, pushing the actual action buttons down and making the header
+// look broken rather than just descriptive. Truncates to a single
+// readable line instead - the full text is never lost, just moved to the
+// title tooltip, so hovering still shows it in full.
+const CHAT_ROLE_MAX_CHARS = 48;
+
+function setChatRoleText(el, role) {
+  const text = role || "";
+  if (text.length <= CHAT_ROLE_MAX_CHARS) {
+    el.textContent = text;
+    el.removeAttribute("title");
+  } else {
+    el.textContent = text.slice(0, CHAT_ROLE_MAX_CHARS).trimEnd() + "...";
+    el.title = text;
+  }
+}
+
+function initials(name) {
+  const parts = name.trim().split(/\s+/).slice(0, 2);
+  return parts.map((p) => p[0].toUpperCase()).join("") || "?";
+}
+
+function renderAvatarEl(agent) {
+  if (agent.avatar) {
+    const img = document.createElement("img");
+    img.className = "avatar";
+    img.src = agent.avatar;
+    return img;
+  }
+  const div = document.createElement("div");
+  div.className = "avatar-fallback";
+  div.style.background = avatarColor(agent.displayName);
+  div.textContent = initials(agent.displayName);
+  return div;
+}
+
+let uiFlags = null; // persistent one-time-note flags from main (ui-flags.json); null until loaded
+
+async function loadAgents() {
+  const [agentList, gDoc, flags] = await Promise.all([window.api.listAgents(), window.api.listGroups(), window.api.getUiFlags().catch(() => ({}))]);
+  uiFlags = flags || {};
+  agents = agentList;
+  groupsDoc = gDoc && Array.isArray(gDoc.groups) ? gDoc : { version: 1, groups: [] };
+  renderAgentList();
+  updateAgentGroupsNote();
+}
+
+// Persist the in-memory groupsDoc and re-render. The main process normalizes
+// (dedupes members, repacks order, drops dangling parentIds) and returns the
+// cleaned copy, which we adopt so the renderer and disk never drift.
+async function saveGroupsDoc() {
+  try {
+    const saved = await window.api.saveGroups(groupsDoc);
+    if (saved && Array.isArray(saved.groups)) groupsDoc = saved;
+  } catch (e) {
+    console.error("Failed to save groups", e);
+  }
+  renderAgentList();
+  updateAgentGroupsNote();
+}
+
+// ------------------------------------------------------ group render/state --
+
+const GROUP_COLOR_PRESETS = [
+  "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6",
+  "#06b6d4", "#f43f5e", "#84cc16", "#ec4899",
+];
+
+function genGroupId() {
+  return "g_" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
+}
+
+function readCollapsedMap() {
+  try {
+    return JSON.parse(localStorage.getItem("agentGroupCollapsed") || "{}") || {};
+  } catch (e) {
+    return {};
+  }
+}
+function isGroupCollapsed(id) {
+  return !!readCollapsedMap()[id];
+}
+function setGroupCollapsed(id, collapsed) {
+  const map = readCollapsedMap();
+  if (collapsed) map[id] = true;
+  else delete map[id];
+  localStorage.setItem("agentGroupCollapsed", JSON.stringify(map));
+}
+
+// Drag state is a plain module var rather than dataTransfer payload so both
+// the dragover math and the drop handler can read it synchronously without
+// re-parsing. Cleared on every dragend (fired even when a drop misses).
+let dragState = null;
+
+function clearDragMarkers() {
+  document.querySelectorAll(".agent-item.dragging, .agent-item.drop-before, .agent-item.drop-after")
+    .forEach((el) => el.classList.remove("dragging", "drop-before", "drop-after"));
+  document.querySelectorAll(".group-block.drop-target, .group-header.drop-target")
+    .forEach((el) => el.classList.remove("drop-target"));
+}
+document.addEventListener("dragend", () => {
+  dragState = null;
+  clearDragMarkers();
+});
+
+function markActiveAgentItem(agent) {
+  const items = agentListEl.querySelectorAll(".agent-item");
+  let found = false;
+  items.forEach((el) => {
+    const isIt = el.dataset.folderName === agent.folderName;
+    if (isIt) found = true;
+    if (el.classList.contains("active") !== isIt) el.classList.toggle("active", isIt);
+  });
+  return found;
+}
+
+function renderAgentList() {
+  agentListEl.innerHTML = "";
+  closeAgentItemMenu();
+  closeGroupMenu();
+
+  const byFolder = new Map(agents.map((a) => [a.folderName, a]));
+  const claimed = new Set();
+
+  const childrenOf = new Map(); // parentId ("" = root) -> [group]
+  for (const g of groupsDoc.groups) {
+    const key = g.parentId || "";
+    if (!childrenOf.has(key)) childrenOf.set(key, []);
+    childrenOf.get(key).push(g);
+  }
+  for (const list of childrenOf.values()) list.sort((a, b) => a.order - b.order);
+
+  const renderGroup = (group) => {
+    const block = document.createElement("div");
+    block.className = "group-block";
+    if (isGroupCollapsed(group.id)) block.classList.add("collapsed");
+    block.style.setProperty("--group-color", group.color);
+    block.dataset.groupId = group.id;
+
+    const header = buildGroupHeader(group);
+    block.appendChild(header);
+
+    const wrap = document.createElement("div");
+    wrap.className = "group-agents";
+
+    for (const child of childrenOf.get(group.id) || []) {
+      wrap.appendChild(renderGroup(child));
+    }
+
+    let count = 0;
+    for (const folderName of group.members) {
+      const agent = byFolder.get(folderName);
+      if (!agent) continue; // a member whose folder no longer exists
+      claimed.add(folderName);
+      wrap.appendChild(renderAgentItem(agent, group.id));
+      count++;
+    }
+    header.querySelector(".group-count").textContent = String(count);
+
+    if (count === 0 && (childrenOf.get(group.id) || []).length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "group-empty";
+      empty.textContent = "Drop an agent here";
+      wrap.appendChild(empty);
+    }
+
+    block.appendChild(wrap);
+    wireGroupDropTarget(block, header, group.id);
+    return block;
+  };
+
+  for (const group of childrenOf.get("") || []) {
+    agentListEl.appendChild(renderGroup(group));
+  }
+
+  const ungrouped = agents.filter((a) => !claimed.has(a.folderName));
+
+  if (groupsDoc.groups.length === 0) {
+    // No groups defined at all - render exactly the pre-feature flat list,
+    // with no "Ungrouped" heading.
+    for (const agent of ungrouped) agentListEl.appendChild(renderAgentItem(agent, null));
+    return;
+  }
+
+  if (ungrouped.length > 0) {
+    const block = document.createElement("div");
+    block.className = "group-block";
+    if (isGroupCollapsed("__ungrouped__")) block.classList.add("collapsed");
+    block.dataset.groupId = "";
+
+    const header = document.createElement("div");
+    header.className = "group-header";
+    const caret = document.createElement("span");
+    caret.className = "group-caret";
+    caret.textContent = "▾";
+    const name = document.createElement("span");
+    name.className = "group-name";
+    name.textContent = "Ungrouped";
+    const cnt = document.createElement("span");
+    cnt.className = "group-count";
+    cnt.textContent = String(ungrouped.length);
+    header.append(caret, name, cnt);
+    header.addEventListener("click", () => {
+      const nowCollapsed = !block.classList.contains("collapsed");
+      block.classList.toggle("collapsed", nowCollapsed);
+      setGroupCollapsed("__ungrouped__", nowCollapsed);
+    });
+
+    const wrap = document.createElement("div");
+    wrap.className = "group-agents";
+    for (const agent of ungrouped) wrap.appendChild(renderAgentItem(agent, null));
+
+    block.append(header, wrap);
+    wireGroupDropTarget(block, header, null); // dropping here = remove from any group
+    agentListEl.appendChild(block);
+  }
+}
+
+function buildGroupHeader(group) {
+  const header = document.createElement("div");
+  header.className = "group-header";
+  header.draggable = true;
+
+  const caret = document.createElement("span");
+  caret.className = "group-caret";
+  caret.textContent = "▾";
+
+  const dot = document.createElement("span");
+  dot.className = "group-color-dot";
+
+  const name = document.createElement("span");
+  name.className = "group-name";
+  name.textContent = group.name;
+
+  const count = document.createElement("span");
+  count.className = "group-count";
+
+  const menuBtn = document.createElement("button");
+  menuBtn.className = "group-menu-btn";
+  menuBtn.title = "Group options";
+  menuBtn.textContent = "⋮";
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openGroupMenu(group, menuBtn);
+  });
+
+  header.append(caret, dot, name, count, menuBtn);
+
+  header.addEventListener("click", (e) => {
+    if (e.target === menuBtn) return;
+    const block = header.closest(".group-block");
+    const nowCollapsed = !block.classList.contains("collapsed");
+    block.classList.toggle("collapsed", nowCollapsed);
+    setGroupCollapsed(group.id, nowCollapsed);
+  });
+
+  header.addEventListener("dragstart", (e) => {
+    dragState = { type: "group", id: group.id };
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", group.name); } catch (err) {}
+  });
+
+  return header;
+}
+
+function renderAgentItem(agent, groupId) {
+  const item = document.createElement("div");
+  item.className = "agent-item" + (agent.path === activeAgentPath ? " active" : "") + (agent.paused ? " agent-item-paused" : "");
+  item.draggable = true;
+  item.dataset.folderName = agent.folderName;
+  item.dataset.agentPath = agent.path;   // v1.115.0: the waiting-for-you queue needs the path to send/read for this row
+  item.dataset.groupId = groupId || "";
+  // The avatar sits in a positioned wrapper so header-tasks.js can pin the run-state
+  // icon and the needs-you badge to its corners (they are added there, from live data).
+  const avatarWrap = document.createElement("div");
+  avatarWrap.className = "avatar-wrap";
+  avatarWrap.appendChild(renderAvatarEl(agent));
+  item.appendChild(avatarWrap);
+
+  const textWrap = document.createElement("div");
+  textWrap.className = "agent-item-text";
+  const nameEl = document.createElement("div");
+  nameEl.className = "agent-item-name";
+  nameEl.textContent = agent.displayName;
+  if (agent.paused) {
+    const pausedBadge = document.createElement("span");
+    pausedBadge.className = "paused-badge";
+    pausedBadge.textContent = "Paused";
+    nameEl.appendChild(pausedBadge);
+  }
+  const roleEl = document.createElement("div");
+  roleEl.className = "agent-item-role";
+  roleEl.textContent = agent.role || agent.status;
+  textWrap.appendChild(nameEl);
+  textWrap.appendChild(roleEl);
+  item.appendChild(textWrap);
+
+  const dot = document.createElement("div");
+  dot.className = "health-dot " + agent.healthLabel;
+  dot.title = agent.healthLabel;
+  dot.setAttribute("role", "img"); // v1.83.2: the health reading in words (the dot's colour is not the only signal)
+  dot.setAttribute("aria-label", window.LeftPane ? window.LeftPane.healthWord(agent.healthLabel) : String(agent.healthLabel));
+  item.appendChild(dot);
+
+  const menuBtn = document.createElement("button");
+  menuBtn.className = "agent-item-menu-btn";
+  menuBtn.title = "Agent options";
+  menuBtn.textContent = "⋮";
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation(); // don't also select the agent
+    openAgentItemMenu(agent, menuBtn);
+  });
+  item.appendChild(menuBtn);
+
+  item.addEventListener("click", () => selectAgent(agent));
+
+  item.addEventListener("dragstart", (e) => {
+    e.stopPropagation();
+    dragState = { type: "agent", folderName: agent.folderName };
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", agent.folderName); } catch (err) {}
+    item.classList.add("dragging");
+  });
+  item.addEventListener("dragover", (e) => {
+    if (!dragState || dragState.type !== "agent") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = item.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    item.classList.toggle("drop-after", after);
+    item.classList.toggle("drop-before", !after);
+  });
+  item.addEventListener("dragleave", () => {
+    item.classList.remove("drop-before", "drop-after");
+  });
+  item.addEventListener("drop", (e) => {
+    if (!dragState || dragState.type !== "agent") return;
+    e.preventDefault();
+    e.stopPropagation(); // handled here, don't also fire the group block's drop
+    const rect = item.getBoundingClientRect();
+    const position = e.clientY > rect.top + rect.height / 2 ? "after" : "before";
+    const dragged = dragState.folderName;
+    item.classList.remove("drop-before", "drop-after");
+    if (dragged && dragged !== agent.folderName) {
+      moveAgent(dragged, groupId || null, { relativeTo: agent.folderName, position });
+    }
+  });
+
+  return item;
+}
+
+function wireGroupDropTarget(block, header, groupId) {
+  block.addEventListener("dragover", (e) => {
+    if (!dragState) return;
+    if (dragState.type === "agent") {
+      e.preventDefault();
+      block.classList.add("drop-target");
+    } else if (dragState.type === "group" && groupId) {
+      e.preventDefault();
+      header.classList.add("drop-target");
+    }
+  });
+  block.addEventListener("dragleave", (e) => {
+    if (!block.contains(e.relatedTarget)) {
+      block.classList.remove("drop-target");
+      header.classList.remove("drop-target");
+    }
+  });
+  block.addEventListener("drop", (e) => {
+    if (!dragState) return;
+    e.preventDefault();
+    block.classList.remove("drop-target");
+    header.classList.remove("drop-target");
+    if (dragState.type === "agent") {
+      moveAgent(dragState.folderName, groupId || null); // append to end
+    } else if (dragState.type === "group" && groupId && dragState.id !== groupId) {
+      reorderGroup(dragState.id, groupId);
+    }
+  });
+}
+
+// Removes the agent from whatever group currently holds it, then (if a target
+// group is given) inserts it - at the end, or next to `relativeTo`. Passing
+// targetGroupId null just leaves it ungrouped.
+function moveAgent(folderName, targetGroupId, opts = {}) {
+  for (const g of groupsDoc.groups) {
+    const i = g.members.indexOf(folderName);
+    if (i !== -1) g.members.splice(i, 1);
+  }
+  if (targetGroupId) {
+    const g = groupsDoc.groups.find((x) => x.id === targetGroupId);
+    if (g) {
+      let idx = g.members.length;
+      if (opts.relativeTo) {
+        const ri = g.members.indexOf(opts.relativeTo);
+        if (ri !== -1) idx = opts.position === "after" ? ri + 1 : ri;
+      }
+      g.members.splice(idx, 0, folderName);
+    }
+  }
+  saveGroupsDoc();
+}
+
+// v1: reordering is only within one set of siblings (all top-level today).
+function reorderGroup(draggedId, targetId) {
+  const dragged = groupsDoc.groups.find((g) => g.id === draggedId);
+  const target = groupsDoc.groups.find((g) => g.id === targetId);
+  if (!dragged || !target) return;
+  if ((dragged.parentId || null) !== (target.parentId || null)) return;
+  const siblings = groupsDoc.groups
+    .filter((g) => (g.parentId || null) === (dragged.parentId || null))
+    .sort((a, b) => a.order - b.order)
+    .filter((g) => g.id !== draggedId);
+  const ti = siblings.findIndex((g) => g.id === targetId);
+  siblings.splice(ti === -1 ? siblings.length : ti, 0, dragged);
+  siblings.forEach((g, i) => { g.order = i; });
+  saveGroupsDoc();
+}
+
+// -------------------------------------------------- agent edit / delete --
+
+let openAgentMenuEl = null;
+
+function closeAgentItemMenu() {
+  if (openAgentMenuEl) {
+    openAgentMenuEl.remove();
+    openAgentMenuEl = null;
+  }
+  document.querySelectorAll(".agent-item-menu-btn.open").forEach((b) => b.classList.remove("open"));
+}
+
+function openAgentItemMenu(agent, buttonEl) {
+  if (openAgentMenuEl) {
+    const wasThisOne = openAgentMenuEl.dataset.forAgent === agent.path;
+    closeAgentItemMenu();
+    if (wasThisOne) return; // clicking the same button again just closes it
+  }
+
+  const rect = buttonEl.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "agent-item-menu";
+  menu.dataset.forAgent = agent.path;
+  menu.style.top = rect.bottom + 4 + "px";
+  menu.style.left = Math.max(8, rect.right - 140) + "px";
+
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "Edit";
+  editBtn.addEventListener("click", () => {
+    closeAgentItemMenu();
+    openEditAgentModal(agent);
+  });
+  menu.appendChild(editBtn);
+
+  const instrBtn = document.createElement("button");
+  instrBtn.textContent = "Edit instructions";
+  instrBtn.addEventListener("click", () => {
+    closeAgentItemMenu();
+    openInstructionsModal(agent);
+  });
+  menu.appendChild(instrBtn);
+
+  if (groupsDoc.groups.length > 0) {
+    const currentGroup = groupsDoc.groups.find((g) => g.members.includes(agent.folderName));
+    const label = document.createElement("div");
+    label.className = "menu-label";
+    label.textContent = "Move to group";
+    menu.appendChild(label);
+
+    const makeGroupBtn = (id, text) => {
+      const b = document.createElement("button");
+      b.textContent = text;
+      if ((currentGroup ? currentGroup.id : null) === id) b.classList.add("menu-current");
+      b.addEventListener("click", () => {
+        closeAgentItemMenu();
+        moveAgent(agent.folderName, id);
+      });
+      menu.appendChild(b);
+    };
+    makeGroupBtn(null, currentGroup ? "None (ungroup)" : "None");
+    for (const g of groupsDoc.groups) makeGroupBtn(g.id, g.name);
+
+    const sep = document.createElement("div");
+    sep.className = "menu-sep";
+    menu.appendChild(sep);
+  }
+
+  const pauseMenuBtn = document.createElement("button");
+  pauseMenuBtn.textContent = agent.paused ? "Resume" : "Pause";
+  pauseMenuBtn.addEventListener("click", () => {
+    closeAgentItemMenu();
+    toggleAgentPaused(agent);
+  });
+  menu.appendChild(pauseMenuBtn);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "danger-text";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.addEventListener("click", () => {
+    closeAgentItemMenu();
+    openDeleteAgentModal(agent);
+  });
+  menu.appendChild(deleteBtn);
+
+  document.body.appendChild(menu);
+  // A tall Move-to-group list can run off the bottom of the window - nudge it
+  // back up if so.
+  const menuRect = menu.getBoundingClientRect();
+  if (menuRect.bottom > window.innerHeight - 8) {
+    menu.style.top = Math.max(8, window.innerHeight - 8 - menuRect.height) + "px";
+  }
+  openAgentMenuEl = menu;
+  buttonEl.classList.add("open");
+}
+
+document.addEventListener("click", (e) => {
+  if (openAgentMenuEl && !openAgentMenuEl.contains(e.target)) closeAgentItemMenu();
+  if (openGroupMenuEl && !openGroupMenuEl.contains(e.target)) closeGroupMenu();
+});
+
+// ------------------------------------------------------------- group menu --
+
+let openGroupMenuEl = null;
+
+function closeGroupMenu() {
+  if (openGroupMenuEl) {
+    openGroupMenuEl.remove();
+    openGroupMenuEl = null;
+  }
+  document.querySelectorAll(".group-menu-btn.open").forEach((b) => b.classList.remove("open"));
+}
+
+function openGroupMenu(group, buttonEl) {
+  if (openGroupMenuEl) {
+    const wasThisOne = openGroupMenuEl.dataset.forGroup === group.id;
+    closeGroupMenu();
+    if (wasThisOne) return;
+  }
+  const rect = buttonEl.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "agent-item-menu"; // same floating dropdown style
+  menu.dataset.forGroup = group.id;
+  menu.style.top = rect.bottom + 4 + "px";
+  menu.style.left = Math.max(8, rect.right - 160) + "px";
+
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "Rename / recolor";
+  editBtn.addEventListener("click", () => {
+    closeGroupMenu();
+    openGroupModal(group);
+  });
+  menu.appendChild(editBtn);
+
+  const delBtn = document.createElement("button");
+  delBtn.className = "danger-text";
+  delBtn.textContent = "Delete group";
+  delBtn.addEventListener("click", () => {
+    closeGroupMenu();
+    openDeleteGroupModal(group);
+  });
+  menu.appendChild(delBtn);
+
+  document.body.appendChild(menu);
+  openGroupMenuEl = menu;
+  buttonEl.classList.add("open");
+}
+
+// 2026-09-20: the actual "stop an agent" mechanism, shared by the chat
+// header's Pause Agent button and the sidebar item's "⋮" menu, so pausing
+// doesn't require opening the agent's tab first. Persists via set-agent-paused
+// (main.js), which also tears down any live process/pty and, on resume,
+// redispatches it right away rather than waiting for the next keep-alive
+// sweep - see that handler's own comment for why this flag exists at all
+// (the always-on background-agent sweep would otherwise fight a deliberate
+// stop, e.g. a runaway/looping agent, a project on hold, freeing up the
+// machine for something heavy).
+async function toggleAgentPaused(agent) {
+  const wantPaused = !agent.paused;
+  const ok = confirm(
+    wantPaused
+      ? `Pause ${agent.displayName}? Its background process stops immediately, and the always-on keep-alive won't bring it back until you resume it. You can still open its chat tab manually any time.`
+      : `Resume ${agent.displayName}? It's dispatched again in the background right away.`
+  );
+  if (!ok) return;
+  try {
+    const r = await window.api.setAgentPaused(agent.path, wantPaused);
+    agent.paused = !!(r && r.paused);
+  } catch (e) {
+    alert("Failed: " + (e.message || String(e)));
+    return;
+  }
+  renderAgentList();
+  if (activeAgentPath === agent.path) updatePauseButton(agent);
+}
+
+const pauseAgentBtn = document.getElementById("pause-agent-btn");
+function updatePauseButton(agent) {
+  if (!pauseAgentBtn) return;
+  pauseAgentBtn.textContent = agent && agent.paused ? "Resume Agent" : "Pause Agent";
+}
+pauseAgentBtn.addEventListener("click", () => {
+  const agent = agents.find((a) => a.path === activeAgentPath);
+  if (agent) toggleAgentPaused(agent);
+});
+
+// Per-agent compose draft (v1.64.3): the compose box and its attachment chips belong to the agent you
+// were typing to. Switching agents parks the unsent text + attachments under the old agent and restores
+// the new agent's own (empty if none). In memory, plus localStorage (debounced) so a restart keeps them.
+const composeDrafts = new Map(); // agentPath -> { text, attachments }
+const COMPOSE_DRAFTS_KEY = "composeDrafts";
+try {
+  const saved = JSON.parse(localStorage.getItem(COMPOSE_DRAFTS_KEY) || "{}");
+  for (const k of Object.keys(saved)) if (saved[k]) composeDrafts.set(k, { text: String(saved[k]), attachments: [] });
+} catch (e) {}
+function persistComposeDrafts() {
+  try {
+    const o = {};
+    for (const [k, v] of composeDrafts) if (v.text) o[k] = v.text;
+    localStorage.setItem(COMPOSE_DRAFTS_KEY, JSON.stringify(o));
+  } catch (e) {}
+}
+function parkComposeDraft(path) {
+  if (!path) return;
+  const text = chatInputEl.value;
+  if (text || pendingAttachments.length) composeDrafts.set(path, { text, attachments: pendingAttachments });
+  else composeDrafts.delete(path);
+  persistComposeDrafts();
+}
+function restoreComposeDraft(path) {
+  const d = composeDrafts.get(path);
+  chatInputEl.value = d ? d.text : "";
+  pendingAttachments = d ? d.attachments : [];
+  renderAttachments();
+  autoGrowChatInput();
+}
+let composeDraftTimer = null;
+chatInputEl.addEventListener("input", () => {
+  clearTimeout(composeDraftTimer);
+  composeDraftTimer = setTimeout(() => parkComposeDraft(activeAgentPath), 600);
+});
+
+// "Loading conversation..." overlay (v1.69.13): after clicking another agent the chat stays blank for a few
+// seconds while its transcript is read; with no sign of life it looked stuck. Shown on every switch, hidden by the
+// first renderChatBlocks() (or after 12 s at most, so it can never stay forever).
+let chatLoadingTimer = null;
+function showChatLoading() {
+  let ov = document.getElementById("chat-loading-overlay");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "chat-loading-overlay";
+    ov.innerHTML = '<div class="chat-loading-spinner"></div><div>Loading conversation...</div>';
+    chatMessagesViewEl.parentNode.appendChild(ov);
+  }
+  ov.classList.remove("hidden");
+  clearTimeout(chatLoadingTimer);
+  chatLoadingTimer = setTimeout(hideChatLoading, 12000);
+}
+function hideChatLoading() {
+  clearTimeout(chatLoadingTimer);
+  const ov = document.getElementById("chat-loading-overlay");
+  if (ov) ov.classList.add("hidden");
+}
+
+function selectAgent(agent) {
+  if (activeAgentPath !== agent.path) {
+    showChatLoading();
+    chatRenderWindow.delete(agent.path); // v1.93.0: every switch opens on the newest CHAT_RENDER_WINDOW blocks
+    const leaving = activeAgentPath && terminals.get(activeAgentPath);
+    if (leaving) leaving.lastAllBlocks = null; // v1.68.1: do not keep a second copy of every visited transcript
+    parkComposeDraft(activeAgentPath);
+    restoreComposeDraft(agent.path);
+  }
+  activeAgentPath = agent.path;
+  announceActiveAgent(); // v1.113.0: PHEME pins the agent that is selected when its key is pressed
+  if (window.predictReplies) window.predictReplies.onSwitch(agent.path); // v1.108.0: drop any ghost reply, tell main which agent is open
+  localStorage.setItem("lastSelectedAgentPath", agent.path);
+  // v1.68.0: switching agents only moves the highlight; the whole sidebar (19 rows, 6 MB of avatar data URLs to
+  // decode again) is rebuilt only when the row is not there (first load, a changed roster).
+  if (!markActiveAgentItem(agent)) renderAgentList();
+  updatePauseButton(agent);
+  // A restart-status banner is a single shared element, not per-agent -
+  // clear it on every switch so it can't linger and look like it applies
+  // to whichever agent you've now switched to.
+  const rsb = document.getElementById("restart-status-banner");
+  if (rsb) rsb.className = "restart-status-banner hidden";
+
+  emptyStateEl.classList.add("hidden");
+  chatViewEl.classList.remove("hidden");
+
+  chatAvatarSlotEl.innerHTML = "";
+  chatAvatarSlotEl.appendChild(renderAvatarEl(agent));
+  chatNameEl.textContent = agent.displayName;
+  setChatRoleText(chatRoleEl, agent.role);
+  if (window.agentDocsPanel) window.agentDocsPanel.setAgent(agent.path, { key: agent.folderName, name: agent.displayName, avatar: agent.avatar || "" });
+
+  setHistoryMode(false);
+  setConversationsMode(false);
+  showTerminalFor(agent);
+  updateComposeAvailability();
+  updateThinkingIndicator();
+  renderQueue(agent.path);
+  refreshContextUsage(agent.path);
+  refreshUsageWindows();
+  updateNoInstructionsBanner(agent);
+}
+
+// A resize call reaches the underlying Claude Code process as a real pty
+// resize (node-pty's ConPTY resize on Windows) - the same effect a terminal
+// emulator's SIGWINCH has. Confirmed independently on a public bug report
+// (anthropics/claude-code#25286): Claude Code's renderer does a full
+// screen repaint on every resize signal it receives, and a burst of
+// redundant ones (dragging a window, a resize event that doesn't actually
+// change the computed cols/rows) can push it into a stuck 100%-writes
+// render loop it never recovers from - exactly the failure mode this app's
+// own drag-to-resize compose box and window-resize listener could trigger,
+// since neither previously checked whether the size had actually changed
+// before sending. Only sending when cols/rows genuinely differ from the
+// last value actually sent closes that gap.
+function sendResizeIfChanged(session, agentPath, cols, rows) {
+  if (session.lastSentCols === cols && session.lastSentRows === rows) return;
+  session.lastSentCols = cols;
+  session.lastSentRows = rows;
+  window.api.resizeTerminal(agentPath, cols, rows);
+}
+
+// Creates (once) the renderer-side session object + xterm for an agent without showing it.
+function getOrCreateSession(agent) {
+  let session = terminals.get(agent.path);
+  if (session) return session;
+  {
+    const term = new Terminal({
+      // The terminal stays DARK even though the rest of the app is light -
+      // same as VS Code and every other IDE. Claude Code's CLI draws its
+      // output (boxes, dim text, tool headers) in ANSI colors tuned for a
+      // dark background; on a light xterm background, and with only bg/fg
+      // overridden here rather than the full 16-colour ANSI palette, most of
+      // that output rendered near-white on near-white and vanished. A dark
+      // terminal panel is the correct, conventional choice and sidesteps the
+      // whole problem. Do not "theme" this to match the light chrome again
+      // without also supplying a complete, light-tuned ANSI palette AND
+      // verifying real CLI output stays readable.
+      theme: {
+        background: "#1a1e26",
+        foreground: "#e6e8ec",
+        cursor: "#c96442",
+      },
+      fontFamily: "Cascadia Code, Consolas, monospace",
+      fontSize: 13,
+      convertEol: true,
+      // Only affects Raw Terminal mode now - the Chat View used to be
+      // rebuilt by scraping this exact buffer, which is why this was
+      // originally widened from xterm's ~1000-line default (that scraping
+      // approach had a real, if less dire, scrollback-eviction bug on long
+      // sessions before it was replaced with JSONL-tailing - see
+      // agent-desktop\CLAUDE.md). Still widened, since Raw Terminal is a
+      // real fallback view the user actually scrolls through by hand.
+      scrollback: 10000,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    session = {
+      term,
+      fitAddon,
+      started: false,
+      busy: false,
+      busyStartedAt: null,
+      idleTimer: null,
+      chatRebuildTimer: null,
+      sendQueue: [],
+      pendingSent: [],
+      // Separate from busy/busyStartedAt on purpose - see updateThinkingIndicator()
+      // for why the twitchy 900ms busy flag is wrong for a display meant to
+      // survive normal ~1s gaps between a CLI spinner's own redraws.
+      turnStartedAt: null,
+      thinkingQuietTimer: null,
+      // Authoritative "is the agent still working" state, derived from the
+      // transcript on every rebuildChatView (see getSessionActivity). Drives
+      // the working indicator so it doesn't flicker off during quiet stretches.
+      transcriptWorking: false,
+      transcriptWorkingSince: null,
+      // Real timestamp (Date) of this agent's last actual API response, per
+      // its own JSONL transcript - see refreshCacheStatus()/PROMPT_CACHE_TTL_MS
+      // below. null until getContextUsage() has resolved at least once.
+      lastResponseAt: null,
+      // Timestamp of the last byte of pty output seen for this agent, for
+      // anything that needs to detect real completion faster than the
+      // 3s-tuned thinkingQuietTimer above - see waitForPtyQuiet() and the
+      // Reset Session handler below.
+      lastActivityAt: null,
+      // Guards against rebuildChatView() wiping a real, already-shown
+      // conversation down to nothing on a bad read - see the comment there.
+      hasShownRealContent: false,
+      // Cache of the last successful rebuildChatView() read, reused by
+      // submitToAgent() for its synchronous optimistic render (see there).
+      lastBlocks: [],
+      // Last cols/rows actually sent to the pty - see sendResizeIfChanged().
+      lastSentCols: null,
+      lastSentRows: null,
+    };
+    terminals.set(agent.path, session);
+    registerTerminalPathLinks(term); // v1.109.0: existing file/folder paths in the raw terminal are clickable too
+
+    term.onData((data) => {
+      window.api.sendInput(agent.path, data);
+    });
+  }
+  return session;
+}
+
+// Starts the agent's pty once. Shared by showTerminalFor (tab opened) and attachSessionInBackground.
+function startSessionPty(agent, session, cols, rows) {
+  if (session.started) return;
+      session.started = true;
+      session.lastSentCols = cols;
+      session.lastSentRows = rows;
+      const knownAgentId = pendingKnownAgentIdByPath.get(agent.path);
+      pendingKnownAgentIdByPath.delete(agent.path);
+      window.api
+        .startTerminal(agent.path, cols, rows, knownAgentId)
+        .then(() => {
+          // Flush anything queued by sendChatInput()'s !session.started guard
+          // while this was in flight - same drain pattern as setBusy()'s
+          // busy -> not-busy transition, just for "just started" instead.
+          if (session.sendQueue.length > 0) {
+            const next = session.sendQueue.shift();
+            submitToAgent(agent.path, next);
+            renderQueue(agent.path);
+          }
+        })
+        .catch((err) => {
+          session.term.writeln(`\r\n[failed to start session: ${err.message}]`);
+          session.started = false;
+        });
+}
+
+function showTerminalFor(agent) {
+  // v1.69.16: DETACH whatever is showing (never innerHTML = "", which throws the other agent's xterm element away) and
+  // re-attach this agent's own element. xterm's open() on an already-opened terminal returns without attaching, so
+  // returning to an agent shown before left the Terminal tab blank behind the dark mask ("black bar", the partner + the owner).
+  while (terminalContainerEl.firstChild) terminalContainerEl.removeChild(terminalContainerEl.firstChild);
+
+  const session = getOrCreateSession(agent);
+
+  if (session.term.element) terminalContainerEl.appendChild(session.term.element);
+  else session.term.open(terminalContainerEl);
+
+  // Fitting immediately after open() can measure a zero-size container if the
+  // parent was just unhidden this same tick (display:none -> flex hasn't been
+  // painted yet) - defer to the next animation frame so layout has settled.
+  requestAnimationFrame(() => {
+    session.fitAddon.fit();
+    const { cols, rows } = session.term;
+    try { session.term.refresh(0, Math.max(0, rows - 1)); } catch (e) { /* repaint after a re-attach; cosmetic */ }
+
+    if (!session.started) {
+      startSessionPty(agent, session, cols, rows);
+    } else {
+      sendResizeIfChanged(session, agent.path, cols, rows);
+    }
+
+    // Populate the chat view immediately rather than waiting for the next
+    // terminal-data event, so switching to an agent shows whatever's
+    // already in its buffer (e.g. this session's activity so far) right away.
+    // forceBottom: a freshly-opened agent should land on its latest message.
+    rebuildChatView(agent.path, { forceBottom: true });
+
+    // The chat textarea is the primary way to compose a message; the terminal
+    // itself is still directly focusable by clicking into it (e.g. for quick
+    // menu/keystroke interactions like the theme picker or y/n prompts).
+    chatInputEl.focus();
+    // v1.69.4: ask main whether this attach client is alive (kicked / detached / blank Terminal); main re-attaches the client
+    setTimeout(() => {
+      try {
+        let blank = true;
+        const b = session.term.buffer.active;
+        for (let y = 0; y < b.length; y++) { const l = b.getLine(y); if (l && l.translateToString(true).trim()) { blank = false; break; } }
+        if (session.started) window.api.terminalBlankCheck(agent.path, blank).catch(() => {});
+      } catch (e) { /* diagnostics only */ }
+    }, 2500);
+  });
+}
+
+// 2026-10-03: attach + start an agent's pty WITHOUT touching the visible tab, focus or compose
+// box (auto-handoff used to selectAgent() and flick back, so it had to wait for the owner to stop
+// typing). Never calls term.open(), so there is no DOM work; the first real tab click opens the
+// xterm and sends the true cols/rows via sendResizeIfChanged. Resolves true once started.
+async function attachSessionInBackground(agent) {
+  const session = getOrCreateSession(agent);
+  if (!session.started) startSessionPty(agent, session, 120, 30);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    if (session.started && Date.now() - t0 > 4000) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return !!session.started;
+}
+
+function refitActiveTerminal() {
+  if (!activeAgentPath) return;
+  const session = terminals.get(activeAgentPath);
+  if (!session) return;
+  session.fitAddon.fit();
+  const { cols, rows } = session.term;
+  sendResizeIfChanged(session, activeAgentPath, cols, rows);
+}
+
+window.addEventListener("resize", refitActiveTerminal);
+
+// Drag-to-resize the sidebar - same pattern as the chat-input resize handle
+// above, but horizontal. Reported live: longer agent names/descriptions get
+// cut off at the fixed 280px width with no way to see more.
+//
+// v1.47.0: the same handle now also sizes the sidebar while ARGUS is open,
+// where it used to be hidden behind a hard-coded 78px avatar strip (the owner,
+// 2026-09-23: "This can (and should) be wider with an option to change its
+// width"). The two modes keep SEPARATE remembered widths, because they are
+// answering different questions - the chat sidebar wants room for names and
+// descriptions, the Bridge's wants to stay out of the way of the Bridge -
+// so dragging one must not silently redefine the other. Both survive a
+// restart via localStorage; a corrupt or absent value just falls back to the
+// default rather than throwing, since a sidebar that fails to lay out would
+// take the whole renderer down with it.
+const sidebarEl = document.getElementById("sidebar");
+const sidebarResizeHandleEl = document.getElementById("sidebar-resize-handle");
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_MAX_WIDTH = 560;
+const SIDEBAR_DEFAULT_WIDTH = 280;
+// The Argus range starts below the old 78px strip (someone may want it
+// narrower still) and stops well short of the chat sidebar's maximum: past
+// ~420px the three Bridge columns start reflowing to two and the sidebar is
+// costing more than it shows.
+const ARGUS_SIDEBAR_MIN_WIDTH = 64;
+const ARGUS_SIDEBAR_MAX_WIDTH = 420;
+const ARGUS_SIDEBAR_DEFAULT_WIDTH = 190;
+// Where the avatar strip turns back into a readable list. 150px is the width
+// at which a 36px avatar plus a name in .agent-item-name stops ellipsing to
+// two or three characters - below it, showing the text is worse than hiding it.
+const ARGUS_SIDEBAR_WIDE_AT = 150;
+const SIDEBAR_WIDTH_KEY = "agentDesktop.sidebarWidth";
+const ARGUS_SIDEBAR_WIDTH_KEY = "agentDesktop.argusSidebarWidth";
+
+function isArgusOpen() {
+  return document.body.classList.contains("argus-open");
+}
+
+function readStoredWidth(key, fallback, min, max) {
+  try {
+    const raw = Number(window.localStorage.getItem(key));
+    if (!Number.isFinite(raw) || raw <= 0) return fallback;
+    return Math.max(min, Math.min(raw, max));
+  } catch {
+    return fallback;
+  }
+}
+
+let sidebarWidth = readStoredWidth(
+  SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+let argusSidebarWidth = readStoredWidth(
+  ARGUS_SIDEBAR_WIDTH_KEY, ARGUS_SIDEBAR_DEFAULT_WIDTH, ARGUS_SIDEBAR_MIN_WIDTH, ARGUS_SIDEBAR_MAX_WIDTH);
+
+let sidebarDragStartX = null;
+let sidebarDragStartWidth = null;
+
+// Applies whichever of the two widths the current mode calls for. Argus's
+// goes through a CSS variable rather than an inline style: styles-argus.css
+// needs !important to beat #sidebar's own rule while the Bridge is open, and
+// an inline width can't be !important - so letting the two modes write to
+// different channels keeps each one's value intact when the other takes over.
+function applySidebarWidth() {
+  if (isArgusOpen()) {
+    document.documentElement.style.setProperty("--argus-sidebar-w", argusSidebarWidth + "px");
+    document.body.classList.toggle("argus-sidebar-wide", argusSidebarWidth >= ARGUS_SIDEBAR_WIDE_AT);
+  } else {
+    sidebarEl.style.width = sidebarWidth + "px";
+  }
+  // Same reasoning as setChatInputHeight() above - the terminal doesn't
+  // redraw on its own just because a neighboring element resized.
+  refitActiveTerminal();
+}
+// argus.js calls this on open and on close, so the sidebar takes the right
+// one of the two widths the moment the mode changes rather than on next drag.
+window.applySidebarWidth = applySidebarWidth;
+
+function setSidebarWidth(px) {
+  if (isArgusOpen()) {
+    argusSidebarWidth = Math.max(ARGUS_SIDEBAR_MIN_WIDTH, Math.min(px, ARGUS_SIDEBAR_MAX_WIDTH));
+  } else {
+    sidebarWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(px, SIDEBAR_MAX_WIDTH));
+  }
+  applySidebarWidth();
+}
+
+function persistSidebarWidth() {
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    window.localStorage.setItem(ARGUS_SIDEBAR_WIDTH_KEY, String(argusSidebarWidth));
+  } catch {
+    /* Private/blocked storage - the width still works for this run. */
+  }
+}
+
+applySidebarWidth();
+
+sidebarResizeHandleEl.addEventListener("mousedown", (e) => {
+  sidebarDragStartX = e.clientX;
+  sidebarDragStartWidth = sidebarEl.getBoundingClientRect().width;
+  sidebarResizeHandleEl.classList.add("dragging");
+  e.preventDefault();
+});
+
+// Double-click the handle to put the current mode back to its default - the
+// cheap way out of having dragged the Bridge's sidebar somewhere unusable.
+sidebarResizeHandleEl.addEventListener("dblclick", () => {
+  setSidebarWidth(isArgusOpen() ? ARGUS_SIDEBAR_DEFAULT_WIDTH : SIDEBAR_DEFAULT_WIDTH);
+  persistSidebarWidth();
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (sidebarDragStartX === null) return;
+  const delta = e.clientX - sidebarDragStartX;
+  setSidebarWidth(sidebarDragStartWidth + delta);
+});
+
+window.addEventListener("mouseup", () => {
+  if (sidebarDragStartX === null) return;
+  sidebarDragStartX = null;
+  sidebarDragStartWidth = null;
+  sidebarResizeHandleEl.classList.remove("dragging");
+  persistSidebarWidth();
+});
+
+// ---------------------------------------------------- chat message view --
+
+// The live chat view is built from Claude Code's own JSONL transcript file
+// (window.api.getLiveTranscript(), see getLiveTranscriptBlocks() in
+// archive.js for the full reasoning) - the same reliable source History
+// already reads, rather than scraping xterm's live terminal buffer the way
+// this used to work. That switch happened after a real incident (see
+// agent-desktop\CLAUDE.md, "Chat View went completely blank mid-
+// conversation") where a bad buffer read wiped a real conversation down to
+// nothing in the live view, while History - unaffected, different data
+// source - still had everything. Each JSONL entry already arrives
+// classified with a role ("user"/"agent"/"status" for a tool call) and its
+// text, so there's no more prefix-sniffing (no more "> " / "●" / "✳"
+// heuristics, no native-input-box row exclusion, no decorative-border
+// filtering) - all of that was specific to reading a live terminal screen
+// and none of it applies to structured JSONL.
+
+// Agents are instructed (see root CLAUDE.md, "[[DETAILS]] / [[WARNING]] /
+// [[KEY]] markers") to flag which part of a long or dense answer is
+// supporting detail, which part is a risk/live-change caution, and which
+// small part is what the user actually needs to read - a result, a decision,
+// an open question. Marker lines are stripped from what's displayed; they
+// exist only to tell this renderer where to split the bubble, not to be
+// read verbatim. Content before any marker defaults to "details" so an
+// agent that forgets the opening marker still renders sensibly instead of
+// silently losing text. Exactly these three kinds are recognized on
+// purpose - an agent inventing a fourth marker name would just render as
+// stray plain text, which is the intended failure mode (fail visible, not
+// silently mis-colored).
+const ANSWER_SECTION_MARKER_RE = /^\[\[(DETAILS|WARNING|KEY)\]\]$/;
+const HAS_ANSWER_SECTION_MARKER_RE = /^\[\[(DETAILS|WARNING|KEY)\]\]$/m;
+function splitAnnotatedSections(text) {
+  const lines = text.split("\n");
+  const sections = [];
+  let currentKind = "details";
+  let buf = [];
+  const flush = () => {
+    const joined = buf.join("\n").trim();
+    if (joined) sections.push({ kind: currentKind, text: joined });
+    buf = [];
+  };
+  for (const line of lines) {
+    const m = ANSWER_SECTION_MARKER_RE.exec(line.trim());
+    if (m) {
+      flush();
+      currentKind = m[1].toLowerCase();
+    } else {
+      buf.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
+// the user asked for this directly after repeatedly needing to ask Claude to go
+// check raw JSONL timestamps to tell whether a session was genuinely stuck
+// or just slow - showing the real time on each block lets him judge
+// staleness himself at a glance, without that round-trip. Local time only
+// (not a full date) - this view is the live current conversation, not the
+// dated History archive, so same-day precision is what's actually useful.
+function formatBlockTime(timestamp) {
+  if (!timestamp) return "";
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// A pasted/attached image isn't a distinct structured block in Claude
+// Code's own JSONL transcript - the CLI substitutes it with a quoted local
+// file path (saved to a temp file) embedded right in the message's plain
+// text, for the agent to Read like any other file. Rendering that quoted
+// path as an actual inline image - rather than leaving it as raw path text
+// - matches how images the user shares elsewhere in this app's own
+// ecosystem already display, and was reported live as looking wrong
+// (tiny/unrendered) by comparison. Only matches an absolute Windows path
+// (drive letter + backslashes) ending in a known image extension, quoted -
+// deliberately narrow so a message that just happens to mention an
+// unrelated file path isn't misrendered.
+const IMAGE_PATH_RE = /"([A-Za-z]:\\[^"]+\.(?:png|jpe?g|gif|webp|bmp))"/gi;
+
+// --- Lightweight, safe Markdown -> DOM ---------------------------------------
+// The agents write normal Markdown (## headings, **bold**, - bullets, ```
+// fenced code, > quotes, [links](http...)). The chat view used to dump that
+// as raw text, so a long answer was a wall of asterisks and dashes with no
+// visual hierarchy. This renders the common subset. Safe by construction:
+// every piece of literal text goes through textContent / createTextNode -
+// never innerHTML - so agent output can't inject markup. Not a full CommonMark
+// implementation; deliberately small and predictable.
+
+// --- Clickable local file paths (v1.52.0 PDFs; v1.109.0 any openable file or folder) -------
+// Parser ../pathLinks.js, DOM glue + click handling src/renderer/path-links.js, validation and opening in main
+// (src/openPath.js). appendInlineMarkdown / fenced blocks below only call into it.
+
+function appendInlineMarkdown(parent, str) {
+  const patterns = [
+    { re: /`([^`]+)`/, tag: "code", literal: true },
+    // [text](D:\...\x.pdf) or [text](file:///D:/.../x.pdf) - a local PDF as a
+    // markdown link target. Checked before the http(s) link pattern only by
+    // position (earliest match wins), same as everything else here.
+    { re: PATHLINKS.MD_LINK_RE, tag: "mdpdf" },
+    { re: PATH_PROSE_PATTERN, tag: "pdfpath" },
+    { re: /\*\*([\s\S]+?)\*\*/, tag: "strong" },
+    { re: /(?<![\w])__([\s\S]+?)__(?![\w])/, tag: "strong" },
+    { re: /(?<![*\w])\*([^*\n]+?)\*(?![*\w])/, tag: "em" },
+    { re: /(?<![\w])_([^_\n]+?)_(?![\w])/, tag: "em" },
+    { re: /~~([^~]+?)~~/, tag: "del" },
+    { re: /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/, tag: "a" },
+    // A bare URL (no [text](url) markdown around it - agents paste plain
+    // https://... links constantly, e.g. straight into a [[KEY]] line) was
+    // previously left as plain text, indistinguishable (to a click, a
+    // selection, or the context menu) from surrounding prose - the owner hit
+    // this directly trying to copy "just the link" out of one and getting
+    // whatever else was on the line too. Turning it into a real <a> makes
+    // it independently clickable/selectable, and gives it a real
+    // params.linkURL so the right-click menu's "Copy Link Address" (added
+    // earlier the same day) can grab exactly the URL, nothing else.
+    { re: /(https?:\/\/[^\s<>"')\]]+)/, tag: "bareurl" },
+  ];
+  let rest = String(str);
+  let guard = 0;
+  while (rest && guard++ < 5000) {
+    let best = null;
+    for (const p of patterns) {
+      const m = p.re.exec(rest);
+      if (m && (!best || m.index < best.m.index)) best = { p, m };
+    }
+    if (!best) {
+      parent.appendChild(document.createTextNode(rest));
+      return;
+    }
+    const { p, m } = best;
+    if (m.index) parent.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    if (p.tag === "code") {
+      const c = document.createElement("code");
+      appendTextWithPathLinks(c, m[1], true);
+      parent.appendChild(c);
+    } else if (p.tag === "mdpdf") {
+      parent.appendChild(pathMakeMarkdownLink(m[1], m[2]));
+    } else if (p.tag === "pdfpath") {
+      parent.appendChild(pathMakeCandidate(m[0], m.cand.guess, m.cand.hasExt));
+    } else if (p.tag === "a") {
+      const a = document.createElement("a");
+      a.href = m[2];
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = m[1];
+      parent.appendChild(a);
+    } else if (p.tag === "bareurl") {
+      // Sentence punctuation right after a bare URL (a period ending the
+      // sentence, a comma before "which...", etc.) reads as part of the
+      // match but almost never belongs in the actual link - trim it back
+      // off and let it fall through as normal trailing text instead.
+      let url = m[1];
+      const trailing = url.match(/[.,;:!?]+$/);
+      let trailingText = "";
+      if (trailing) {
+        trailingText = trailing[0];
+        url = url.slice(0, -trailingText.length);
+      }
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = url;
+      parent.appendChild(a);
+      if (trailingText) parent.appendChild(document.createTextNode(trailingText));
+    } else {
+      const e = document.createElement(p.tag);
+      if (p.literal) e.textContent = m[1];
+      else appendInlineMarkdown(e, m[1]);
+      parent.appendChild(e);
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
+  if (rest) parent.appendChild(document.createTextNode(rest));
+}
+
+function isBlockStart(line) {
+  return (
+    /^\s*(#{1,6}\s|```|~~~|>\s?|[-*+]\s+|\d+[.)]\s+)/.test(line) ||
+    /^\s*([-*_])\1\1+\s*$/.test(line)
+  );
+}
+
+function appendMarkdownBlocks(container, text) {
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  let i = 0;
+  let guard = 0;
+  while (i < lines.length && guard++ < 20000) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    // Fenced code block
+    const fence = line.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      const marker = fence[1][0];
+      const closer = new RegExp("^\\s*\\" + marker + "{3,}\\s*$");
+      const buf = [];
+      i++;
+      while (i < lines.length && !closer.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // consume closing fence if present
+      const pre = document.createElement("pre");
+      pre.className = "code-block";
+      const code = document.createElement("code");
+      appendTextWithPathLinks(code, buf.join("\n"), true);
+      pre.appendChild(code);
+      addCopyButton(pre, () => code.textContent, "code-copy-btn");
+      container.appendChild(pre);
+      continue;
+    }
+
+    // Heading
+    const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (h) {
+      const tag = "h" + Math.min(5, 2 + h[1].length); // # -> h3, ## -> h4, ### .. -> h5
+      const el = document.createElement(tag);
+      appendInlineMarkdown(el, h[2].replace(/\s+#+\s*$/, "").trim());
+      container.appendChild(el);
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^\s*([-*_])\1\1+\s*$/.test(line)) {
+      container.appendChild(document.createElement("hr"));
+      i++;
+      continue;
+    }
+
+    // Blockquote
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      const bq = document.createElement("blockquote");
+      bq.dir = "auto";
+      appendMarkdownBlocks(bq, buf.join("\n"));
+      container.appendChild(bq);
+      continue;
+    }
+
+    // Table (GitHub-flavored): a pipe row, then a |---|:--:|---| separator row.
+    if (
+      line.includes("|") &&
+      i + 1 < lines.length &&
+      /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) &&
+      lines[i + 1].includes("-")
+    ) {
+      const splitRow = (row) =>
+        row.trim().replace(/^\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+      const headers = splitRow(line);
+      const aligns = splitRow(lines[i + 1]).map((s) => {
+        const l = s.startsWith(":");
+        const r = s.endsWith(":");
+        return l && r ? "center" : r ? "right" : l ? "left" : "";
+      });
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|") && !isBlockStart(lines[i])) {
+        bodyRows.push(splitRow(lines[i]));
+        i++;
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "chat-table-wrap";
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      headers.forEach((cell, idx) => {
+        const th = document.createElement("th");
+        if (aligns[idx]) th.style.textAlign = aligns[idx];
+        appendInlineMarkdown(th, cell);
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const row of bodyRows) {
+        const tr = document.createElement("tr");
+        for (let idx = 0; idx < headers.length; idx++) {
+          const td = document.createElement("td");
+          if (aligns[idx]) td.style.textAlign = aligns[idx];
+          appendInlineMarkdown(td, row[idx] || "");
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      container.appendChild(wrap);
+      continue;
+    }
+
+    // List (unordered or ordered)
+    const listItem = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+    if (listItem.test(line)) {
+      const ordered = /^\s*\d+[.)]\s+/.test(line);
+      const list = document.createElement(ordered ? "ol" : "ul");
+      while (i < lines.length && listItem.test(lines[i])) {
+        const m = lines[i].match(listItem);
+        let content = m[3];
+        i++;
+        // Fold indented continuation lines into the same item.
+        while (i < lines.length && lines[i].trim() && /^\s{2,}/.test(lines[i]) && !listItem.test(lines[i])) {
+          content += "\n" + lines[i].replace(/^\s+/, "");
+          i++;
+        }
+        const li = document.createElement("li");
+        li.dir = "auto";   // Hebrew item: marker on the right (v1.69.11)
+        appendInlineMarkdown(li, content);
+        list.appendChild(li);
+      }
+      container.appendChild(list);
+      continue;
+    }
+
+    // Paragraph: gather until a blank line or a block-starter.
+    const buf = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
+      buf.push(lines[i]);
+      i++;
+    }
+    const p = document.createElement("p");
+    appendInlineMarkdown(p, buf.join("\n"));
+    container.appendChild(p);
+  }
+}
+
+// Splits inline image paths out first (still rendered as real <img>), then
+// renders the surrounding text either as Markdown (agent/user messages) or
+// as plain text (status lines).
+function renderRichText(container, text, opts = {}) {
+  const asMarkdown = opts.markdown !== false;
+  const renderChunk = (chunk) => {
+    const trimmed = chunk.replace(/^\n+|\n+$/g, "");
+    if (!trimmed) return;
+    if (asMarkdown) {
+      appendMarkdownBlocks(container, trimmed);
+    } else {
+      const p = document.createElement("div");
+      p.className = "chat-bubble-text";
+      p.textContent = trimmed;
+      container.appendChild(p);
+    }
+  };
+
+  IMAGE_PATH_RE.lastIndex = 0;
+  let lastIndex = 0;
+  let match;
+  let foundAny = false;
+  while ((match = IMAGE_PATH_RE.exec(text))) {
+    foundAny = true;
+    renderChunk(text.slice(lastIndex, match.index));
+    const img = document.createElement("img");
+    img.className = "chat-bubble-image";
+    img.src = "file:///" + encodeURI(match[1].replace(/\\/g, "/"));
+    img.alt = match[1].split(/[\\/]/).pop();
+    container.appendChild(img);
+    lastIndex = IMAGE_PATH_RE.lastIndex;
+  }
+  if (!foundAny) {
+    renderChunk(text);
+    return;
+  }
+  renderChunk(text.slice(lastIndex));
+}
+
+// Static, hard-coded SVG markup only (no external/user-supplied data ever
+// passed through here) - safe to assign via innerHTML.
+const COPY_ICON_SVG =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M3.5 10.5V3a1.5 1.5 0 0 1 1.5-1.5h6.5" stroke-linecap="round"/></svg>';
+const CHECK_ICON_SVG =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8.5l3.2 3.2L13 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// Small "Copy" button, reused for both a whole chat bubble and an
+// individual fenced code block. Selection-aware: if the user has actually
+// drag-selected some text inside this container, copy exactly that
+// selection - only fall back to the whole block when nothing is selected.
+// the owner hit this directly: without the mousedown/preventDefault below, a
+// plain click on ANY button first collapses whatever text selection the
+// page had (standard browser behavior, happens before the click handler
+// even runs) - so reading window.getSelection() from a click handler alone
+// always saw an empty selection and this always copied "a big chunk" (the
+// whole block) regardless of what was actually highlighted. Capturing the
+// selection on mousedown, before the browser clears it, is what makes
+// "select exactly what I want, then copy just that" actually work.
+// 2026-10-06 (the partner): a mostly-Hebrew agent message is drawn full width, right-to-left, flush right (class rtl-msg, see styles-rtl.css).
+const RTL_HE_RE = /[\u0590-\u05FF]/g;
+const RTL_LA_RE = /[A-Za-z]/g;
+function markRtlBubble(el, text) {
+  try {
+    const t = String(text || "").replace(/```[\S\s]*?```/g, "").replace(/`[^`]*`/g, "");
+    const he = (t.match(RTL_HE_RE) || []).length;
+    const la = (t.match(RTL_LA_RE) || []).length;
+    if (he >= 6 && he >= la * 0.35) el.classList.add("rtl-msg");
+  } catch (e) { /* cosmetic only */ }
+}
+function addCopyButton(container, getText, extraClass) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn" + (extraClass ? " " + extraClass : "");
+  btn.title = "Copy (copies your text selection if you have one, otherwise the whole message)";
+  // v1.109.0: a fenced code block's button carries a visible "Copy" label (Copied for 1.5 s); the bubble one stays icon-only.
+  const labelled = /code-copy-btn/.test(extraClass || "");
+  const restHtml = labelled ? COPY_ICON_SVG + '<span class="copy-label">Copy</span>' : COPY_ICON_SVG;
+  const doneHtml = labelled ? CHECK_ICON_SVG + '<span class="copy-label">Copied</span>' : CHECK_ICON_SVG;
+  btn.innerHTML = restHtml;
+  let capturedSelection = "";
+  btn.addEventListener("mousedown", (e) => {
+    e.preventDefault(); // keep focus/selection exactly as it is
+    const sel = window.getSelection();
+    capturedSelection =
+      sel && !sel.isCollapsed && container.contains(sel.anchorNode) && container.contains(sel.focusNode)
+        ? sel.toString()
+        : "";
+  });
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const text = capturedSelection || getText();
+    if (!text) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        btn.classList.add("copied");
+        btn.innerHTML = doneHtml;
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          btn.innerHTML = restHtml;
+        }, labelled ? 1500 : 1200);
+      })
+      .catch(() => {});
+  });
+  container.appendChild(btn);
+  return btn;
+}
+
+// Matches only the exact sentence sendChatInput() writes, so ordinary text
+// that happens to mention a path is never rewritten.
+const LONG_MESSAGE_REF_RE = /^This message was too long to paste directly, so it was saved to a file - please read it: "([^"]+)"\s*$/;
+
+// v1.47.1: the restore used to be async-only - every render drew the file path
+// first and swapped the real text in a moment later, once an IPC round-trip
+// came back, and only if the bubble it had been handed was still in the DOM.
+// the owner saw the raw path standing in a bubble anyway ("I thought that we
+// resolved this issue"), which that design permits in more than one way: the
+// chat re-renders on a 400ms debounce off pty output, so a render's restore can
+// find its own element already replaced (`el.isConnected` false) and give up
+// silently, and if the main process is busy the read comes back later still.
+// Worse, the two places a long message shows up BEFORE it reaches the
+// transcript - the send queue and the optimistic "sending" bubble - never
+// called the restore at all, so while a busy agent held the message the path
+// was the only thing on screen.
+//
+// So the renderer now keeps what it wrote. sendChatInput() puts the real text
+// in this cache the moment it saves the file, which makes every subsequent
+// render synchronous and race-free; the async read stays as the fallback for
+// messages from an earlier run of the app (cache empty after a restart) and
+// fills the cache when it succeeds, so it can only ever be slow once.
+const longMessageCache = new Map();
+
+// The file path if `text` is exactly a long-message reference, else null.
+function longMessageRefPath(text) {
+  const m = LONG_MESSAGE_REF_RE.exec(String(text || "").trim());
+  return m ? m[1] : null;
+}
+
+// What should be SHOWN for a message, given what was SENT. Comparisons against
+// the transcript (normalizeForMatch) must keep using the sent text - only the
+// display changes.
+function longMessageDisplayText(text) {
+  const p = longMessageRefPath(text);
+  if (!p) return null;
+  return longMessageCache.get(p) || null;
+}
+
+// Draws the real message plus a small note that it travelled as a file.
+// Returns true if it drew something, false if the text was not a reference or
+// nothing is cached for it yet.
+function renderLongMessageInto(el, text) {
+  const original = longMessageDisplayText(text);
+  if (!original) return false;
+  renderRichText(el, original, { markdown: true });
+  const note = document.createElement("div");
+  note.className = "chat-long-message-note";
+  note.textContent = "sent as a file - too long to paste";
+  el.appendChild(note);
+  el.dataset.copyText = original; // copy gives the message, not the path
+  return true;
+}
+
+// Fallback for a reference this renderer did not write (an earlier run of the
+// app). Reads the file once, caches it, and re-renders through the synchronous
+// path above rather than patching the element it was handed - that element may
+// already be gone, which is exactly how the old version failed silently.
+const longMessageFetches = new Set();
+async function ensureLongMessageCached(text) {
+  const p = longMessageRefPath(text);
+  if (!p || longMessageCache.has(p) || longMessageFetches.has(p)) return;
+  longMessageFetches.add(p);
+  let original = null;
+  try {
+    original = await window.api.readLongMessage(p);
+  } catch (e) {
+    original = null; // main refused it or the file is gone - keep the path
+  } finally {
+    longMessageFetches.delete(p);
+  }
+  if (!original) return;
+  longMessageCache.set(p, original);
+  // Force the next render to actually run: the cache changed but the blocks
+  // did not, and renderChatBlocks() skips a render whose signature matches.
+  renderChatBlocks.lastSig = null;
+  renderChatBlocks.items = null; // the drawn text changes without the blocks changing: full rebuild
+  if (activeAgentPath) rebuildChatView(activeAgentPath);
+}
+
+
+// v1.62.0: the handoff instruction (and its "not written yet" reminder) is a long block of text
+// meant for the agent, not for the owner - drawing it made the chat need scrolling. The chat shows one
+// short, coloured "Handoff" line instead; the full text still goes to the agent and stays in the
+// transcript. Only the DRAWING changes - message matching (pendingSent) still uses the real text.
+function handoffLabelFor(text) {
+  const t = String(text || "");
+  if (t.startsWith("[Agent Desktop - planned context reset]")) return "Handoff";
+  if (t.startsWith("[Agent Desktop] Your last reply said the handoff was saved")) return "Handoff - reminder to write the file";
+  // v1.69.0: the keep-going nudge is a calm one-line label too (the full text still goes to the agent)
+  try { const kl = window.KeepGoing && window.KeepGoing.nudgeLabelFor(t); if (kl) return kl; } catch (e) { /* cosmetic */ }
+  // v1.67.1 one-line prompts: "[hid:xxx] Write <agent>handoff_latest.md now (...)" / "[hid:xxx] Handoff file ... still not written ..."
+  if (t.startsWith("[hid:") && t.includes("handoff_latest.md")) return t.includes("still not written") ? "Handoff - reminder to write the file" : "Handoff";
+  return null;
+}
+
+// v1.69.17: IRIS delivers an incoming message to the COO as a typed pointer "[IRIS] New <type> from linked peer <id>. ..."
+// (renderer/iris.js deliverPending). window.irisPeerNames (id -> name) is filled there; the text of the message itself is
+// in the inbox file the agent reads, and the agent's reply starts with "FROM <name>'S SIDE (IRIS):" (gateway frame).
+function irisIncomingFor(text) {
+  const m = /^\[IRIS\] New (\w+) from linked peer (\S+?)\./.exec(String(text || ""));
+  if (!m) return null;
+  const names = window.irisPeerNames || {};
+  if (!names[m[2]]) return null;   // only a peer id this app really knows gets the card (text typed by hand does not)
+  const who = names[m[2]] + "'s Agent Desktop";
+  const kind = m[1] === "request" ? "Request" : m[1] === "reply" ? "Reply" : "Information";
+  return { who, kind };
+}
+
+// What a pending bubble looks like depends on these fields only; an unchanged key keeps the existing element.
+let pendingSeq = 0;
+function pendingKey(p) {
+  if (!p._id) p._id = ++pendingSeq; // identity: two failed "yes" bubbles must not share one DOM node / Resend closure
+  return p._id + "\x00" + p.text + "\x00" + (window.outbox ? window.outbox.keyPart(p) : "") + "\x00" + (p.failed ? "failed" + (p.superseded ? "S" : "") + (p.waitedOnBusyAgent ? "B" : "") : p.received ? "recv" : p.waitedOnBusyAgent ? "busy" : p.written ? "sent" : "send");
+}
+
+// v1.93.0: windowed chat render. Every block of the live transcript used to be drawn: a 200 MB conversation is
+// 32,658 blocks (10 MB of JSON), which took 15-17 s of renderer long task per open and 1.6 GB of renderer memory
+// (PERF_REPORT.md). Now the newest CHAT_RENDER_WINDOW blocks are drawn, with a "Show earlier messages" button on
+// top that widens the window (nothing is dropped from the data; History is unchanged). The window start is kept
+// stable per agent so the reconcile below still reuses the drawn prefix; it slides forward only after another
+// full window of new blocks has arrived (one rebuild per CHAT_RENDER_WINDOW new blocks).
+const CHAT_RENDER_WINDOW = 400;
+const chatRenderWindow = new Map(); // agentPath -> { size, start }
+// v1.97.0 (review S1): the window only slides forward while the reader is at the bottom (or a caller forces the
+// bottom). Someone scrolled up, or reading after "Show earlier", keeps every drawn block until they come back down;
+// the window just grows meanwhile. A shorter transcript (new session, /clear) still resets it at once.
+function chatWindowStart(agentPath, total, atBottom) {
+  let w = chatRenderWindow.get(agentPath);
+  if (!w) { w = { size: CHAT_RENDER_WINDOW, start: Math.max(0, total - CHAT_RENDER_WINDOW) }; chatRenderWindow.set(agentPath, w); }
+  if (w.start > total) w.start = Math.max(0, total - w.size);
+  else if (atBottom && total - w.start > w.size + CHAT_RENDER_WINDOW) w.start = Math.max(0, total - w.size);
+  return w.start;
+}
+// v1.97.0 (review N2/N3): the button counts what is really above - messages (yours and the agent's) and the
+// tool/status lines - rather than raw blocks, which are ~70% tool lines.
+function chatEarlierLabel(blocks, start) {
+  let msgs = 0;
+  for (let i = 0; i < start; i++) { const r = blocks[i] && blocks[i].role; if (r === "user" || r === "agent") msgs++; }
+  const other = start - msgs;
+  const fmt = (n) => n.toLocaleString("en-US");
+  const parts = [];
+  if (msgs) parts.push(fmt(msgs) + (msgs === 1 ? " message" : " messages"));
+  if (other) parts.push(fmt(other) + (other === 1 ? " tool/status line" : " tool/status lines"));
+  return "Show earlier (" + parts.join(" and ") + " above)";
+}
+function showEarlierChatBlocks() {
+  const w = chatRenderWindow.get(activeAgentPath);
+  const args = renderChatBlocks.lastArgs;
+  if (!w || !args) return;
+  w.size += CHAT_RENDER_WINDOW * 2;
+  w.start = Math.max(0, w.start - CHAT_RENDER_WINDOW * 2);
+  const fromBottom = chatMessagesViewEl.scrollHeight - chatMessagesViewEl.scrollTop;
+  // v1.97.0 (review S2): a selection inside the chat would make renderChatBlocks skip this render and apply the
+  // widened window later, at a poll, without the scroll anchor (a jump). This is an explicit click: clear the
+  // selection and render now.
+  try { const sel = window.getSelection(); if (sel && !sel.isCollapsed && chatMessagesViewEl.contains(sel.anchorNode)) sel.removeAllRanges(); } catch (e) { /* no selection API */ }
+  renderChatBlocks(args[0], args[1], { keepFromBottom: fromBottom, userAction: true });
+}
+
+function renderChatBlocks(blocks, pendingSent, opts = {}) {
+  hideChatLoading();
+  renderChatBlocks.lastArgs = [blocks, pendingSent];
+  const allBlocks = blocks;
+  const atBottomBefore = !chatMessagesViewEl.childElementCount || !!opts.forceBottom ||
+    chatMessagesViewEl.scrollHeight - chatMessagesViewEl.scrollTop - chatMessagesViewEl.clientHeight <= 60;
+  const windowStart = chatWindowStart(activeAgentPath, blocks.length, atBottomBefore);
+  if (windowStart > 0) blocks = blocks.slice(windowStart);
+  // Keep the reader where they are. This view is re-rendered from scratch on
+  // every rebuild - the 4s stale poll, every burst of streaming output, etc.
+  // Snapping to the bottom each time yanked the user back down mid-read
+  // whenever they scrolled up. Only stick to the bottom if they were already
+  // there, or a caller explicitly asks (agent switch, just sent a message).
+  const scrollEl = chatMessagesViewEl;
+
+  // Don't rebuild the DOM when nothing changed, or while the user has text
+  // selected in here. Rebuilding via innerHTML = "" destroys any live text
+  // selection, and this runs on every 4s stale poll and every streaming
+  // burst - so selecting text to copy it silently un-selected itself a few
+  // seconds later (the owner: "copy paste regressed"). The skipped render is
+  // picked up by the next poll once the selection is gone.
+  const sig = activeAgentPath + "\x01" + windowStart + "\x01" + JSON.stringify(blocks) + "\x01" + JSON.stringify((pendingSent || []).map(pendingKey));
+  const sel = window.getSelection();
+  const selectionInChat =
+    sel && !sel.isCollapsed && scrollEl.contains(sel.anchorNode) && scrollEl.contains(sel.focusNode);
+  if (scrollEl.childElementCount > 0 && (sig === renderChatBlocks.lastSig || (selectionInChat && !opts.userAction))) {
+    if (opts.forceBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
+    return;
+  }
+  renderChatBlocks.lastSig = sig;
+
+  const NEAR_BOTTOM_PX = 60;
+  const wasNearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= NEAR_BOTTOM_PX;
+  const prevScrollTop = scrollEl.scrollTop;
+
+  // v1.68.0 reconcile instead of rebuild: every drawn item (a block, a merged run of tool lines, a pending bubble)
+  // is remembered with a key. The unchanged prefix keeps its DOM (images, expanded markers, scroll position stay
+  // put); from the first changed item on, the old nodes are dropped and only the rest is built again. A new
+  // message or reply therefore costs one bubble, not the whole transcript. Anything unexpected -> full rebuild.
+  const prevItems = renderChatBlocks.items;
+  let reuseOk = !!prevItems && renderChatBlocks.itemsAgent === activeAgentPath;
+  if (reuseOk) {
+    let n = 0;
+    for (const it of prevItems) { for (const e of it.els) { if (e.parentNode !== scrollEl) reuseOk = false; n++; } }
+    if (n !== scrollEl.childElementCount) reuseOk = false;
+  }
+  if (!reuseOk) { chatMessagesViewEl.innerHTML = ""; perfCount("chatFullRebuild"); } else perfCount("chatReconcile");
+  const keptItems = [];
+  let reuseIdx = 0;
+  let reusing = reuseOk;
+  // true = the existing DOM already shows this item; false = build it (and everything after) fresh
+  const reuseItem = (key) => {
+    if (!reusing) return false;
+    if (reuseIdx < prevItems.length && prevItems[reuseIdx].key === key) { keptItems.push(prevItems[reuseIdx]); reuseIdx++; return true; }
+    for (let k = reuseIdx; k < prevItems.length; k++) for (const e of prevItems[k].els) e.remove();
+    reusing = false;
+    return false;
+  };
+  let curKey = null, curStart = 0;
+  const flushItem = () => {
+    if (curKey !== null) keptItems.push({ key: curKey, els: Array.prototype.slice.call(scrollEl.children, curStart) });
+    curKey = null;
+  };
+  const TOOL_LINE_RE = /^\[used tool: (.+)\]$/;
+  if (windowStart > 0) {
+    const earlierLabel = chatEarlierLabel(allBlocks, windowStart);
+    const eKey = "E\x01" + windowStart + "\x01" + earlierLabel;
+    if (!reuseItem(eKey)) {
+      curKey = eKey;
+      curStart = scrollEl.childElementCount;
+      const more = document.createElement("div");
+      more.className = "chat-earlier";
+      const btn = document.createElement("button");
+      btn.className = "chat-earlier-btn";
+      btn.textContent = earlierLabel;
+      btn.addEventListener("click", showEarlierChatBlocks);
+      more.appendChild(btn);
+      chatMessagesViewEl.appendChild(more);
+    }
+  }
+  for (let bi = 0; bi < blocks.length; bi++) {
+    flushItem();
+    const block = blocks[bi];
+    const text = block.lines.join("\n").trim();
+    if (!text) continue;
+    // key of this item: the block itself, or the whole run of merged tool lines
+    let itemEnd = bi;
+    if (block.role === "status" && TOOL_LINE_RE.test(text)) {
+      while (itemEnd + 1 < blocks.length && blocks[itemEnd + 1].role === "status" && TOOL_LINE_RE.test(blocks[itemEnd + 1].lines.join("\n").trim())) itemEnd++;
+    }
+    let itemKey = "";
+    for (let k = bi; k <= itemEnd; k++) itemKey += JSON.stringify(blocks[k]) + "\x02";
+    if (reuseItem(itemKey)) { bi = itemEnd; continue; }
+    curKey = itemKey;
+    curStart = scrollEl.childElementCount;
+
+    // Collapse a run of consecutive "[used tool: X]" status lines into one
+    // compact, dim line ("PowerShell ×4 · Write") - a busy turn otherwise
+    // produced two lines (name + timestamp) per tool call and buried the
+    // actual message. Only the tool lines are merged; [asked: "..."] and the
+    // answered-questions status lines are left as-is.
+    if (block.role === "status" && TOOL_LINE_RE.test(text)) {
+      const names = [];
+      let j = bi;
+      while (j < blocks.length) {
+        const t = blocks[j].lines.join("\n").trim();
+        const m = TOOL_LINE_RE.exec(t);
+        if (blocks[j].role !== "status" || !m) break;
+        names.push(m[1]);
+        j++;
+      }
+      bi = j - 1;
+      // Tally, preserving first-seen order.
+      const order = [];
+      const counts = new Map();
+      for (const n of names) {
+        if (!counts.has(n)) order.push(n);
+        counts.set(n, (counts.get(n) || 0) + 1);
+      }
+      const summary = order.map((n) => (counts.get(n) > 1 ? `${n} ×${counts.get(n)}` : n)).join(" · ");
+      const line = document.createElement("div");
+      line.className = "chat-status-line chat-tools-line";
+      line.textContent = names.length === 1 ? `ran ${summary}` : `ran ${names.length} tools: ${summary}`;
+      chatMessagesViewEl.appendChild(line);
+      continue;
+    }
+
+    // 1.23.0: red "session reset" marker (built in archive.js from the
+    // handoff-resume message) - shows the lessons carried over.
+    if (block.role === "reset") {
+      const wrap = document.createElement("div");
+      wrap.className = "chat-reset-marker";
+      const head = document.createElement("div");
+      head.className = "chat-reset-head";
+      // v1.24.2: collapsed by default (a long lessons list filled the whole chat after a reset and
+      // looked like nothing had been cleared). Click the header to expand; the choice survives the
+      // 4 s chat re-render because it is kept by timestamp.
+      const key = block.timestamp || "reset";
+      const expanded = resetMarkersExpanded.has(key);
+      // 2026-09-28: no longer claims "earlier conversation is in History" -
+      // the view above this line is now the earlier conversation itself
+      // (one hop of it, merged back in - see computeLiveTranscriptBlocks()
+      // in archive.js), not a pointer away to go find it.
+      head.textContent =
+        "AUTOMATIC HANDOFF" + (block.timestamp ? " - " + formatBlockTime(block.timestamp) : "") + " - lessons carried over from the conversation above - " + (expanded ? "hide" : "show") + " lessons";
+      head.style.cursor = "pointer";
+      head.title = "Click to show or hide the lessons carried over from the previous session";
+      wrap.appendChild(head);
+      const body = document.createElement("div");
+      body.className = "chat-reset-body";
+      body.hidden = !expanded;
+      renderRichText(body, text, { markdown: true });
+      wrap.appendChild(body);
+      head.addEventListener("click", () => {
+        if (resetMarkersExpanded.has(key)) resetMarkersExpanded.delete(key);
+        else resetMarkersExpanded.add(key);
+        body.hidden = !resetMarkersExpanded.has(key);
+        head.textContent = head.textContent.replace(/(hide|show) lessons carried over$/, (resetMarkersExpanded.has(key) ? "hide" : "show") + " lessons carried over");
+      });
+      chatMessagesViewEl.appendChild(wrap);
+      continue;
+    }
+
+    if (block.role === "agent" && HAS_ANSWER_SECTION_MARKER_RE.test(text)) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "chat-bubble chat-bubble-agent chat-bubble-annotated";
+      for (const section of splitAnnotatedSections(text)) {
+        const sectionEl = document.createElement("div");
+        sectionEl.className = "chat-answer-section chat-answer-" + section.kind;
+        renderRichText(sectionEl, section.text, { markdown: true });
+        wrapper.appendChild(sectionEl);
+      }
+      if (block.timestamp) {
+        const timeEl = document.createElement("span");
+        timeEl.className = "chat-block-time";
+        timeEl.textContent = formatBlockTime(block.timestamp);
+        wrapper.appendChild(timeEl);
+      }
+      addCopyButton(wrapper, () => text, "bubble-copy-btn");
+      markRtlBubble(wrapper, text);
+      chatMessagesViewEl.appendChild(wrapper);
+      continue;
+    }
+    const el = document.createElement("div");
+    const handoffLabel = block.role === "user" ? handoffLabelFor(text) : null;
+    const irisIn = block.role === "user" && !handoffLabel ? irisIncomingFor(text) : null;
+    el.className = block.role === "status" ? "chat-status-line" : "chat-bubble chat-bubble-" + block.role + (handoffLabel ? " chat-bubble-handoff" : "") + (irisIn ? " chat-bubble-iris" : "");
+    // A message too long to paste is handed to the CLI as a file reference,
+    // which is a transport detail - but the transcript then shows that
+    // reference instead of what the owner wrote, so scrolling back showed a path
+    // where his own words should be. Draw the real text instead, from the
+    // cache, before anything is appended; if it is not cached yet (a message
+    // from an earlier run of the app) fetch it, which re-renders when it
+    // lands. Agent and user messages render as Markdown; status lines stay plain.
+    if (handoffLabel) {
+      el.textContent = handoffLabel;
+    } else if (irisIn) {
+      // v1.69.17: a message from the linked (the partner's) Agent Desktop is drawn as its own card, never as one of the owner's bubbles
+      const head = document.createElement("div");
+      head.className = "chat-iris-head";
+      head.textContent = "FROM " + irisIn.who.toUpperCase() + " · IRIS";
+      const sub = document.createElement("div");
+      sub.className = "chat-iris-sub";
+      sub.textContent = irisIn.kind + " from the other side - this agent is reading it. Not written by " + (window.AppCfg ? window.AppCfg.owner() : "the user") + ".";
+      el.append(head, sub);
+    } else if (block.role === "user" && renderLongMessageInto(el, text)) {
+      // drawn from the cache
+    } else {
+      renderRichText(el, text, { markdown: block.role !== "status" });
+      if (block.role === "user") ensureLongMessageCached(text);
+    }
+    // Status lines don't get a per-line timestamp - they're incidental and it
+    // just adds a second line of vertical noise.
+    if (block.timestamp && block.role !== "status") {
+      const timeEl = document.createElement("span");
+      timeEl.className = "chat-block-time";
+      timeEl.textContent = formatBlockTime(block.timestamp);
+      el.appendChild(timeEl);
+    }
+    // Reads the override rather than closing over `text`, so a long message
+    // restored from its file copies what the owner wrote instead of the file path.
+    if (block.role !== "status") addCopyButton(el, () => el.dataset.copyText || text, "bubble-copy-btn");
+    if (block.role === "agent") markRtlBubble(el, text);
+    chatMessagesViewEl.appendChild(el);
+  }
+// Messages shown immediately at send time, before a real matching entry
+  // has shown up in the transcript yet (see submitToAgent) - a lighter
+  // visual treatment (pulsing) marks them as "sending", not a normal
+  // confirmed message, so it's never ambiguous which is which. Each entry
+  // is {text, addedAt} now, not a bare string - see PENDING_SENT_TIMEOUT_MS
+  // in rebuildChatView() for why.
+  flushItem();
+  for (const pending of pendingSent || []) {
+    const pKey = "P\x01" + pendingKey(pending);
+    if (reuseItem(pKey)) continue;
+    const pStart = scrollEl.childElementCount;
+    const el = document.createElement("div");
+    el.className = "chat-bubble chat-bubble-user " + (pending.failed ? "chat-bubble-failed" : "chat-bubble-pending");
+    // Same as the confirmed bubbles above: show what he wrote, not the file
+    // path it travelled as. This bubble is on screen from the moment Send is
+    // pressed until the transcript catches up, which with a busy agent is the
+    // whole time he is looking at it.
+    const pendingHandoffLabel = handoffLabelFor(pending.text);
+    if (pendingHandoffLabel) {
+      el.classList.add("chat-bubble-handoff");
+      el.textContent = pendingHandoffLabel;
+    } else if (!renderLongMessageInto(el, pending.text)) {
+      // v1.100.0: a long message whose text is not cached yet (app restarted) is never drawn as its file path
+      if (longMessageRefPath(pending.text)) { el.textContent = "Long message (sent as a file)"; ensureLongMessageCached(pending.text); }
+      else renderRichText(el, pending.text, { markdown: true });
+    }
+    const obLabel = window.outbox ? window.outbox.pendingLabel(pending) : ""; // v1.100.0 outbox state (retrying / gave up)
+    if (pending.failed) {
+      // See rebuildChatView()'s pendingSent-filtering comment: this never
+      // reached the agent's transcript at all. v1.27.1 auto-requeued it;
+      // reverted in v1.27.3 (two overlapping auto-retries corrupted a real
+      // message) - resending is manual-only now, one click at a time.
+      const warn = document.createElement("div");
+      warn.className = "chat-bubble-failed-notice";
+      // Says what is actually known - that it was not CONFIRMED - rather than
+      // asserting a loss the app cannot verify. The distinction matters
+      // because resending is how duplicates happen; the standing workspace
+      // rule now has agents ask before acting on a repeat, but the warning
+      // should not be pushing the owner into creating one in the first place.
+      warn.textContent = pending.superseded
+        ? "⚠ Not confirmed - a later message reached the agent but this one has not appeared in the conversation"
+        : pending.waitedOnBusyAgent
+        ? "⚠ Not confirmed - the agent was busy the whole time, so this may still be queued"
+        : "⚠ Not confirmed - check the conversation before resending";
+      if (obLabel) { warn.textContent = "⚠ " + obLabel; if (/automatically/.test(obLabel)) { warn.classList.add("outbox-state"); el.classList.replace("chat-bubble-failed", "chat-bubble-pending"); } }
+      const resendBtn = document.createElement("button");
+      resendBtn.textContent = obLabel ? "Retry now" : "Resend now";
+      resendBtn.addEventListener("click", () => {
+        // v1.100.0: an outbox message is re-checked against the transcript first (no blind duplicate)
+        if (window.outbox && window.outbox.retryNow(pending)) { resendBtn.disabled = true; return; }
+        const session = terminals.get(activeAgentPath);
+        if (!session) return;
+        session.pendingSent = session.pendingSent.filter((p) => p !== pending);
+        const idx = session.sendQueue.indexOf(pending.text);
+        if (idx !== -1) session.sendQueue.splice(idx, 1);
+        renderQueue(activeAgentPath);
+        // No more splitting into pieces here - submitToAgent()'s bracketed-
+        // paste wrapping is what's meant to make a single resend reliable
+        // now (see its own comment), not breaking it up further.
+        if (session.busy) {
+          session.sendQueue.unshift(pending.text);
+          renderQueue(activeAgentPath);
+        } else {
+          submitToAgent(activeAgentPath, pending.text);
+        }
+      });
+      warn.appendChild(resendBtn);
+      // v1.111.2: Dismiss removes only this bubble and its outbox item (never resends, never touches another message)
+      if (!warn.classList.contains("outbox-state")) {
+        const dismissBtn = document.createElement("button");
+        dismissBtn.textContent = "Dismiss";
+        dismissBtn.addEventListener("click", () => {
+          const session = terminals.get(activeAgentPath);
+          if (window.outbox && window.outbox.dismiss) window.outbox.dismiss(pending);
+          if (session) { session.pendingSent = session.pendingSent.filter((p) => p !== pending); renderChatBlocks(session.lastBlocks || [], session.pendingSent, {}); }
+        });
+        warn.appendChild(dismissBtn);
+      }
+      el.appendChild(warn);
+    } else {
+      // v1.68.0: one calm, static state marker instead of a pulsing bubble (the owner: "no long blinking").
+      const mark = document.createElement("span");
+      mark.className = "chat-pending-mark";
+      mark.textContent = pending.outboxWaiting && obLabel ? obLabel : pending.received ? "\u2713 queued in the agent" : pending.waitedOnBusyAgent ? "\u2713 sent - the agent is busy and will read it at its next step" : obLabel ? obLabel : pending.written ? "\u2713 sent" : "sending\u2026";
+      el.appendChild(mark);
+    }
+    chatMessagesViewEl.appendChild(el);
+    keptItems.push({ key: pKey, els: Array.prototype.slice.call(scrollEl.children, pStart) });
+  }
+  // items that were in the old render but are not wanted any more (the transcript got shorter, a pending bubble matched)
+  if (reusing) { for (let k = reuseIdx; k < prevItems.length; k++) for (const e of prevItems[k].els) e.remove(); }
+  renderChatBlocks.items = keptItems;
+  renderChatBlocks.itemsAgent = activeAgentPath;
+  if (opts.keepFromBottom) {
+    scrollEl.scrollTop = scrollEl.scrollHeight - opts.keepFromBottom; // "Show earlier": the message being read stays put
+  } else if (opts.forceBottom || wasNearBottom) {
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  } else {
+    scrollEl.scrollTop = prevScrollTop;
+  }
+}
+
+// Whitespace-normalized for comparison only (not for display) - guards
+// against a pending optimistic bubble (see submitToAgent) somehow not
+// exactly string-matching its own confirmed transcript entry (incidental
+// whitespace differences) and getting stuck showing twice.
+const resetMarkersExpanded = new Set(); // timestamps of SESSION RESET markers the user expanded (v1.24.2)
+function normalizeForMatch(s) {
+  // Also drops the CLI's <pasted_content id="N"> wrapper around long messages (2026-09-19: the
+  // handoff request showed twice - optimistic bubble + transcript copy - until the 45 s timeout).
+  return s.replace(/<\/?pasted_content[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// See rebuildChatView()'s pendingSent-filtering comment for why this
+// exists - a safety net against a pending bubble that never finds a
+// matching transcript entry and would otherwise pulse "sending" forever.
+const PENDING_SENT_TIMEOUT_MS = 45000;
+// v1.68.0: one place that reports a failed delivery, with the facts main needs to name the CAUSE in the watchdog log.
+function notifyFailed(agentPath, session, pending, why) {
+  const info = {
+    why, ageSec: Math.round((Date.now() - (pending.sentAt || pending.addedAt)) / 1000), midTurn: !!pending.midTurn,
+    received: !!pending.received, nudges: pending.enterNudges || 0, busyWait: !!pending.waitedOnBusyAgent,
+    working: !!(session && (session.busy || session.transcriptWorking)),
+  };
+  window.api.notifySendFailed(agentPath, pending.text, info).catch(() => {});
+}
+// v1.65.0 mid-turn delivery. A receipt in the transcript means the message waits safely in the CLI's
+// own queue (delivered at the agent's next step), so the pending bubble may live this long.
+const MIDTURN_RECEIVED_MAX_MS = 30 * 60 * 1000;
+// Without a receipt this soon after a mid-turn send, the CLI never got it (the receipt is written on
+// arrival): offer Resend early instead of after the long busy-agent wait.
+const MIDTURN_NO_RECEIPT_FAIL_MS = 25000;
+const ENTER_NUDGE_1_MS = 8000;
+const ENTER_NUDGE_2_MS = 20000;
+// How long a later message must be on record, with this one still unmatched, before 'superseded'.
+const SUPERSEDED_GRACE_MS = 20000;
+// How long an agent's transcript must go WITHOUT being written to before an
+// unmatched message is treated as lost. Long agentic runs write a tool_result
+// every few seconds; a genuinely dropped message sits there while the
+// transcript stays silent. 90s is comfortably longer than any gap observed
+// between tool calls in a normal run, and short enough that a real loss is
+// still surfaced while the owner is likely still at the keyboard.
+const TRANSCRIPT_QUIET_BEFORE_FAIL_MS = 90000;
+// A BUSY agent has not lost the message - it simply has not written it to the
+// transcript yet, because Claude Code only does that when it starts
+// processing. Marking those "Not delivered - click Resend" was wrong four
+// separate times on 2026-09-22, and wrong in the costly direction: the owner is
+// told to resend something that arrived, and resending is exactly how
+// duplicate work gets created. The last instance was unmistakable - the
+// header said "Working... 56s" while the agent was visibly carrying out the
+// very request the bubble claimed had not been delivered.
+//
+// So while the session is busy, keep waiting. The ceiling still applies, so a
+// genuinely wedged session is reported rather than pulsing forever.
+const PENDING_SENT_BUSY_TIMEOUT_MS = 6 * 60 * 1000;
+
+// Reads live from Claude Code's own JSONL transcript (see
+// getLiveTranscriptBlocks() in archive.js) rather than the terminal buffer
+// - async now because that's a real IPC round-trip to the main process, not
+// a synchronous in-memory read the way the old buffer scrape was. All call
+// sites below fire this without awaiting it (a rebuild still in flight when
+// the next one is scheduled just resolves and renders somewhat later -
+// fine, since renderChatBlocks() always renders the full latest state, not
+// a delta).
+async function rebuildChatView(agentPath, opts = {}) {
+  const session = terminals.get(agentPath);
+  if (!session) return;
+  const tRebuild = performance.now();
+  const [allBlocksRaw, activity] = await Promise.all([
+    window.api.getLiveTranscript(agentPath, !!session.lastAllBlocks), // v1.68.0: unchanged transcript -> no copy over IPC
+    window.api.getSessionActivity(agentPath).catch(() => null),
+  ]);
+  let allBlocks = allBlocksRaw;
+  if (allBlocks && allBlocks.unchanged && !Array.isArray(allBlocks)) allBlocks = session.lastAllBlocks;
+  else session.lastAllBlocks = Array.isArray(allBlocks) ? allBlocks : null;
+  if (agentPath !== activeAgentPath || terminals.get(agentPath) !== session) return; // stale by the time the IPC round-trip finished
+  // v1.65.0: "queued" blocks are the CLI's receipt of input (see archive.js); they prove delivery, never drawn.
+  const queuedBlocks = (allBlocks || []).filter((b) => b.role === "queued");
+  const removedBlocks = (allBlocks || []).filter((b) => b.role === "queued-removed");
+  const blocks = (allBlocks || []).filter((b) => b.role !== "queued" && b.role !== "queued-removed");
+
+  // Authoritative "is the agent still working" signal, from the transcript
+  // (see getSessionActivity in archive.js) - reliable through quiet stretches
+  // that the pty-timing heuristic can't see. updateThinkingIndicator() reads
+  // these; the 4s stale poll guarantees they refresh even when nothing streams.
+  if (activity) {
+    const wasWorking = session.transcriptWorking;
+    session.transcriptWorking = !!activity.working;
+    session.transcriptWorkingSince = activity.working ? Date.now() - (activity.sinceMs || 0) : null;
+    // The turn just ended as far as the transcript is concerned - this is the
+    // moment a message queued during it can safely go (2026-09-23).
+    if (wasWorking && !session.transcriptWorking && !session.busy && session.sendQueue.length > 0) {
+      setBusy(agentPath, session, false);
+    }
+    if (!activity.working) session.turnStartedAt = null; // real "turn done" - clear the optimistic timer too
+    if (window.connHealth) window.connHealth.onActivity(agentPath, session, activity); // v1.67.0: long foreground command banner
+    updateThinkingIndicator();
+  }
+
+  // the user hit a real incident where the old terminal-buffer-scraping version
+  // of this rendered a whole real conversation as a totally blank view -
+  // History (built from this exact same JSONL file, just via a different
+  // code path) still had everything, confirming it was the live read that
+  // went wrong, not the underlying data. JSONL-tailing is a fundamentally
+  // more reliable source (a real persisted file, not a transient terminal
+  // screen that can mid-redraw or hit a bounded scrollback), so this
+  // specific failure mode shouldn't recur - kept as a defensive guard
+  // anyway (cheap, and the failure mode it prevents - a real conversation
+  // silently vanishing - is bad enough to guard against even if unlikely
+  // now). Reset Session explicitly clears hasShownRealContent itself (see
+  // its click handler) so a deliberate /clear can still blank the view -
+  // this guard is only for accidental, unrequested blanking.
+  const hasRealContentNow = blocks.some((b) => b.role === "user" || b.role === "agent");
+  if (!hasRealContentNow && session.hasShownRealContent) {
+    console.warn(`[agent-desktop] rebuildChatView(${agentPath}) read no content from the transcript despite a real prior conversation - keeping the last good render rather than blanking it.`);
+    return;
+  }
+  if (hasRealContentNow) session.hasShownRealContent = true;
+
+  session.lastBlocks = blocks; // cached for submitToAgent()'s synchronous optimistic render
+  if (window.predictReplies) window.predictReplies.consider(agentPath, session, blocks); // v1.108.0 predicted replies
+
+  // A message optimistically shown at send time (see submitToAgent) is only
+  // still "pending" until it actually shows up as a real entry in the
+  // transcript - once a real user block matches it, drop it from the
+  // pending list so it isn't shown twice.
+  //
+  // Caught live (2026-08-19): a pending bubble can end up never matching
+  // anything - not confirmed why for that specific case (possibly a text
+  // fragment that never lines up exactly against normalizeForMatch(), or
+  // some other edge case never pinned down) - and with no expiry, it just
+  // pulsed as "sending" forever, permanently, long after the real
+  // conversation had clearly moved on. Rather than chase that exact trigger
+  // blind, added a timeout as a general safety net: past
+  // PENDING_SENT_TIMEOUT_MS with still no match, drop it regardless - by
+  // then it either succeeded (and matching just failed to notice) or
+  // something else happened, but either way an indefinitely-pulsing "still
+  // sending" bubble is a worse, more misleading UI state than the bubble
+  // just quietly disappearing.
+  const now = Date.now();
+  session.pendingSent = session.pendingSent.filter((pending) => {
+    let stillUnmatched = !blocks.some(
+      (b) => b.role === "user" && normalizeForMatch(b.lines.join(" ")) === normalizeForMatch(pending.text)
+    );
+    // 2026-09-20: exact match alone misses a real, confirmed case - Claude
+    // Code's own CLI can merge a message into an adjacent stored block with
+    // its own opening text trimmed off (the "arrives without its start"
+    // corruption chased most of this session, since fixed at the source by
+    // submitToAgent()'s bracketed-paste wrapping - kept as a defensive
+    // fallback here regardless, e.g. for anything sent before a restart
+    // picks that fix up). The tail end of a message survives that kind of
+    // merge even when its start doesn't, so fall back to "does a solid
+    // trailing fragment of it appear anywhere in the transcript" - catches
+    // an actually-delivered-but-merged message the strict check above can't,
+    // without touching how or when anything is sent.
+    if (stillUnmatched) {
+      const fingerprint = normalizeForMatch(pending.text).slice(-80).trim();
+      if (fingerprint.length >= 30 && blocks.some((b) => b.role === "user" && normalizeForMatch(b.lines.join(" ")).includes(fingerprint))) {
+        stillUnmatched = false;
+      }
+    }
+    // v1.68.1 (the owner, Acmeco Talk 2026-10-03; review H1/H2): the text reached the agent in another wording or by another
+    // route (message channel) when a USER block that is newer than this send contains it. Only user blocks count: an
+    // agent reply never proves THIS message arrived (the 2026-09-27 "yes" incident), and a CLI receipt only means
+    // "queued" (it keeps its calm "queued in the agent" mark and the withdrawn-from-queue check below).
+    let settledByUserBlock = false;
+    if (stillUnmatched && !pending.failed) {
+      const fpS = normalizeForMatch(pending.text).slice(-80).trim();
+      const sentS = pending.sentAt || pending.addedAt;
+      if (fpS.length >= 20 && blocks.some((b) => b.role === "user" && b.timestamp && new Date(b.timestamp).getTime() >= sentS - 2000 &&
+          normalizeForMatch(b.lines.join(" ")).includes(fpS))) {
+        stillUnmatched = false;
+        settledByUserBlock = true;
+        perfCount("pendingSettled");
+      }
+    }
+    // The exact-text match above did not fire, so this copy may still sit unsent in the CLI input box (delivered via the
+    // channel). Clear it - through the same write chain as every message so Ctrl+C can never land inside a paste.
+    if (settledByUserBlock && pending.written && now - (pending.sentAt || pending.addedAt) > 8000 && !pending.staleClearTried) {
+      pending.staleClearTried = true;
+      const ptxt = pending.text;
+      writeQueued(session, () => window.api.clearStaleInput(agentPath, ptxt).catch(() => {}));
+    }
+    // v1.23.0: the handoff-resume message is shown as a red "reset" block (archive.js), and
+    // "/clear" never appears as a user block at all - neither would ever match above, so they
+    // pulsed as "sending" until the 45s timeout. Settle them explicitly.
+    if (stillUnmatched && pending.text.startsWith("[[HANDOFF-RESUME]]") && blocks.some((b) => b.role === "reset")) stillUnmatched = false;
+    if (stillUnmatched && pending.text.trim() === "/clear" && now - pending.addedAt > 3000) stillUnmatched = false;
+    if (!stillUnmatched) return false; // matched - a real transcript entry now carries it, drop the optimistic copy
+    // v1.110.0 (B2): a calm "Sent - waiting for confirmation" bubble drawn by the outbox has no write of its own to time out; the
+    // outbox decides when it becomes a failure (so the legacy timeout can neither redden it nor re-queue it a second time)
+    if (pending.outboxWaiting && !pending.failed) return true;
+
+    // v1.65.0: the CLI logs a receipt the moment input reaches it, mid-turn included, long before the
+    // agent reads it at its next step. A receipt is proof the message is safely queued: never call it
+    // lost, never offer a Resend (which would duplicate it). Gives up only after MIDTURN_RECEIVED_MAX_MS.
+    const isSlash = pending.text.trim().startsWith("/");
+    if (!pending.received && !isSlash) {
+      const sentAtR = pending.sentAt || pending.addedAt;
+      const want = normalizeForMatch(pending.text);
+      const fp = want.slice(-80).trim();
+      // each receipt belongs to ONE pending message (two identical "yes" must not share one)
+      const usedReceipts = new Set(session.pendingSent.filter((p) => p !== pending && p.receiptTs).map((p) => p.receiptTs));
+      const hit = queuedBlocks.find((q) => {
+        if (!q.timestamp || usedReceipts.has(q.timestamp) || new Date(q.timestamp).getTime() < sentAtR - 2000) return false;
+        const n = normalizeForMatch(q.lines.join(" "));
+        return n === want || (fp.length >= 30 && n.includes(fp));
+      });
+      if (hit) {
+        pending.received = true;
+        pending.receiptTs = hit.timestamp;
+        pending.failed = false;
+        pending.superseded = false;
+      }
+    }
+    // The CLI also logs "remove" - normally right before the agent reads the message (a user entry
+    // follows within a second), but a "remove" with no user entry after 15 s means the queued text was
+    // withdrawn (e.g. Esc popped it back into the input box): it was NOT delivered.
+    if (pending.received && pending.receiptTs) {
+      const want2 = normalizeForMatch(pending.text);
+      const fp2 = want2.slice(-80).trim();
+      const gone = removedBlocks.some((q) => {
+        if (!q.timestamp || new Date(q.timestamp).getTime() < new Date(pending.receiptTs).getTime()) return false;
+        if (now - new Date(q.timestamp).getTime() < 15000) return false;
+        const n = normalizeForMatch(q.lines.join(" "));
+        return n === want2 || (fp2.length >= 30 && n.includes(fp2));
+      });
+      if (gone) {
+        pending.received = false;
+        pending.receiptTs = null;
+        pending.failed = true;
+        notifyFailed(agentPath, session, pending, "withdrawn-from-queue");
+        return true;
+      }
+    }
+    // v1.65.0: stuck Enter. 2026-10-03 the COO and Software Engineering agents never got three messages:
+    // `claude logs` showed the text sitting in the CLI's input box, the Enter having been taken as part of
+    // the paste (a busy CLI reads the paste end and the Enter in one chunk). Every send writes a receipt
+    // within a second, so no receipt after 8 s / 20 s means the text is waiting for its Enter: press Enter
+    // again, at most twice. Never at a permission prompt (Enter would accept it). An Enter into an empty
+    // box does nothing, so a false alarm costs nothing.
+    if (!pending.received && !pending.failed && !isSlash) {
+      const ageN = now - (pending.sentAt || pending.addedAt);
+      const stepN = pending.enterNudges || 0;
+      if ((stepN === 0 && ageN > ENTER_NUDGE_1_MS) || (stepN === 1 && ageN > ENTER_NUDGE_2_MS && now - (pending.nudgeAt || 0) > 12000)) {
+        pending.enterNudges = stepN + 1;
+        pending.nudgeAt = now;
+        window.api.agentInputHoldsText(agentPath, pending.text).then((holds) => {
+          if (holds) writeQueued(session, () => window.api.sendInput(agentPath, "\r"));
+        }).catch(() => {});
+      }
+    }
+    if (pending.received) {
+      if (now - (pending.sentAt || pending.addedAt) >= MIDTURN_RECEIVED_MAX_MS) { pending.received = false; pending.failed = true; notifyFailed(agentPath, session, pending, "received-but-never-read-30min"); }
+      return true;
+    }
+
+    // 2026-09-27: a later message that DID land proves this one was dropped.
+    // Traced live on the Software Engineering agent: "yes" was sent at 04:13:34
+    // while the agent sat idle, and the CLI never recorded it (the message sent
+    // 50 s before it was dropped the same way). the owner then re-sent something else,
+    // which landed, and the agent worked for five more minutes. The "is the agent
+    // still writing" check below kept extending the wait for the "yes" for as long
+    // as the agent stayed busy, so it pulsed as "sending" for seven minutes and
+    // never got its Resend button - while the answer he had given was simply lost.
+    // The CLI takes input in order, so a human message stamped after this one was
+    // sent that is not this one means this one is not coming.
+    if (!pending.failed) {
+      const sentAt = pending.sentAt || pending.addedAt;
+      // 2026-10-02: a later message must have been on record for SUPERSEDED_GRACE_MS
+      // while this one still did not appear. Without the grace, two quick follow-ups
+      // whose transcript writes land out of order, or a queued message that dequeues
+      // while the first is still genuinely in flight, were declared "not delivered"
+      // within seconds - the false alarm that pushes a resend and makes a duplicate.
+      const laterTimes = blocks
+        .filter((b) => b.role === "user" && b.timestamp)
+        .map((b) => new Date(b.timestamp).getTime())
+        .filter((t) => t > sentAt + 2000);
+      const supersededBy = laterTimes.length > 0 && now - Math.min(...laterTimes) > SUPERSEDED_GRACE_MS;
+      if (supersededBy) {
+        pending.failed = true;
+        pending.superseded = true;
+        notifyFailed(agentPath, session, pending, "superseded");
+      }
+    }
+
+    // 2026-09-20: this used to just silently vanish here once expired, on
+    // the reasoning that "either it succeeded and matching missed it, or
+    // something else happened, but a permanently-pulsing bubble is worse."
+    // Confirmed live this was hiding a real, recurring failure mode -
+    // Claude Code's CLI drops input sent while it's still generating a
+    // response instead of queueing it (documented above at setRawTerminalMode/
+    // IDLE_TIMEOUT_MS), and this app's own busy-detection (900ms of pty
+    // silence = assumed idle) is a timing heuristic that can be wrong,
+    // especially right at a turn boundary or during a quiet background
+    // subagent call - a false "idle" sends directly instead of queuing, the
+    // CLI drops it, and the message is gone with no trace in the transcript
+    // at all. the owner lost a long, detailed reply this way with zero warning.
+    // Now: past the timeout with no match, treat it as a genuine delivery
+    // failure - mark it (kept in the array, not dropped) so it renders with
+    // a warning + Resend instead of disappearing, and notify in case the owner
+    // isn't looking at this tab right now.
+    //
+    // v1.27.1 had this AUTO-resubmit once when the session looked idle -
+    // reverted the same day, live: two independent failed sends (the owner
+    // retried by hand while this was also auto-retrying) landed as
+    // overlapping/interleaved submitToAgent() calls, and the resulting raw
+    // pty writes corrupted each other mid-flight - confirmed in the actual
+    // transcript as the same sentence duplicated with garbled characters
+    // in between and the rest cut off. Auto-resubmitting a failed send is
+    // fundamentally unsafe without a hard guarantee that only ONE resend of
+    // ONE message can ever be in flight for a session at a time, which
+    // this app does not have. Manual-only from here: Resend is a real
+    // click, one at a time, by a person who can see whether the last one
+    // already went through before trying again.
+    if (pending.midTurn && !pending.failed && !isSlash && now - (pending.sentAt || pending.addedAt) > MIDTURN_NO_RECEIPT_FAIL_MS) {
+      // v1.69.5: no receipt yet is NOT a loss while the agent is visibly working (Video Editing: a long
+      // Premiere/Bash step, 17 tools, and every message was painted red "Not confirmed" at 25 s although the CLI
+      // had it queued). Fail only once the transcript has been quiet; until then show a calm "queued" state.
+      if (!pending.checkingQuiet) {
+        pending.checkingQuiet = true;
+        window.api.getTranscriptQuietMs(agentPath).then((quietMs) => {
+          pending.checkingQuiet = false;
+          if (pending.failed) return;
+          if (quietMs != null && quietMs < TRANSCRIPT_QUIET_BEFORE_FAIL_MS) {
+            pending.waitedOnBusyAgent = true;
+            pending.sentAt = Date.now() - MIDTURN_NO_RECEIPT_FAIL_MS + 15000; // look again in ~15 s
+            scheduleRebuildChatView(agentPath);
+            return;
+          }
+          pending.failed = true;
+          notifyFailed(agentPath, session, pending, "midturn-no-receipt");
+          scheduleRebuildChatView(agentPath);
+        }).catch(() => { pending.checkingQuiet = false; });
+      }
+      return true;
+    }
+    const waited = now - pending.addedAt;
+    const limit = session.busy ? PENDING_SENT_BUSY_TIMEOUT_MS : PENDING_SENT_TIMEOUT_MS;
+    if (waited >= limit) {
+      // 2026-09-23: before calling a message lost, check whether the agent is
+      // still writing. the owner kept getting "your message wasn't delivered" for
+      // messages that were fine, and the traced case shows why: the
+      // Optimization agent was mid-run, its transcript logging a tool_result
+      // every five to twenty seconds for ten minutes, and the message was
+      // simply queued behind that run. Neither existing guard catches it -
+      // `session.busy` comes from pty silence, and getSessionActivity()'s
+      // `working` is "an assistant tool_use with no result yet", which goes
+      // FALSE in the gap between every pair of tool calls. The resend at
+      // 00:58:27.007 landed in exactly such a gap, between tool_results at
+      // 00:58:22.853 and 00:58:27.797.
+      //
+      // A transcript that is still growing is direct evidence, not a
+      // heuristic: the agent is alive and mid-turn, so an unmatched message
+      // is queued, not dropped. Keep waiting while it keeps writing; declare
+      // a loss only once it has been quiet for TRANSCRIPT_QUIET_BEFORE_FAIL_MS
+      // and the message still has not appeared.
+      if (!pending.failed && !pending.checkingQuiet) {
+        pending.checkingQuiet = true;
+        window.api.getTranscriptQuietMs(agentPath).then((quietMs) => {
+          pending.checkingQuiet = false;
+          if (pending.failed) return;
+          if (quietMs != null && quietMs < TRANSCRIPT_QUIET_BEFORE_FAIL_MS) {
+            // Still working. Give it another window rather than crying loss.
+            pending.addedAt = Date.now() - limit + TRANSCRIPT_QUIET_BEFORE_FAIL_MS;
+            pending.waitedOnBusyAgent = true;
+            return;
+          }
+          pending.failed = true;
+          notifyFailed(agentPath, session, pending, "timeout-agent-quiet");
+          scheduleRebuildChatView(agentPath);
+        }).catch(() => { pending.checkingQuiet = false; });
+      }
+      return true; // keep it visible - pending, or failed once the check says so
+    }
+    return true; // still within the timeout, still legitimately pending
+  });
+  const tRender = performance.now();
+  renderChatBlocks(blocks, session.pendingSent, { forceBottom: !!opts.forceBottom });
+  perfProbe("rebuildChatView", performance.now() - tRebuild, "render=" + Math.round(performance.now() - tRender) + "ms blocks=" + blocks.length);
+}
+
+// Originally tuned (widened from 120ms) to dodge a mid-redraw terminal read
+// from the old buffer-scraping version of this view - that specific failure
+// mode doesn't apply to reading a JSONL file (a half-written last line just
+// fails its own JSON.parse and gets silently skipped for one cycle, picked
+// up clean on the next - see getLiveTranscriptBlocks() in archive.js). Kept
+// at the same value anyway: pty output can arrive in a rapid burst during
+// active generation, and debouncing still avoids re-reading and re-parsing
+// the whole transcript file on every single byte.
+const CHAT_VIEW_REBUILD_DEBOUNCE_MS = 400;
+
+// v1.68.0: a trailing debounce alone never fires while a working agent redraws its spinner every <400 ms, so the
+// receipt / reply only reached the screen at the 4 s poll. Now the wait is capped: at most this long after the
+// FIRST pending request, however many more arrive.
+const CHAT_VIEW_REBUILD_MAX_WAIT_MS = 1000;
+
+function scheduleRebuildChatView(agentPath) {
+  const session = terminals.get(agentPath);
+  if (!session) return;
+  const nowT = performance.now();
+  if (session.chatRebuildFirstAt == null) session.chatRebuildFirstAt = nowT;
+  clearTimeout(session.chatRebuildTimer);
+  const delay = Math.max(0, Math.min(CHAT_VIEW_REBUILD_DEBOUNCE_MS, CHAT_VIEW_REBUILD_MAX_WAIT_MS - (nowT - session.chatRebuildFirstAt)));
+  session.chatRebuildTimer = setTimeout(() => {
+    session.chatRebuildFirstAt = null;
+    if (agentPath === activeAgentPath) rebuildChatView(agentPath);
+  }, delay);
+}
+
+// Diagnosed 2026-08-22: scheduleRebuildChatView() above is the *only*
+// thing that ever triggers a rebuild, and it only ever fires from real pty
+// output (onTerminalData below). That's fine as long as this agent's own
+// attach is actually alive and streaming - but separately confirmed live
+// the same day that main.js's ptySessions entry for an agent can go stale
+// (its stored pty handle no longer corresponds to the session's real
+// current background process - e.g. after that session was stopped and
+// redispatched from outside this app's own IPC flow, which is genuinely
+// how it happened live: `claude stop <id>` run directly from a terminal,
+// bypassing this app's own stop-and-redispatch flow entirely) without any
+// onExit ever firing to signal it - confirmed directly that zero live
+// `claude attach` processes existed system-wide for an agent Agent Desktop
+// still showed as active. When that happens, no more onTerminalData events
+// arrive for that agent, so no more rebuilds ever happen - the Chat View
+// would freeze on its last render forever even once new content exists.
+// (Note: the specific blank-Chat-View incident that prompted this same
+// day turned out to have a different, unrelated root cause - a project-
+// directory encoding bug, see archive.js's encodeProjectPath() comment -
+// so this exact poll wasn't what fixed that one. Kept anyway as a real,
+// independently-confirmed gap worth covering.) A slow periodic poll for
+// the active agent only is a low-risk, purely additive safety net for
+// that stale-attach gap specifically - rebuildChatView()
+// already no-ops cheaply when there's nothing new to show, so polling
+// something that hasn't changed costs one IPC round-trip, not a visible
+// re-render.
+const CHAT_VIEW_STALE_POLL_MS = 4000;
+function chatViewStalePoll() {
+  if (!activeAgentPath || rawTerminalMode) return;
+  // 2026-09-20: this poll's own implicit assumption - a terminal/session
+  // object always exists for the active agent - can silently stop holding.
+  // Confirmed live: reloadAgentSessionView() (Restart Session's own cleanup)
+  // deletes the terminals-map entry outright and relies entirely on the
+  // selectAgent() call right after it to recreate one via showTerminalFor();
+  // if that recreation is ever skipped or a later bug removes the entry some
+  // other way, rebuildChatView()'s own `if (!session) return` makes THIS
+  // poll a silent, permanent no-op from then on - looking exactly like a
+  // frozen chat view (confirmed: 90+ seconds stale, self-fixed the instant
+  // the owner switched agents and back, which recreates the session via
+  // selectAgent -> showTerminalFor). Self-heal instead of quietly assuming
+  // the session still exists.
+  if (!terminals.get(activeAgentPath)) {
+    const agent = agents.find((a) => a.path === activeAgentPath);
+    if (agent) showTerminalFor(agent);
+    return; // let the freshly (re)created session's own activity drive the next real rebuild
+  }
+  rebuildChatView(activeAgentPath);
+}
+// v1.77.3: nobody is looking while the window is hidden/minimized; one catch-up rebuild runs when it becomes visible again.
+setInterval(() => { if (!document.hidden) chatViewStalePoll(); }, CHAT_VIEW_STALE_POLL_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) chatViewStalePoll(); });
+
+// Raw terminal is the fallback/advanced view for anything that genuinely
+// needs real keystroke-level interaction (the Model picker's arrow keys, a
+// first-run theme picker, any future y/n prompt) - both views always occupy
+// the same real layout space (see #chat-body in styles.css) so xterm never
+// loses its real column width while the chat view is what's showing.
+let rawTerminalMode = false;
+
+function setRawTerminalMode(on) {
+  rawTerminalMode = on;
+  chatMessagesViewEl.classList.toggle("view-hidden", on);
+  terminalWrapperEl.classList.toggle("view-hidden", !on);
+  rawTerminalToggleBtn.classList.toggle("active", on);
+  if (on) {
+    requestAnimationFrame(refitActiveTerminal);
+    // Confirmed live the same night as the compose-box version of this bug:
+    // switching to Raw Terminal moves the *view* but not keyboard focus -
+    // xterm needs an explicit term.focus() call, same as clicking directly
+    // into its content did. Without this, typing (including Enter) looked
+    // like it was going nowhere when it was really just never reaching the
+    // terminal at all.
+    const session = activeAgentPath && terminals.get(activeAgentPath);
+    if (session) session.term.focus();
+  } else if (activeAgentPath) {
+    rebuildChatView(activeAgentPath, { forceBottom: true });
+    // Previously only Reset Session's own handler refocused the compose
+    // box after leaving raw mode - toggling this button by hand left focus
+    // wherever it was (often still on the now-hidden terminal element),
+    // making the textarea look unresponsive to typing until clicked
+    // directly. the user hit exactly this - typing "did nothing" until he
+    // clicked into the box himself.
+    chatInputEl.focus();
+  }
+}
+
+rawTerminalToggleBtn.addEventListener("click", () => setRawTerminalMode(!rawTerminalMode));
+
+// Claude Code's CLI does not queue input sent while it's still generating a
+// response - it silently drops it instead (confirmed directly: sendInput was
+// called and reached window.api fine, but the message never appeared in the
+// session's own JSONL transcript at all). Track "busy" per session from the
+// pty's own output activity - a steady stream of data means it's actively
+// responding, and a pause of IDLE_TIMEOUT_MS with nothing new means it's
+// back at its prompt. Earlier version of this disabled the compose box
+// while busy to prevent that silent loss - the user explicitly wanted to stay
+// typeable at all times instead, like a normal chat interface, so a message
+// sent while busy is queued (session.sendQueue) and auto-submitted (one at
+// a time, in order) the next time the session goes idle, rather than being
+// blocked from typing at all.
+const IDLE_TIMEOUT_MS = 900;
+
+// Approximated from the session's own JSONL usage data against an ASSUMED
+// 200K context window - not a confirmed figure for this specific model,
+// just the long-standing typical Claude context size, so treat this as a
+// rough indicator, not an exact one. Tooltip always shows the raw numbers
+// so the approximation is never silently hidden.
+const ASSUMED_CONTEXT_WINDOW = 200000;
+
+// "claude-sonnet-5-5" -> "Sonnet 5.5", "claude-haiku-4-5-20251001" -> "Haiku 4.5",
+// "claude-3-5-sonnet-20241022" -> "Sonnet 3.5". Unknown shapes fall back to the raw id.
+function prettyModelName(id) {
+  if (!id) return "";
+  const parts = String(id).replace(/\[.*\]$/, "").replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");
+  const names = parts.filter((p) => /^[a-z]+$/.test(p));
+  const nums = parts.filter((p) => /^\d{1,2}$/.test(p));
+  if (names.length !== 1 || !nums.length) return String(id);
+  return names[0][0].toUpperCase() + names[0].slice(1) + " " + nums.join(".");
+}
+
+async function refreshContextUsage(agentPath) {
+  let usage = await window.api.getContextUsage(agentPath);
+  if (agentPath !== activeAgentPath) return; // user may have switched agents while this was in flight
+
+  if (usage && typeof window.guardUsageIsStale === "function" && window.guardUsageIsStale(agentPath, usage)) usage = null; // pre-reset leftovers
+  if (usage && typeof usage.contextTokens === "number") {
+    const pct = Math.min(100, Math.round((usage.contextTokens / ASSUMED_CONTEXT_WINDOW) * 100));
+    // the owner, 2026-09-28: wants the actual token count on screen at a glance,
+    // not just a percentage hidden behind a hover - "it will tell me ... 100,000
+    // tokens or 50,000 tokens or whatever, just a number on top." Percentage
+    // stays alongside since it's the more actionable figure for "how close to
+    // the wall," but the raw count is now always the visible text itself.
+    const kTokens = usage.contextTokens >= 1000
+      ? `${Math.round(usage.contextTokens / 1000)}K`
+      : String(usage.contextTokens);
+    contextUsageEl.textContent = `${kTokens} tokens (${pct}%)`;
+    contextUsageEl.title = `~${usage.contextTokens.toLocaleString()} tokens of an assumed ${ASSUMED_CONTEXT_WINDOW.toLocaleString()}-token context window (approximate - not a confirmed figure for this model). Scoped to just this agent's own conversation - grows as this specific conversation grows, resets on /clear or a fresh session.`;
+    contextUsageEl.classList.remove("hidden", "warning", "critical");
+    if (pct >= 90) contextUsageEl.classList.add("critical");
+    else if (pct >= 70) contextUsageEl.classList.add("warning");
+  } else {
+    contextUsageEl.classList.add("hidden");
+  }
+  if (usage && usage.model) {
+    modelBadgeEl.textContent = prettyModelName(usage.model);
+    modelBadgeEl.title = "The model this agent used for its most recent reply (" + usage.model + "). Agents can switch models, so this follows the latest turn.";
+    modelBadgeEl.classList.remove("hidden");
+  } else {
+    modelBadgeEl.classList.add("hidden");
+  }
+
+  const session = terminals.get(agentPath);
+  if (session) {
+    session.lastResponseAt = usage && usage.timestamp ? new Date(usage.timestamp) : null;
+    updateCacheStatus();
+  }
+}
+
+// Added 2026-08-23, prompted directly by the owner asking whether a YouTube
+// video's cost-saving claim ("You're Paying Anthropic 20x MORE Than You
+// Need To") could improve something already built rather than just get
+// filed away - see optimization_agent_pending_notes.md for the full
+// research trail. Core claim, independently corroborated (not just taken
+// from the video): Anthropic's prompt caching uses a 1-hour, activity-
+// based window - a message sent after the cache has lapsed re-processes
+// the entire conversation at full (uncached) price instead of the much
+// cheaper cached rate. the owner runs several named agents and checks in on
+// them at irregular intervals, often well over an hour apart, with no way
+// to see that coming before now.
+//
+// Reuses getContextUsage()'s own usage.timestamp (already fetched for the
+// context-window badge above, same IPC call, no new backend work needed)
+// as the anchor for "when did this agent's cache last go warm."
+// PROMPT_CACHE_TTL_MS is Anthropic's own documented window, not a guess.
+const PROMPT_CACHE_TTL_MS = 60 * 60 * 1000;
+// How soon before expiry to start the "expiring soon" warning state -
+// gives the owner a real chance to act (send a message, or knowingly let it
+// lapse) rather than the badge flipping straight from "fine" to "expired"
+// with no notice.
+const CACHE_EXPIRY_WARNING_MS = 10 * 60 * 1000;
+
+function formatCacheDuration(ms) {
+  const totalMinutes = Math.round(Math.abs(ms) / 60000);
+  if (totalMinutes < 1) return "under 1m";
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function updateCacheStatus() {
+  const session = activeAgentPath && terminals.get(activeAgentPath);
+  if (!session || !session.lastResponseAt) {
+    cacheStatusEl.classList.add("hidden");
+    return;
+  }
+  const elapsedMs = Date.now() - session.lastResponseAt.getTime();
+  const remainingMs = PROMPT_CACHE_TTL_MS - elapsedMs;
+  cacheStatusEl.classList.remove("hidden", "warning", "expired");
+  if (remainingMs > 0) {
+    cacheStatusEl.textContent = `Cache: ${formatCacheDuration(remainingMs)} left`;
+    cacheStatusEl.title =
+      `This agent's last response was ${formatCacheDuration(elapsedMs)} ago. Anthropic's prompt cache for this ` +
+      `conversation is still warm for about ${formatCacheDuration(remainingMs)} more - a message sent before then reuses the ` +
+      `cached context at a much cheaper rate. Once it lapses, the next message re-processes the whole conversation ` +
+      `at full price. Not an official Anthropic-reported figure - calculated locally from this agent's own last response time.`;
+    if (remainingMs <= CACHE_EXPIRY_WARNING_MS) cacheStatusEl.classList.add("warning");
+  } else {
+    cacheStatusEl.textContent = `Cache expired ${formatCacheDuration(-remainingMs)} ago`;
+    cacheStatusEl.title =
+      `This agent's last response was ${formatCacheDuration(elapsedMs)} ago, past Anthropic's ~1-hour prompt cache window. ` +
+      `Your next message to this agent will re-process the whole conversation at full price rather than the cheaper ` +
+      `cached rate. Not an official Anthropic-reported figure - calculated locally from this agent's own last response time.`;
+    cacheStatusEl.classList.add("expired");
+  }
+}
+// Ticks the display only - never re-fetches usage data on its own (that
+// already happens via refreshContextUsage(), called from the same places
+// the app already refreshes usage elsewhere). 30s is plenty for a badge
+// whose whole point is a ~1-hour window, not a stopwatch.
+setInterval(updateCacheStatus, 30000);
+
+// Unofficial, community-sourced estimates, one per Claude subscription
+// plan - Anthropic does not publish these figures, and they're known to
+// vary by message complexity, model, and demand. Treat as a rough compass,
+// not a precise reading - see agent-desktop\CLAUDE.md for where these
+// numbers came from. No equivalent estimate is applied to the 7-day
+// figure - the real weekly cap is measured in compute-hours, not messages,
+// so a percentage there would mix two different units together rather
+// than give a meaningful reading. Only used as a fallback when
+// windows.fiveHourConfirmed isn't available (see refreshUsageWindows()) -
+// the owner picks his actual plan via the sidebar's Plan dropdown
+// (getSelectedPlan()/PLAN_STORAGE_KEY below), not something this app can
+// detect on its own.
+const PLAN_FIVE_HOUR_ESTIMATES = {
+  pro: { label: "Pro", fiveHourMessages: 45 },
+  max5x: { label: "Max 5x", fiveHourMessages: 225 },
+  max20x: { label: "Max 20x", fiveHourMessages: 900 },
+};
+// v1.121.0: there is NO built-in default plan any more. The plan comes from the configuration layer (planTier, set in Setup or in
+// app-config.json) or from the person's own pick in the Plan dropdown; with neither, the plan is "not set" (null) and the 5h fallback
+// badge shows a plain message count instead of a percentage that would be wrong for most plans.
+const PLAN_STORAGE_KEY = "agentDesktop.selectedPlanId";
+
+function cfgPlanId() {
+  const p = window.AppCfg ? window.AppCfg.planTier() : null;
+  return p && PLAN_FIVE_HOUR_ESTIMATES[p] ? p : null;
+}
+
+function getSelectedPlanId() {
+  const stored = localStorage.getItem(PLAN_STORAGE_KEY);
+  return stored && PLAN_FIVE_HOUR_ESTIMATES[stored] ? stored : cfgPlanId();
+}
+
+function setSelectedPlanId(planId) {
+  if (!PLAN_FIVE_HOUR_ESTIMATES[planId]) return;
+  localStorage.setItem(PLAN_STORAGE_KEY, planId);
+}
+
+// 2026-09-20: the dropdown above stored the plan as a one-time manual pick
+// with nothing keeping it in sync - confirmed live, it was still "Pro" long
+// after the owner actually upgraded to Max 5x, silently showing a ~5x-inflated
+// fallback percentage. infrastructure_facts.md's "Current plan:" line is
+// this workspace's single source of truth for exactly this fact (root
+// CLAUDE.md), so prefer it whenever it can be read/parsed - self-healingly
+// syncing localStorage AND the visible dropdown to match, so a future plan
+// change (edited into that one file, per the existing workspace habit)
+// takes effect here automatically instead of also needing a separate click
+// in this app. Falls back to the plain stored/default value only if the
+// shared file is missing or its "Current plan" line doesn't parse.
+async function getEffectivePlanId() {
+  let configured = null;
+  try {
+    if (window.AppCfg) await window.AppCfg.ready;
+    configured = cfgPlanId();
+  } catch (e) {}
+  if (configured) {
+    if (getSelectedPlanId() !== configured) {
+      setSelectedPlanId(configured);
+      if (typeof syncPlanDropdown === "function") syncPlanDropdown();
+    }
+    return configured;
+  }
+  return getSelectedPlanId();
+}
+
+// Must match RATE_LIMIT_REFRESH_INTERVAL_SECONDS in main.js - only used
+// here for the tooltip's own wording, not for any real timing logic.
+const RATE_LIMIT_REFRESH_SECONDS = 60;
+// A badge reading "stale" gets a visible marker (not just a tooltip you
+// have to hover to find) once it's meaningfully older than the refresh
+// interval - found necessary directly, 2026-08-23: the owner saw a 69% badge
+// at the same moment Claude's own app already said "approaching weekly
+// limit," and the badge gave no visual hint it might be out of date.
+const STALE_THRESHOLD_SECONDS = RATE_LIMIT_REFRESH_SECONDS * 3;
+
+// 2026-10-05: a figure older than this is not shown as a number at all. The cache stopped updating for 22 h
+// (settings.json got a BOM, so no session rendered the statusLine) while the badge kept showing "74%" next to
+// the real 84%. Above this age the badge says "stale since HH:MM" instead (Optimization's request).
+const NO_NUMBER_AFTER_SECONDS = 15 * 60;
+function staleSinceText(ageSeconds) {
+  const t = new Date(Date.now() - ageSeconds * 1000);
+  const hm = t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay = t.toDateString() === new Date().toDateString();
+  return sameDay ? hm : `${t.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
+}
+
+function formatAge(ageSeconds) {
+  if (ageSeconds === null || ageSeconds === undefined) return { text: "an unknown time", stale: false };
+  const stale = ageSeconds > STALE_THRESHOLD_SECONDS;
+  if (ageSeconds < 60) return { text: `${ageSeconds}s`, stale };
+  const minutes = Math.round(ageSeconds / 60);
+  if (minutes < 60) return { text: `${minutes}m`, stale };
+  const hours = Math.round(minutes / 60);
+  return { text: `${hours}h`, stale };
+}
+
+async function refreshUsageWindows() {
+  const windows = await window.api.getUsageWindows();
+  if (!activeAgentPath) {
+    fiveHourUsageEl.classList.add("hidden");
+    weeklyUsageEl.classList.add("hidden");
+    monthlyUsageEl.classList.add("hidden");
+    return;
+  }
+
+  // Prefer windows.fiveHourConfirmed/sevenDayConfirmed - Anthropic's own
+  // reported rate_limits.*.used_percentage, sourced via the statusLine hook
+  // ensureRateLimitStatusLine() installs (see main.js and statusline.cjs) -
+  // over the message-count heuristic below. Falls back to the heuristic
+  // whenever confirmed data isn't available yet: right after this feature's
+  // first install (no interactive session has completed a turn yet to
+  // populate the cache), on a plan the rate_limits field isn't reported for,
+  // or once a window has genuinely reset (statusline.cjs's cache write and
+  // archive.js's getConfirmedRateLimits() both treat an elapsed resets_at as
+  // "no data," not stale data, since a leftover pre-reset percentage would
+  // be actively wrong, not just imprecise).
+  if (windows.fiveHourConfirmed) {
+    const pct = Math.round(windows.fiveHourConfirmed.usedPct);
+    const age = formatAge(windows.fiveHourConfirmed.ageSeconds);
+    const fiveTooOld = typeof windows.fiveHourConfirmed.ageSeconds === "number" && windows.fiveHourConfirmed.ageSeconds > NO_NUMBER_AFTER_SECONDS;
+    fiveHourUsageEl.textContent = fiveTooOld ? `5h: stale since ${staleSinceText(windows.fiveHourConfirmed.ageSeconds)}` : `${pct}% (5h)`;
+    fiveHourUsageEl.title =
+      `${pct}% of your 5-hour rate limit window used, reported directly by Anthropic (rate_limits.five_hour), ` +
+      `not estimated - as of ${age.text} ago. Refreshes at least every ${RATE_LIMIT_REFRESH_SECONDS}s while an ` +
+      `INTERACTIVE terminal Claude Code session is open (this app's own attached agents, or a real terminal) - ` +
+      `a session running through Claude Desktop's own native/embedded agent mode does NOT refresh this, even ` +
+      `while actively burning real usage, since it never renders a statusLine. Can lag reality if nothing ` +
+      `interactive is currently open. Resets ${windows.fiveHourConfirmed.resetsAt ? new Date(windows.fiveHourConfirmed.resetsAt * 1000).toLocaleString() : "at an unknown time"}.`;
+    fiveHourUsageEl.classList.remove("hidden", "warning", "critical", "stale");
+    if (pct >= 90) fiveHourUsageEl.classList.add("critical");
+    else if (pct >= 70) fiveHourUsageEl.classList.add("warning");
+    if (age.stale) fiveHourUsageEl.classList.add("stale");
+  } else {
+    const effectivePlanId = await getEffectivePlanId();
+    const plan = effectivePlanId ? PLAN_FIVE_HOUR_ESTIMATES[effectivePlanId] : null;
+    if (!plan) {
+      // plan not set: a message count only, never a made-up percentage
+      fiveHourUsageEl.textContent = `${windows.messagesInLast5h} msgs (5h, plan not set)`;
+      fiveHourUsageEl.title =
+        `${windows.messagesInLast5h} messages sent across ALL Claude Code sessions on this machine in the trailing 5 hours. ` +
+        `No percentage is shown because your Claude plan is not set: choose it in the Plan dropdown in the sidebar (or in Setup). ` +
+        `This count is used because no confirmed rate_limits figure is available yet.`;
+      fiveHourUsageEl.classList.remove("hidden", "warning", "critical");
+    } else {
+    const fivePct = Math.min(100, Math.round((windows.messagesInLast5h / plan.fiveHourMessages) * 100));
+    fiveHourUsageEl.textContent = `${windows.messagesInLast5h} msgs (~${fivePct}%, 5h)`;
+    fiveHourUsageEl.title =
+      `${windows.messagesInLast5h} messages sent across ALL Claude Code sessions on this machine in the trailing 5 hours, ` +
+      `against an unofficial community estimate of ~${plan.fiveHourMessages} messages/5h for Claude ${plan.label} ` +
+      `(set via the Plan dropdown in the sidebar). Not published by Anthropic and known to vary by message ` +
+      `complexity/model/demand - a rough compass, not a precise reading. This estimate is used because no confirmed ` +
+      `rate_limits figure is available yet (no interactive Claude Code session has completed a turn since the ` +
+      `statusLine integration was installed, or this account/plan doesn't report it).`;
+    fiveHourUsageEl.classList.remove("hidden", "warning", "critical");
+    if (fivePct >= 90) fiveHourUsageEl.classList.add("critical");
+    else if (fivePct >= 70) fiveHourUsageEl.classList.add("warning");
+    }
+  }
+
+  const dailyAvg = (windows.messagesInLast7d / 7).toFixed(1);
+  if (windows.sevenDayConfirmed) {
+    const pct = Math.round(windows.sevenDayConfirmed.usedPct);
+    const age = formatAge(windows.sevenDayConfirmed.ageSeconds);
+    const weekTooOld = typeof windows.sevenDayConfirmed.ageSeconds === "number" && windows.sevenDayConfirmed.ageSeconds > NO_NUMBER_AFTER_SECONDS;
+    weeklyUsageEl.textContent = weekTooOld ? `7d: stale since ${staleSinceText(windows.sevenDayConfirmed.ageSeconds)}` : `${pct}% (7d)`;
+    weeklyUsageEl.title =
+      `${pct}% of your weekly rate limit used, ${windows.sevenDayConfirmed.source === "usage-model" ? "from the Optimization agent's usage model (real readings plus usage since; the statusLine cache is stale)" : "reported directly by Anthropic (rate_limits.seven_day), not estimated"} ` +
+      `- as of ${age.text} ago. Refreshes at least every ${RATE_LIMIT_REFRESH_SECONDS}s while an INTERACTIVE terminal ` +
+      `Claude Code session is open (this app's own attached agents, or a real terminal) - a session running through ` +
+      `Claude Desktop's own native/embedded agent mode does NOT refresh this, even while actively burning real usage, ` +
+      `since it never renders a statusLine. This is exactly what happened once already (a 69% badge sat stale for ` +
+      `~20 minutes while real usage climbed past it), and again 2026-08-23 (badge stuck at ~93% while an embedded ` +
+      `session actually hit the 5h cap). Resets ${windows.sevenDayConfirmed.resetsAt ? new Date(windows.sevenDayConfirmed.resetsAt * 1000).toLocaleString() : "at an unknown time"}. ` +
+      `For reference, ${windows.messagesInLast7d} messages sent across all sessions on this machine in the trailing 7 days (~${dailyAvg}/day).`;
+    weeklyUsageEl.classList.remove("hidden", "warning", "critical", "stale");
+    if (pct >= 90) weeklyUsageEl.classList.add("critical");
+    else if (pct >= 70) weeklyUsageEl.classList.add("warning");
+    if (age.stale) weeklyUsageEl.classList.add("stale");
+  } else {
+    // Deliberately no percentage against Claude's real weekly cap in this
+    // fallback path - it's measured in "active compute hours," not messages,
+    // and there's no reliable way to convert between the two (see
+    // getUsageWindows() in archive.js). A bare count had no context to judge
+    // it by though (the user's reasonable follow-up: "I don't have any
+    // indication about the 7 day number") - a daily average, computed from
+    // the same real count, gives a genuine reference point without
+    // inventing a ceiling to compare against.
+    weeklyUsageEl.textContent = `${windows.messagesInLast7d} msgs (7d, ~${dailyAvg}/day)`;
+    weeklyUsageEl.title =
+      `${windows.messagesInLast7d} messages sent across ALL Claude Code sessions on this machine in the trailing 7 days ` +
+      `(~${dailyAvg}/day average). No percentage shown against a ceiling - Claude's real weekly cap is measured in ` +
+      `"active compute hours," not messages, and there's no reliable way to convert between the two, so a percentage ` +
+      `would be a guess dressed up as a number. This fallback is used because no confirmed rate_limits figure is ` +
+      `available yet - see the 5h badge's tooltip for why.`;
+    weeklyUsageEl.classList.remove("hidden", "warning", "critical");
+  }
+
+  refreshMonthlyUsage(windows.monthly);
+}
+
+// "This month" badge - the owner asked for a short/medium/long-term view
+// (next few hours / this week / this month) alongside the existing 5h/7d
+// badges above, then specifically asked for a best-effort percentage after
+// being shown the research confirming no community tool has solved this
+// (see buildMonthlyUsage()'s own comment in archive.js). Shows real
+// numbers first, then the labeled estimate percentage when one can be
+// computed (needs a confirmed 7-day figure to extrapolate from - see
+// archive.js) - never a bare, unlabeled "%" that could be mistaken for
+// something Anthropic actually reports.
+function refreshMonthlyUsage(monthly) {
+  if (!monthly) {
+    monthlyUsageEl.classList.add("hidden");
+    return;
+  }
+  const pctText = monthly.estimatedMonthlyCapacityPct !== null ? `, ~${monthly.estimatedMonthlyCapacityPct}% est.` : "";
+  monthlyUsageEl.textContent = `${monthly.messagesThisMonth} msgs (mo${pctText})`;
+  const comparison =
+    monthly.messagesLastMonth !== null
+      ? ` Last month: ${monthly.messagesLastMonth} total.`
+      : " Not enough history yet for a last-month comparison.";
+  const pctExplanation =
+    monthly.estimatedMonthlyCapacityPct !== null
+      ? `Estimated ~${monthly.estimatedMonthlyCapacityPct}% of a monthly-equivalent capacity used - NOT an Anthropic-reported figure ` +
+        `(no monthly cap exists to report). Derived by extrapolating your real, confirmed 7-day rate-limit percentage across a ` +
+        `month's worth of weeks - anchored to real data, but still an estimate, not a fact. Researched first: even the most ` +
+        `sophisticated community usage-tracking tools don't compute this, because the same underlying limit doesn't exist for them either.`
+      : `No percentage available yet - needs a confirmed 7-day rate-limit figure to extrapolate from (see the 7d badge above).`;
+  monthlyUsageEl.title =
+    `${monthly.messagesThisMonth} messages sent across ALL Claude Code sessions on this machine so far this calendar ` +
+    `month (day ${monthly.daysElapsedThisMonth} of ${monthly.daysInMonth}), averaging ${monthly.dailyAverageThisMonth}/day. ` +
+    `Projected total by month end if this pace holds: ~${monthly.projectedMonthTotal}.${comparison} ${pctExplanation}`;
+  monthlyUsageEl.classList.remove("hidden");
+}
+
+// Some genuinely long waits aren't the agent "thinking" - Claude Code's own
+// browser-automation skill, for example, can sit busy for a long time
+// waiting on an external action (installing a browser extension, finishing
+// a setup flow) while periodically redrawing a status screen, which keeps
+// this app's activity-based busy-detection true the whole time. Rather than
+// leave that looking identical to "still generating a normal response" and
+// confusing, the Send/Queue button's tooltip says more once it's been busy
+// a while.
+const LONG_BUSY_HINT_MS = 20000;
+
+function setBusy(agentPath, session, busy) {
+  if (busy && !session.busy) session.busyStartedAt = Date.now();
+  session.busy = busy;
+  if (!busy) {
+    refreshContextUsage(agentPath);
+    refreshUsageWindows();
+  }
+  // 2026-09-23: the drain respects the same signal the send path uses. The
+  // idle timer fires after 900ms of pty silence, which happens constantly
+  // WHILE an agent is working - draining there would push a queued message
+  // into the middle of a turn, the very thing the queue exists to prevent.
+  // Only drain when the transcript agrees the agent is free; rebuildChatView
+  // calls back here the moment its `working` flips false, so nothing waits
+  // for the next stray byte of pty output to get going.
+  // NOTE: this guards the drain only. The compose-availability and thinking
+  // indicator updates at the end of this function must still run.
+  if (!busy && !session.transcriptWorking && session.sendQueue.length > 0 && !(window.connHealth && window.connHealth.holding(agentPath))) {
+    // Dequeue exactly one - sending it will make the session busy again
+    // once its own response starts streaming, which naturally serializes
+    // the rest of the queue through this same idle-transition path rather
+    // than firing them all at once.
+    //
+    // 2026-09-20: briefly tried delaying this by QUEUE_DRAIN_DELAY_MS (see
+    // git history) to stop rapid-fire split-message pieces from getting
+    // merged by Claude Code's CLI - reverted the same session, live: it
+    // caused an actual, worse regression (a queued piece silently never
+    // sent at all - confirmed directly against the transcript, no growth
+    // for 5+ minutes - not just mis-displayed). Root cause of that
+    // regression not confirmed (a bare setTimeout across a page
+    // reload/navigation would explain a silent loss like that, but wasn't
+    // proven), so not worth re-attempting without a more robust mechanism
+    // than an unprotected setTimeout. Back to sending immediately - a false
+    // "Not delivered" display for an already-successful piece is a real but
+    // lesser problem than a piece never being sent at all.
+    const next = session.sendQueue.shift();
+    submitToAgent(agentPath, next);
+    renderQueue(agentPath);
+  }
+  if (agentPath === activeAgentPath) {
+    updateComposeAvailability();
+    updateThinkingIndicator();
+  }
+}
+
+// the user asked for visible confirmation something's actually happening during
+// a long wait, not just silence until the reply appears - a live seconds
+// count. First version anchored this to session.busy/busyStartedAt (the
+// same flag that gates the Send/Queue button) and it didn't work: busy is
+// deliberately twitchy (IDLE_TIMEOUT_MS = 900ms, tuned for a coarse
+// send-vs-queue decision where brief flicker doesn't matter), and a CLI
+// spinner that redraws roughly once a second can easily leave gaps longer
+// than 900ms between bytes - busy would flicker false/true continuously
+// during completely normal thinking, resetting busyStartedAt every flicker
+// and making the counter never visibly progress. Tracked separately instead
+// via session.turnStartedAt (set once per real user send, in
+// submitToAgent()) and session.thinkingQuietTimer (a longer, dedicated
+// THINKING_INDICATOR_QUIET_MS silence window, reset on every real byte of
+// pty activity in markActivity() below) - deliberately NOT reusing
+// IDLE_TIMEOUT_MS, so this fix can't regress the already-proven Send/Queue
+// behavior. Still honest about liveness, just on its own clock: if the pty
+// genuinely wedges (see the "/compact hung the session" incident this same
+// day) or a turn simply finishes, real output stops, the quiet timer
+// expires, and the indicator disappears - it does not count forever against
+// a process that's stopped producing anything.
+// Fallback only. The indicator is normally driven by the transcript-derived
+// session.transcriptWorking (see rebuildChatView / getSessionActivity), which
+// stays correct through quiet stretches. This timer just stops a "Working…"
+// state from lasting forever if that signal is somehow unavailable (a broken
+// activity IPC) AND the pty has also gone dead silent - a long window,
+// because a genuine long generation or slow tool can legitimately be quiet.
+const THINKING_INDICATOR_QUIET_MS = 60000;
+let thinkingIndicatorInterval = null;
+function updateThinkingIndicator() {
+  if (window.connHealth && window.connHealth.paint(activeAgentPath, chatThinkingIndicatorEl)) return; // v1.67.0: "not connected" replaces a stale Working timer
+  const session = activeAgentPath && terminals.get(activeAgentPath);
+  const working = !!session && (session.turnStartedAt || session.transcriptWorking);
+  if (!working) {
+    if (!chatThinkingIndicatorEl.classList.contains("hidden")) chatThinkingIndicatorEl.classList.add("hidden");
+    return;
+  }
+  if (document.hidden) return; // nobody is looking; the 1 s tick repaints as soon as the window is visible again
+  // Elapsed since the turn started - prefer whichever start we have; if both,
+  // the earlier one.
+  const starts = [session.turnStartedAt, session.transcriptWorkingSince].filter(Boolean);
+  const startedAt = starts.length ? Math.min(...starts) : null;
+  const elapsedMs = startedAt ? Date.now() - startedAt : 0;
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+  const quietMs = Date.now() - (session.lastActivityAt || 0);
+  const secLabel = startedAt ? ` ${elapsedSec}s` : "";
+  let text;
+  if (elapsedMs > LONG_BUSY_HINT_MS && quietMs > 15000) {
+    text = `● Working…${secLabel} — no recent output; it may be waiting on a prompt (check Raw Terminal) or stuck`;
+  } else if (elapsedMs > LONG_BUSY_HINT_MS) {
+    text = `● Working…${secLabel} (taking a while — still going)`;
+  } else {
+    text = `● Working…${secLabel}`;
+  }
+  if (chatThinkingIndicatorEl.textContent !== text) chatThinkingIndicatorEl.textContent = text;
+  if (chatThinkingIndicatorEl.classList.contains("hidden")) chatThinkingIndicatorEl.classList.remove("hidden");
+  const isLong = elapsedMs > LONG_BUSY_HINT_MS;
+  if (chatThinkingIndicatorEl.classList.contains("long") !== isLong) chatThinkingIndicatorEl.classList.toggle("long", isLong);
+}
+if (!thinkingIndicatorInterval) thinkingIndicatorInterval = setInterval(updateThinkingIndicator, 1000);
+
+function markActivity(agentPath, session) {
+  session.lastActivityAt = Date.now();
+  setBusy(agentPath, session, true);
+  clearTimeout(session.idleTimer);
+  session.idleTimer = setTimeout(() => setBusy(agentPath, session, false), IDLE_TIMEOUT_MS);
+
+  clearTimeout(session.thinkingQuietTimer);
+  session.thinkingQuietTimer = setTimeout(() => {
+    // Only give up if the transcript signal ISN'T also saying "working".
+    if (!session.transcriptWorking) {
+      session.turnStartedAt = null;
+      if (agentPath === activeAgentPath) updateThinkingIndicator();
+    }
+  }, THINKING_INDICATOR_QUIET_MS);
+}
+
+// v1.65.0 mid-turn delivery (the owner: a message written while an agent works must reach it at its next
+// step, not ten minutes later). Verified 2026-10-03 with a real `claude` pty: input typed mid-turn is
+// queued by the CLI itself and read at the next tool boundary. So a busy agent gets the message at
+// once, EXCEPT where typing into it would be wrong: a session that is not started yet, a permission
+// prompt on screen (the text would answer it), or a handoff flow in progress. Those still wait in the
+// app queue and go when the agent is free. localStorage midTurnDelivery="0" turns this off.
+function midTurnAllowed() {
+  try { return localStorage.getItem("midTurnDelivery") !== "0"; } catch (e) { return true; }
+}
+// `entry` (v1.68.0): the pending bubble that sendChatInput() already drew before this decision. It is kept when the
+// message is sent and dropped when the message is held (the queue chip shows it instead).
+async function sendOrHold(agentPath, session, text, entry) {
+  const sent = (o) => { submitToAgent(agentPath, text, Object.assign({ entry }, o)); };
+  const held = () => {
+    if (entry && session && session.pendingSent.includes(entry)) {
+      session.pendingSent = session.pendingSent.filter((p) => p !== entry);
+      if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+    }
+  };
+  if (!session) { sent(); return "sent"; }
+  if (!session.started) { held(); session.sendQueue.push(text); renderQueue(agentPath); return "held"; }
+  // v1.68.2 (B1): the handoff-flow gate comes BEFORE the idle shortcut. An idle agent in a flow used to get the message
+  // typed into the pty that is being stopped (lost, or answered by the old session). Held, then parked so the flow's
+  // restore step delivers it to the fresh session (kept on disk, shown in the banner count).
+  // v1.69.1 (M3): `session` may be a stale object (a long message awaited a file save while the reset swapped the session):
+  // hold on the CURRENT session, or the message and its bubble vanish with the old one. (L1) this gate also runs before the
+  // link-down check, so a message typed in a handoff while the link is down is parked too.
+  if (window.guardsFlowActive && window.guardsFlowActive(agentPath)) {
+    const cs = terminals.get(agentPath) || session;
+    held(); cs.sendQueue.push(text); renderQueue(agentPath);
+    try { if (window.guardsParkQueue) window.guardsParkQueue(agentPath, "typed during handoff"); } catch (e) {}
+    return "held";
+  }
+  { const h = window.connHealth && window.connHealth.interceptSend(agentPath, session, text); if (h) { held(); return h; } } // v1.67.0: link down -> queue visibly
+  const working = () => session.busy || session.transcriptWorking;
+  if (!working()) { sent(); return "sent"; }
+  let ok = midTurnAllowed() && session.sendQueue.length === 0 && !(window.guardsAgentInFlow && window.guardsAgentInFlow(agentPath));
+  if (ok) { try { ok = !(await window.api.agentDialogOpen(agentPath)); } catch (e) { ok = false; } }
+  if (!working()) { sent(); return "sent"; }
+  if (ok) { sent({ midTurn: true }); return "midturn"; }
+  held();
+  session.sendQueue.push(text);
+  renderQueue(agentPath);
+  return "held";
+}
+
+function renderQueue(agentPath) {
+  const session = terminals.get(agentPath);
+  if (!session || agentPath !== activeAgentPath) return;
+  chatQueueEl.innerHTML = "";
+  chatQueueEl.classList.toggle("hidden", session.sendQueue.length === 0);
+  session.sendQueue.forEach((text, index) => {
+    const item = document.createElement("div");
+    item.className = "queue-item";
+
+    const icon = document.createElement("div");
+    icon.className = "queue-item-icon";
+    item.appendChild(icon);
+
+    const textEl = document.createElement("div");
+    textEl.className = "queue-item-text";
+    // A queued long message is held as the file reference it will be sent as;
+    // showing that path told him nothing about which message is waiting.
+    // v1.100.0: never the raw file path, even before the file was read back after a restart
+    let shown = longMessageDisplayText(text);
+    if (!shown && longMessageRefPath(text)) { shown = "Long message (sent as a file)"; ensureLongMessageCached(text); }
+    shown = shown || text;
+    textEl.textContent = shown;
+    textEl.title = shown;
+    const qState = window.outbox ? window.outbox.queueLabel(agentPath, text) : ""; // v1.100.0: why it is waiting
+    if (qState) {
+      // v1.101.0 (N6): a sibling with its own direction, so a Hebrew message never turns the English state line RTL or
+      // clips it with the text's ellipsis
+      const col = document.createElement("div");
+      col.className = "queue-item-col";
+      const st = document.createElement("div");
+      st.className = "queue-item-state";
+      st.dir = "ltr";
+      st.textContent = qState;
+      col.appendChild(textEl);
+      col.appendChild(st);
+      item.appendChild(col);
+    } else {
+      item.appendChild(textEl);
+    }
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "queue-item-remove-btn";
+    removeBtn.title = "Remove from queue";
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => {
+      if (window.outbox) window.outbox.cancelQueued(agentPath, text); // removed by hand: never brought back
+      session.sendQueue.splice(index, 1);
+      renderQueue(agentPath);
+    });
+    item.appendChild(removeBtn);
+
+    chatQueueEl.appendChild(item);
+  });
+}
+
+function updateComposeAvailability() {
+  const session = activeAgentPath && terminals.get(activeAgentPath);
+  const busy = !!(session && session.busy);
+  sendInputBtn.textContent = busy ? "Queue" : "Send";
+  const longBusy = busy && session.busyStartedAt && Date.now() - session.busyStartedAt > LONG_BUSY_HINT_MS;
+  sendInputBtn.title = !busy
+    ? "Send"
+    : longBusy
+    ? "Still busy a while - this may be waiting on something outside the chat (e.g. a browser step) rather than generating a response. Queued and will send once it's free."
+    : "Agent is still responding - this will be queued and sent automatically";
+}
+
+window.api.onTerminalData(({ agentPath, data }) => {
+  const session = terminals.get(agentPath);
+  if (!session) return;
+  session.term.write(data);
+  markActivity(agentPath, session);
+  scheduleRebuildChatView(agentPath);
+});
+
+window.api.onTerminalExit(({ agentPath }) => {
+  const session = terminals.get(agentPath);
+  if (session) {
+    session.term.write("\r\n\r\n[session ended]\r\n");
+    session.started = false;
+  }
+  // Caught live the same day as the pty-crash fix in main.js: this "[session
+  // ended]" text only ever wrote into the raw xterm buffer, which the Chat
+  // View stopped reading entirely once it switched to tailing the JSONL
+  // transcript. Result: if the underlying process actually died, the normal
+  // Chat View looked identical to a merely-quiet one - no visible signal at
+  // all unless the user happened to be looking at Raw Terminal. A dead process
+  // and a slow one are different problems needing different responses (wait
+  // vs. restart), so this needs to be unmistakable in the view he actually
+  // uses.
+  if (agentPath === activeAgentPath) {
+    const notice = document.createElement("div");
+    notice.className = "chat-session-ended-notice";
+    notice.textContent = "⚠ This agent's session process has ended. Select a different agent and back, or restart Agent Desktop, to start a fresh one.";
+    chatMessagesViewEl.appendChild(notice);
+    chatMessagesViewEl.scrollTop = chatMessagesViewEl.scrollHeight;
+  }
+});
+
+// ---------------------------------------------------------- new agent modal --
+
+// Shared modal for both create and edit - editingAgentPath tracks which
+// mode is active (null = creating a new agent, otherwise the path of the
+// agent being edited). Editing never renames the underlying folder (see
+// agents.js updateAgent() for why) - only display_name/role/avatar change.
+let editingAgentPath = null;
+const agentModalTitleEl = document.getElementById("agent-modal-title");
+const createAgentBtn = document.getElementById("create-agent-btn");
+const agentGroupSelect = document.getElementById("new-agent-group");
+const newAgentInstructionsEl = document.getElementById("new-agent-instructions");
+let editAgentInstructionsBase = ""; // CLAUDE.md content loaded when the Edit modal opened, to detect changes
+
+// Fills the modal's Group dropdown with "None" + every group, selecting the
+// given group id (or "" for none).
+function populateAgentGroupSelect(selectedGroupId) {
+  agentGroupSelect.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— None —";
+  agentGroupSelect.appendChild(none);
+  for (const g of groupsDoc.groups) {
+    const o = document.createElement("option");
+    o.value = g.id;
+    o.textContent = g.name;
+    agentGroupSelect.appendChild(o);
+  }
+  agentGroupSelect.value = selectedGroupId || "";
+}
+
+function folderNameFromPath(p) {
+  return String(p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+}
+
+function openCreateAgentModal() {
+  editingAgentPath = null;
+  agentModalTitleEl.textContent = "Create New Agent";
+  createAgentBtn.textContent = "Create Agent";
+  nameInput.value = "";
+  roleInput.value = "";
+  avatarPreview.src = "";
+  avatarPreview.style.display = "none";
+  selectedAvatarPath = null;
+  populateAgentGroupSelect(null);
+  newAgentInstructionsEl.value = "";
+  editAgentInstructionsBase = "";
+  modalEl.classList.remove("hidden");
+  nameInput.focus();
+}
+
+function openEditAgentModal(agent) {
+  editingAgentPath = agent.path;
+  agentModalTitleEl.textContent = "Edit Agent";
+  createAgentBtn.textContent = "Save Changes";
+  nameInput.value = agent.displayName;
+  roleInput.value = agent.role || "";
+  const curGroup = groupsDoc.groups.find((g) => g.members.includes(agent.folderName));
+  populateAgentGroupSelect(curGroup ? curGroup.id : "");
+  // Load the agent's current CLAUDE.md into the field (fire-and-forget - the
+  // modal just opened, focus is on the name field, nothing to race).
+  newAgentInstructionsEl.value = "";
+  editAgentInstructionsBase = "";
+  window.api
+    .readInstructions(agent.path)
+    .then((res) => {
+      if (editingAgentPath !== agent.path) return; // modal moved on
+      editAgentInstructionsBase = res.content || "";
+      if (!newAgentInstructionsEl.value) newAgentInstructionsEl.value = editAgentInstructionsBase;
+    })
+    .catch(() => {});
+  selectedAvatarPath = null; // only replaces the avatar if a new one is picked below
+  if (agent.avatar) {
+    avatarPreview.src = agent.avatar;
+    avatarPreview.style.display = "block";
+  } else {
+    avatarPreview.src = "";
+    avatarPreview.style.display = "none";
+  }
+  modalEl.classList.remove("hidden");
+  nameInput.focus();
+}
+
+document.getElementById("new-agent-btn").addEventListener("click", openCreateAgentModal);
+
+document.getElementById("cancel-agent-btn").addEventListener("click", () => {
+  modalEl.classList.add("hidden");
+});
+
+document.getElementById("pick-avatar-btn").addEventListener("click", async () => {
+  const result = await window.api.pickAvatar();
+  if (result) {
+    selectedAvatarPath = result.path;
+    avatarPreview.src = result.dataUrl;
+    avatarPreview.style.display = "block";
+  }
+});
+
+createAgentBtn.addEventListener("click", async () => {
+  const name = nameInput.value.trim();
+  if (!name) {
+    nameInput.focus();
+    return;
+  }
+  try {
+    const desiredGroupId = agentGroupSelect.value || null;
+    const instructions = newAgentInstructionsEl.value;
+    let targetFolderName = editingAgentPath ? folderNameFromPath(editingAgentPath) : null;
+    let instructionsTargetPath = editingAgentPath || null;
+    if (editingAgentPath) {
+      await window.api.updateAgent({
+        agentPath: editingAgentPath,
+        name,
+        role: roleInput.value.trim(),
+        avatarPath: selectedAvatarPath,
+      });
+    } else {
+      const res = await window.api.createAgent({
+        name,
+        role: roleInput.value.trim(),
+        avatarPath: selectedAvatarPath,
+      });
+      targetFolderName = res && res.agentDir ? folderNameFromPath(res.agentDir) : null;
+      instructionsTargetPath = (res && res.agentDir) || null;
+    }
+    // Write CLAUDE.md if there's content to write (create) or it changed (edit).
+    if (instructionsTargetPath && (editingAgentPath ? instructions !== editAgentInstructionsBase : instructions.trim())) {
+      try {
+        await window.api.writeInstructions({ agentPath: instructionsTargetPath, content: instructions, force: true });
+      } catch (e) {
+        alert("The agent was saved, but its instructions could not be written: " + e.message);
+      }
+    }
+    modalEl.classList.add("hidden");
+    const wasEditingActive = editingAgentPath && editingAgentPath === activeAgentPath;
+    await loadAgents();
+    // Apply the group selection after loadAgents() (which reloads groupsDoc
+    // from disk) so moveAgent mutates the fresh copy.
+    if (targetFolderName) {
+      const curGroup = groupsDoc.groups.find((g) => g.members.includes(targetFolderName));
+      if ((curGroup ? curGroup.id : null) !== desiredGroupId) {
+        moveAgent(targetFolderName, desiredGroupId);
+      }
+    }
+    if (wasEditingActive) {
+      // The chat header (name/avatar shown for the currently-open agent)
+      // isn't rebuilt by loadAgents() on its own - refresh it directly so
+      // an edit to the active agent shows immediately, not just in the sidebar.
+      const updated = agents.find((a) => a.path === activeAgentPath);
+      if (updated) {
+        chatNameEl.textContent = updated.displayName;
+        setChatRoleText(chatRoleEl, updated.role);
+        chatAvatarSlotEl.innerHTML = "";
+        chatAvatarSlotEl.appendChild(renderAvatarEl(updated));
+        updateNoInstructionsBanner(updated); // instructions may have just been added
+      }
+    }
+  } catch (e) {
+    alert(`Could not ${editingAgentPath ? "update" : "create"} agent: ` + e.message);
+  }
+});
+
+// ---------------------------------------------------------- group modal --
+
+const groupModalEl = document.getElementById("group-modal");
+const groupModalTitleEl = document.getElementById("group-modal-title");
+const groupNameInput = document.getElementById("group-name-input");
+const groupColorInput = document.getElementById("group-color-input");
+const groupColorSwatchesEl = document.getElementById("group-color-swatches");
+const saveGroupBtn = document.getElementById("save-group-btn");
+const newGroupBtn = document.getElementById("new-group-btn");
+let editingGroupId = null;
+
+const GROUPS_NOTE_KEY = "agentGroupsNoteDismissed";
+const agentGroupsNoteEl = document.getElementById("agent-groups-note");
+
+// 2026-09-20: two separate attempts to detect "already dismissed"
+// correctly (a module-level uiFlags cache, then re-fetching ui-flags.json
+// fresh every time) both failed to actually stop this reappearing, despite
+// ui-flags.json on disk correctly holding {agentGroupsNoteDismissed: true}
+// throughout - never pinned down why through code reading. Rather than
+// keep guessing at a persistence/detection mechanism that has now failed
+// twice, this note is disabled outright: it never auto-shows at all, full
+// stop, regardless of dismissal state. It was only ever a one-time
+// onboarding tip about groups being a visual aid, not something anyone
+// needs repeated - unconditionally not showing it is strictly better than
+// a "dismiss" that doesn't stick.
+async function updateAgentGroupsNote() {
+  agentGroupsNoteEl.classList.add("hidden");
+}
+
+document.getElementById("agent-groups-note-dismiss").addEventListener("click", () => {
+  try {
+    localStorage.setItem(GROUPS_NOTE_KEY, "1");
+  } catch (e) {}
+  if (uiFlags) uiFlags[GROUPS_NOTE_KEY] = true;
+  window.api
+    .setUiFlag(GROUPS_NOTE_KEY, true)
+    .catch((e) => console.error("[agent-desktop] setUiFlag(agentGroupsNoteDismissed) failed - it may reappear next launch:", e));
+  agentGroupsNoteEl.classList.add("hidden");
+});
+
+function renderGroupColorSwatches(selected) {
+  groupColorSwatchesEl.innerHTML = "";
+  for (const c of GROUP_COLOR_PRESETS) {
+    const sw = document.createElement("div");
+    sw.className = "group-color-swatch" + (c.toLowerCase() === String(selected).toLowerCase() ? " selected" : "");
+    sw.style.background = c;
+    sw.title = c;
+    sw.addEventListener("click", () => {
+      groupColorInput.value = c;
+      renderGroupColorSwatches(c);
+    });
+    groupColorSwatchesEl.appendChild(sw);
+  }
+}
+
+function openGroupModal(group) {
+  editingGroupId = group ? group.id : null;
+  groupModalTitleEl.textContent = group ? "Edit Group" : "New Group";
+  saveGroupBtn.textContent = group ? "Save Changes" : "Create Group";
+  groupNameInput.value = group ? group.name : "";
+  const initColor = group
+    ? group.color
+    : GROUP_COLOR_PRESETS[groupsDoc.groups.length % GROUP_COLOR_PRESETS.length];
+  // <input type=color> only accepts #rrggbb; fall back if a group somehow has
+  // a non-hex colour from a hand-edit.
+  groupColorInput.value = /^#[0-9a-f]{6}$/i.test(initColor) ? initColor : "#6366f1";
+  renderGroupColorSwatches(groupColorInput.value);
+  groupModalEl.classList.remove("hidden");
+  groupNameInput.focus();
+}
+
+newGroupBtn.addEventListener("click", () => openGroupModal(null));
+document.getElementById("cancel-group-btn").addEventListener("click", () => {
+  groupModalEl.classList.add("hidden");
+  editingGroupId = null;
+});
+groupColorInput.addEventListener("input", () => renderGroupColorSwatches(groupColorInput.value));
+
+saveGroupBtn.addEventListener("click", async () => {
+  const name = groupNameInput.value.trim();
+  if (!name) {
+    groupNameInput.focus();
+    return;
+  }
+  const color = groupColorInput.value;
+  const wasFirstEver = groupsDoc.groups.length === 0;
+  if (editingGroupId) {
+    const g = groupsDoc.groups.find((x) => x.id === editingGroupId);
+    if (g) {
+      g.name = name;
+      g.color = color;
+    }
+  } else {
+    const topLevelCount = groupsDoc.groups.filter((g) => !g.parentId).length;
+    groupsDoc.groups.push({
+      id: genGroupId(),
+      name,
+      color,
+      parentId: null,
+      order: topLevelCount,
+      members: [],
+    });
+  }
+  groupModalEl.classList.add("hidden");
+  const wasCreate = !editingGroupId;
+  editingGroupId = null;
+  await saveGroupsDoc();
+  // First group ever created: surface the "visual only" note (unless already
+  // permanently dismissed). updateAgentGroupsNote() inside saveGroupsDoc has
+  // already shown it if applicable, so this is just belt-and-braces for the
+  // very first create.
+  if (wasCreate && wasFirstEver) updateAgentGroupsNote();
+});
+
+// ---------------------------------------------------- delete group modal --
+
+const deleteGroupModalEl = document.getElementById("delete-group-modal");
+const deleteGroupWarningEl = document.getElementById("delete-group-warning");
+const confirmDeleteGroupBtn = document.getElementById("confirm-delete-group-btn");
+let deletingGroupId = null;
+
+function openDeleteGroupModal(group) {
+  deletingGroupId = group.id;
+  const n = group.members.filter((m) => agents.some((a) => a.folderName === m)).length;
+  deleteGroupWarningEl.textContent =
+    `"${group.name}" will be removed from the sidebar. Its ${n} agent(s) become ungrouped. ` +
+    `No agent, conversation, or file is deleted.`;
+  deleteGroupModalEl.classList.remove("hidden");
+}
+
+document.getElementById("cancel-delete-group-btn").addEventListener("click", () => {
+  deleteGroupModalEl.classList.add("hidden");
+  deletingGroupId = null;
+});
+
+confirmDeleteGroupBtn.addEventListener("click", async () => {
+  if (deletingGroupId) {
+    const doomed = groupsDoc.groups.find((g) => g.id === deletingGroupId);
+    // Re-parent any child groups up to the deleted group's own parent so they
+    // aren't orphaned (only reachable via a future nested-group UI, but cheap
+    // to get right now).
+    for (const g of groupsDoc.groups) {
+      if (g.parentId === deletingGroupId) g.parentId = doomed ? doomed.parentId : null;
+    }
+    groupsDoc.groups = groupsDoc.groups.filter((g) => g.id !== deletingGroupId);
+  }
+  deleteGroupModalEl.classList.add("hidden");
+  deletingGroupId = null;
+  await saveGroupsDoc();
+});
+
+// ----------------------------------------------- agent instructions modal --
+
+const instructionsModalEl = document.getElementById("instructions-modal");
+const instructionsModalTitleEl = document.getElementById("instructions-modal-title");
+const instructionsTextareaEl = document.getElementById("instructions-textarea");
+const instructionsCountEl = document.getElementById("instructions-count");
+const saveInstructionsBtn = document.getElementById("save-instructions-btn");
+
+let instructionsAgent = null; // { path, displayName, folderName }
+let instructionsBaseMtime = null;
+
+function instructionsTemplate(name) {
+  return (
+    `# ${name || "Agent"} — standing instructions\n\n` +
+    `## Identity\n` +
+    `What this agent is responsible for, in a sentence or two.\n\n` +
+    `## Scope\n` +
+    `- What it owns / monitors / works on\n` +
+    `- What is explicitly out of scope\n\n` +
+    `## Reporting & coordination\n` +
+    `- Who it reports to\n` +
+    `- Which other agents it coordinates with, and on what\n\n` +
+    `## Autonomy\n` +
+    `- What it may do on its own\n` +
+    `- What it must ask about first\n\n` +
+    `## Output & cadence\n` +
+    `- What it produces, and when (e.g. a daily report at 08:00)\n`
+  );
+}
+
+function updateInstructionsCount() {
+  const v = instructionsTextareaEl.value;
+  const lines = v ? v.split("\n").length : 0;
+  const chars = v.length;
+  let s = `${lines} line${lines === 1 ? "" : "s"} · ${chars.toLocaleString()} char${chars === 1 ? "" : "s"}`;
+  if (chars > 8000) s += " · large files cost context on every session";
+  instructionsCountEl.textContent = s;
+}
+
+async function openInstructionsModal(agent) {
+  instructionsAgent = agent;
+  instructionsModalTitleEl.textContent = `Instructions — ${agent.displayName}`;
+  instructionsTextareaEl.value = "Loading…";
+  instructionsTextareaEl.disabled = true;
+  saveInstructionsBtn.disabled = true;
+  instructionsModalEl.classList.remove("hidden");
+  try {
+    const res = await window.api.readInstructions(agent.path);
+    instructionsBaseMtime = res.mtimeMs;
+    instructionsTextareaEl.value = res.content || "";
+  } catch (e) {
+    instructionsTextareaEl.value = "";
+    instructionsBaseMtime = null;
+    alert("Could not read this agent's CLAUDE.md: " + e.message);
+  }
+  instructionsTextareaEl.disabled = false;
+  saveInstructionsBtn.disabled = false;
+  updateInstructionsCount();
+  instructionsTextareaEl.focus();
+}
+
+instructionsTextareaEl.addEventListener("input", updateInstructionsCount);
+
+document.getElementById("cancel-instructions-btn").addEventListener("click", () => {
+  instructionsModalEl.classList.add("hidden");
+  instructionsAgent = null;
+});
+
+document.getElementById("instructions-template-btn").addEventListener("click", () => {
+  const tpl = instructionsTemplate(instructionsAgent && instructionsAgent.displayName);
+  if (instructionsTextareaEl.value.trim() && !confirm("Replace the current text with the template?")) return;
+  instructionsTextareaEl.value = tpl;
+  updateInstructionsCount();
+  instructionsTextareaEl.focus();
+});
+
+saveInstructionsBtn.addEventListener("click", async () => {
+  if (!instructionsAgent) return;
+  const agent = instructionsAgent;
+  const content = instructionsTextareaEl.value;
+  saveInstructionsBtn.disabled = true;
+  try {
+    let res = await window.api.writeInstructions({
+      agentPath: agent.path,
+      content,
+      baseMtimeMs: instructionsBaseMtime,
+    });
+    if (res && res.conflict) {
+      const overwrite = confirm(
+        "This agent's CLAUDE.md changed on disk since you opened it (Claude may have edited it, " +
+          "or it was changed elsewhere).\n\nOK = overwrite with your version.\nCancel = discard your " +
+          "changes and reload the current file."
+      );
+      if (!overwrite) {
+        instructionsTextareaEl.value = res.content || "";
+        instructionsBaseMtime = res.mtimeMs;
+        updateInstructionsCount();
+        saveInstructionsBtn.disabled = false;
+        return;
+      }
+      res = await window.api.writeInstructions({ agentPath: agent.path, content, force: true });
+    }
+    instructionsBaseMtime = res && res.mtimeMs ? res.mtimeMs : instructionsBaseMtime;
+    instructionsModalEl.classList.add("hidden");
+    instructionsAgent = null;
+    // If this was the selected agent, the "no instructions" nudge may now be stale.
+    if (activeAgentPath === agent.path) updateNoInstructionsBanner(agent);
+  } catch (e) {
+    alert("Could not save: " + e.message);
+  } finally {
+    saveInstructionsBtn.disabled = false;
+  }
+});
+
+// --- "this agent has no instructions" nudge in the chat view --------------
+
+const noInstructionsBannerEl = document.getElementById("no-instructions-banner");
+
+function instructionsBannerDismissKey(folderName) {
+  return "instrBannerDismissed:" + folderName;
+}
+
+async function updateNoInstructionsBanner(agent) {
+  if (!agent) {
+    noInstructionsBannerEl.classList.add("hidden");
+    return;
+  }
+  let show = false;
+  if (!localStorage.getItem(instructionsBannerDismissKey(agent.folderName))) {
+    try {
+      const res = await window.api.readInstructions(agent.path);
+      show = !res.exists || !String(res.content).trim();
+    } catch (e) {
+      show = false;
+    }
+  }
+  // Ignore a result that arrived after the user moved to a different agent.
+  if (activeAgentPath !== agent.path) return;
+  noInstructionsBannerEl.classList.toggle("hidden", !show);
+  requestAnimationFrame(refitActiveTerminal); // banner changes chat-view height
+}
+
+document.getElementById("add-instructions-btn").addEventListener("click", () => {
+  const agent = agents.find((a) => a.path === activeAgentPath);
+  if (agent) openInstructionsModal(agent);
+});
+
+document.getElementById("dismiss-instructions-banner-btn").addEventListener("click", () => {
+  const agent = agents.find((a) => a.path === activeAgentPath);
+  if (agent) localStorage.setItem(instructionsBannerDismissKey(agent.folderName), "1");
+  noInstructionsBannerEl.classList.add("hidden");
+  requestAnimationFrame(refitActiveTerminal);
+});
+
+// ------------------------------------------------------- delete agent --
+
+const deleteAgentModalEl = document.getElementById("delete-agent-modal");
+const deleteAgentWarningEl = document.getElementById("delete-agent-warning");
+const deleteAgentConfirmInputEl = document.getElementById("delete-agent-confirm-input");
+const confirmDeleteAgentBtn = document.getElementById("confirm-delete-agent-btn");
+let deletingAgent = null;
+
+// A `claude --bg` dispatch also spawns a separate, longer-lived "daemon"
+// helper process that can keep its own handle on the agent's folder for a
+// while after the agent session itself has been stopped - confirmed
+// directly, live: deleting right after actually using an agent could hit
+// "EBUSY: resource busy or locked" even with main.js's own retry logic
+// already widened to ~11s. Rather than keep guessing at exact timings
+// server-side, this makes the wait visible and unconditional instead -
+// simpler and more honest than a silent background retry that might still
+// occasionally surface a scary error. 30s is a starting estimate, not a
+// measured minimum - bump it if it still proves too short in practice.
+const DELETE_AGENT_COUNTDOWN_SECONDS = 30;
+let deleteAgentCountdownTimer = null;
+let deleteAgentCountdownRemaining = 0;
+
+function updateDeleteAgentButtonState() {
+  if (deleteAgentCountdownRemaining > 0) {
+    confirmDeleteAgentBtn.disabled = true;
+    confirmDeleteAgentBtn.textContent = `Delete permanently (${deleteAgentCountdownRemaining}s)`;
+    return;
+  }
+  confirmDeleteAgentBtn.textContent = "Delete permanently";
+  confirmDeleteAgentBtn.disabled = !deletingAgent || deleteAgentConfirmInputEl.value.trim() !== deletingAgent.displayName;
+}
+
+function openDeleteAgentModal(agent) {
+  deletingAgent = agent;
+  deleteAgentWarningEl.textContent =
+    `This permanently deletes "${agent.displayName}" and its entire conversation history/archive. This cannot be undone.`;
+  deleteAgentConfirmInputEl.value = "";
+  deleteAgentModalEl.classList.remove("hidden");
+  deleteAgentConfirmInputEl.focus();
+
+  clearInterval(deleteAgentCountdownTimer);
+  deleteAgentCountdownRemaining = DELETE_AGENT_COUNTDOWN_SECONDS;
+  updateDeleteAgentButtonState();
+  deleteAgentCountdownTimer = setInterval(() => {
+    deleteAgentCountdownRemaining -= 1;
+    if (deleteAgentCountdownRemaining <= 0) clearInterval(deleteAgentCountdownTimer);
+    updateDeleteAgentButtonState();
+  }, 1000);
+}
+
+document.getElementById("cancel-delete-agent-btn").addEventListener("click", () => {
+  clearInterval(deleteAgentCountdownTimer);
+  deleteAgentModalEl.classList.add("hidden");
+  deletingAgent = null;
+});
+
+// Exact-match, case-sensitive - deliberate extra friction for a genuinely
+// irreversible action, not just a click-through confirm dialog.
+deleteAgentConfirmInputEl.addEventListener("input", updateDeleteAgentButtonState);
+
+confirmDeleteAgentBtn.addEventListener("click", async () => {
+  if (!deletingAgent) return;
+  const agentPath = deletingAgent.path;
+  try {
+    await window.api.deleteAgent(agentPath);
+    deleteAgentModalEl.classList.add("hidden");
+    deletingAgent = null;
+    if (activeAgentPath === agentPath) {
+      // The active session's terminal object now points at a deleted
+      // folder - drop it entirely rather than leaving a dangling reference
+      // that could still try to write/resize against a gone directory.
+      terminals.delete(agentPath);
+      activeAgentPath = null;
+      chatViewEl.classList.add("hidden");
+      emptyStateEl.classList.remove("hidden");
+    }
+    await loadAgents();
+  } catch (e) {
+    alert("Could not delete agent: " + e.message);
+  }
+});
+
+// ------------------------------------------------------------- chat input --
+
+const CHAT_INPUT_DEFAULT_HEIGHT = 56;
+const CHAT_INPUT_MIN_HEIGHT = 44;
+
+function setChatInputHeight(px) {
+  const maxHeight = window.innerHeight * 0.7;
+  const clamped = Math.max(CHAT_INPUT_MIN_HEIGHT, Math.min(px, maxHeight));
+  chatInputEl.style.height = clamped + "px";
+  // The terminal only redraws its canvas when explicitly told to - without
+  // this, resizing the input box leaves the terminal's old, larger canvas
+  // sitting there and getting visually covered rather than shrinking to fit.
+  refitActiveTerminal();
+}
+
+// Grow the compose box to fit what's typed, like a normal chat input, so a
+// long message isn't cramped into ~2 lines. Caps at 60% of the window
+// (past that the textarea scrolls internally); the manual drag handle can
+// still take it larger. If the user has dragged it to a size they want,
+// that height becomes a floor auto-grow never shrinks below - only send
+// (which resets the box) clears that floor.
+let chatInputManualFloor = 0;
+
+function autoGrowChatInput() {
+  const cap = window.innerHeight * 0.6;
+  const floor = Math.max(CHAT_INPUT_DEFAULT_HEIGHT, chatInputManualFloor);
+  chatInputEl.style.height = "auto"; // let scrollHeight report the real content height
+  const needed = chatInputEl.scrollHeight;
+  chatInputEl.style.height = Math.max(floor, Math.min(needed, cap)) + "px";
+  // Any change to #chat-input-bar's height must refit the terminal, and it
+  // must be on the next frame (a synchronous fit() can still measure the
+  // pre-change layout) - the recurring lesson in this file.
+  requestAnimationFrame(refitActiveTerminal);
+}
+
+// ---------------------------------------------------------- attachments --
+
+// Dropped or pasted images/files show up as small removable thumbnail chips
+// above the textarea, matching how a normal chat interface previews an
+// attachment before send, rather than sitting in the textarea as raw quoted
+// path text. Per-agent since v1.64.3 (see composeDrafts in selectAgent).
+let pendingAttachments = []; // { path, previewUrl }
+
+function mimeToExt(mime) {
+  const map = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp" };
+  return map[mime] || "png";
+}
+
+function renderAttachments() {
+  chatAttachmentsEl.innerHTML = "";
+  chatAttachmentsEl.classList.toggle("hidden", pendingAttachments.length === 0);
+  // The attachment row appearing/disappearing changes #chat-input-bar's
+  // height, and the terminal never re-measures itself on its own when a
+  // neighboring element resizes (same lesson as the chat-input resize
+  // handle above) - without this, the terminal keeps rendering at its old,
+  // taller row count and its own native status line ends up overlapping
+  // this app's UI instead of staying safely behind #terminal-bottom-mask.
+  // Deferred a frame, same reason showTerminalFor() defers its own fit()
+  // call - calling fit() synchronously right after toggling the class can
+  // still measure the pre-toggle layout, since the browser hasn't
+  // necessarily applied it yet at that exact point in the script.
+  requestAnimationFrame(refitActiveTerminal);
+  pendingAttachments.forEach((att, index) => {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+
+    if (att.previewUrl) {
+      const img = document.createElement("img");
+      img.src = att.previewUrl;
+      chip.appendChild(img);
+    } else {
+      const fallback = document.createElement("div");
+      fallback.className = "attachment-name-fallback";
+      fallback.textContent = att.path.split(/[\\/]/).pop();
+      chip.appendChild(fallback);
+    }
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "attachment-remove-btn";
+    removeBtn.title = "Remove";
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => removeAttachmentAt(index));
+    chip.appendChild(removeBtn);
+
+    chatAttachmentsEl.appendChild(chip);
+  });
+}
+
+function addAttachment(filePath, previewUrl) {
+  pendingAttachments.push({ path: filePath, previewUrl });
+  renderAttachments();
+  chatInputEl.focus();
+}
+
+function removeAttachmentAt(index) {
+  const [removed] = pendingAttachments.splice(index, 1);
+  if (removed && removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+  renderAttachments();
+}
+
+function clearAttachments() {
+  for (const att of pendingAttachments) {
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+  }
+  pendingAttachments = [];
+  renderAttachments();
+}
+
+// Sending a whole composed message plus its trailing "\r" as ONE fast,
+// synchronous write gets misread by Claude Code's CLI as a paste rather than
+// typed text followed by a real Enter keystroke - confirmed directly against
+// the session's own JSONL transcript, where a failed submission showed up as
+// a single message with a literal "\r" embedded in the middle of it instead
+// of actually submitting. Splitting the Enter into its own separately-timed
+// write, a beat after the text, mimics a human pasting then pressing Enter
+// and reliably triggers real submission instead of being swallowed as more
+// pasted content.
+//
+// Also renders the message immediately (optimistically, before the pty has
+// echoed anything back) and marks the session busy right away, rather than
+// waiting for the CLI's own echo + a debounced rebuild to surface it - that
+// round trip can take several real seconds, which otherwise looks exactly
+// like a blank, possibly-stuck screen with no feedback at all.
+function submitToAgent(agentPath, text, opts) {
+  // v1.96.0: an app send is text, never key sequences. Same character class as src/pasteText.js (kept identical, a test
+  // checks it): drops ESC, C0 controls except tab / newline / CR, DEL and C1 (incl. the 8-bit CSI), so no message (wake
+  // reason, Library, PHEME, compose) can end the bracketed paste early and have the rest read as typed keys.
+  text = String(text == null ? "" : text).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+  const session = terminals.get(agentPath);
+  if (session) {
+    // Single Date.now() call: addedAt and sentAt must actually be equal at
+    // creation (sentAt never moves; addedAt is pushed forward by the
+    // still-writing check in rebuildChatView()) - two separate calls could
+    // return different milliseconds on a slow tick and break that invariant
+    // from the start.
+    const now = Date.now();
+    if (opts && opts.entry && session.pendingSent.includes(opts.entry)) {
+      // v1.68.0: the bubble was already drawn the instant Send was pressed; the delivery decision caught up now
+      Object.assign(opts.entry, { text, addedAt: now, sentAt: now, midTurn: !!opts.midTurn, provisional: false });
+    } else {
+      session.pendingSent.push({ text, addedAt: now, sentAt: now, midTurn: !!(opts && opts.midTurn) });
+    }
+    if (!(opts && opts.midTurn)) session.turnStartedAt = now;
+    markActivity(agentPath, session);
+    if (agentPath === activeAgentPath) {
+      // session.lastBlocks (cached by the last successful rebuildChatView())
+      // rather than fetching fresh here - this needs to render synchronously,
+      // instantly, at the moment Send is clicked, not after another IPC
+      // round-trip. A real rebuild is already scheduled by markActivity()
+      // above once the pty actually reacts, so this is just the immediate,
+      // optimistic frame - it's fine if it's using a render that's a beat old.
+      renderChatBlocks(session.lastBlocks || [], session.pendingSent, { forceBottom: true });
+      updateThinkingIndicator();
+    }
+  }
+  // 2026-09-20: wrap in bracketed-paste escape codes (\x1b[200~ ... \x1b[201~) -
+  // the standard terminal mechanism that tells a receiving program "this
+  // whole block is one paste, not individual keystrokes". A raw write
+  // without this is exactly what a real terminal emulator never sends for
+  // an actual user paste, and is very likely the real reason Claude Code's
+  // own CLI has been unable to reliably tell a longer message apart from
+  // fast typing all session - chunking the write (v1.28.0) and splitting
+  // into pieces (v1.30.0) both worked AROUND that ambiguity rather than
+  // resolving it; this addresses it the way a real terminal already would.
+  //
+  // 2026-09-21: caught live via a controlled test (Testing agent, GuideTool
+  // watching) - even with the whole bracket-wrapped block sent as one
+  // synchronous write, the trailing END marker itself could arrive corrupted:
+  // a "Q7" message sent with END-MARKER-Q7 as its last content came out the
+  // other end, in the CLI's OWN stored transcript (not just the UI), as
+  // "END-MARKER-Q701~" - the ESC/[/2 prefix of \x1b[201~ was consumed
+  // silently but the trailing "01~" leaked through as three literal
+  // characters appended straight onto the real content. Most likely
+  // explanation: the terminator landed glued onto the tail of one large
+  // write, and whatever's on the reading end (Claude Code's own key-sequence
+  // parser, disambiguating a lone ESC keypress from the start of a longer
+  // sequence) partially timed out mid-parse before the rest of the six-byte
+  // marker arrived. Fix: give the end marker its own short, isolated write -
+  // a small gap after the content and before the marker, so it's never
+  // sharing a single low-level write with a large content blob, then the
+  // existing gap before "\r". Needs the same live-test confirmation this
+  // caught the bug with before it's trusted further.
+  // v1.65.0: one write sequence per session at a time (overlapping sends corrupt each other, v1.27.1)
+  const sentEntry = session && session.pendingSent[session.pendingSent.length - 1];
+  const entryRef = (opts && opts.entry) || sentEntry;
+  writeQueued(session, () => new Promise((resolve) => {
+    // v1.69.4: text ending in a backslash + Enter inserts a newline instead of submitting: one trailing space avoids it
+    window.api.sendInput(agentPath, "\x1b[200~" + (/\\$/.test(text) ? text + " " : text), { app: true }); // app: a message from this send path (arms the stuck-Enter check), not keystrokes typed in the Terminal tab
+    setTimeout(() => {
+      window.api.sendInput(agentPath, "\x1b[201~");
+      setTimeout(() => {
+        window.api.sendInput(agentPath, "\r");
+        // v1.68.0: "sent" tick on the pending bubble (static, no animation)
+        if (entryRef && entryRef.text === text && session && session.pendingSent.includes(entryRef)) {
+          entryRef.written = true;
+          if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+        }
+        setTimeout(() => scheduleRebuildChatView(agentPath), 350); // the CLI writes its receipt within ~1 s: show it promptly
+        resolve();
+      }, 200); // was 80: a slow CLI read the shorter gap as one chunk
+    }, 30);
+  }));
+}
+
+// v1.68.1: main's stuck-Enter check asks the renderer to press Enter so it goes through the per-session write chain
+try {
+  window.api.onPressEnter(({ agentPath }) => {
+    const s = terminals.get(agentPath);
+    if (s) writeQueued(s, () => window.api.sendInput(agentPath, "\r"));
+  });
+} catch (e) { /* older preload */ }
+
+// v1.69.4: the stuck-message recovery ladder (connectionHealth.js) types its keys here, one chain with the messages
+try {
+  window.api.onSendKeys(({ agentPath, steps }) => {
+    const s = terminals.get(agentPath);
+    if (!s || !Array.isArray(steps)) return;
+    writeQueued(s, async () => {
+      for (const st of steps) {
+        // v1.69.4: Ctrl+C is asked from main right before it is typed (agent idle, text in the box, none in the last 10 s)
+        if (st.guard === "ctrlc") { let ok = false; try { ok = await window.api.canSendCtrlC(agentPath, st.snippet); } catch (e) {} if (!ok) break; }
+        window.api.sendInput(agentPath, String(st.data));
+        if (st.wait > 0) await new Promise((r) => setTimeout(r, st.wait));
+      }
+    });
+  });
+} catch (e) { /* older preload */ }
+
+// v1.77.4 PHEME delivery: main asks which agent is on screen and hands over dictated text (src/phemeDelivery.js).
+// "Selected" means: an agent chat is showing (not My Daily / ARGUS / Links / Library / Memory, not the empty state) and its
+// session has started. The text then goes through the SAME path as the Send button (sendOrHold -> submitToAgent), including the
+// long-message file hand-off, the busy-agent queue and the pending bubble; main verifies it landed.
+const PHEME_OVERLAY_CLASSES = ["argus-open", "daily-open", "health-open", "iris-open", "library-open", "memory-open", "tools-open", "finance-open", "research-open"];
+function phemeSelected() {
+  if (!activeAgentPath) return { ok: false, reason: "no-agent-selected" };
+  if (chatViewEl.classList.contains("hidden") || PHEME_OVERLAY_CLASSES.some((c) => document.body.classList.contains(c))) {
+    return { ok: false, reason: "not-an-agent-chat (My Daily, ARGUS or another view is showing)" };
+  }
+  const a = agents.find((x) => x.path === activeAgentPath);
+  const session = terminals.get(activeAgentPath);
+  if (!session || !session.started) return { ok: false, reason: "chat-not-started", agent: a && a.displayName };
+  return { ok: true, agentPath: activeAgentPath, name: (a && a.displayName) || activeAgentPath.split(/[\/]/).pop() };
+}
+async function phemeSend(text, expectPath) {
+  const sel = phemeSelected();
+  if (!sel.ok) return sel;
+  if (sel.agentPath !== expectPath) return { ok: false, reason: "selection-changed" };
+  const agentPath = sel.agentPath;
+  const session = terminals.get(agentPath);
+  // v1.101.0 (re-review F1): a dictated message is his newest instruction: an older lost compose message is never
+  // re-sent automatically after it (it gets a Retry button instead)
+  try { if (window.outbox && window.outbox.noteSend) window.outbox.noteSend(agentPath, "a later PHEME message"); } catch (e) {}
+  let entry = null;
+  if (session.sendQueue.length === 0 && !(window.guardsAgentInFlow && window.guardsAgentInFlow(agentPath)) &&
+      !(window.connHealth && window.connHealth.holding && window.connHealth.holding(agentPath))) {
+    const nowP = Date.now();
+    entry = { text, addedAt: nowP, sentAt: nowP, midTurn: false, provisional: true };
+    session.pendingSent.push(entry);
+    renderChatBlocks(session.lastBlocks || [], session.pendingSent, { forceBottom: true });
+  }
+  let how = null, sentText = text;
+  const run = async () => {
+    let toSend = text;
+    if (text.length > LONG_MESSAGE_FILE_THRESHOLD) {
+      try {
+        const filePath = await window.api.saveLongMessage(text);
+        toSend = `This message was too long to paste directly, so it was saved to a file - please read it: "${filePath}"`;
+        longMessageCache.set(filePath, text);
+      } catch (e) { console.error("[agent-desktop] pheme saveLongMessage failed - sending inline instead:", e); }
+    }
+    sentText = toSend;
+    how = await sendOrHold(agentPath, session, toSend, entry);
+  };
+  const prev = session.sendChain || Promise.resolve();
+  const mine = prev.then(run).catch((e) => {
+    if (entry && session.pendingSent.includes(entry)) { // never leave a bubble for a message that was not sent
+      session.pendingSent = session.pendingSent.filter((p) => p !== entry);
+      if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+    }
+    throw e;
+  });
+  session.sendChain = mine.catch(() => {});
+  try { await mine; } catch (e) { return { ok: false, reason: "send-failed: " + (e && e.message) }; }
+  const held = how === "held" || (typeof how === "string" && how !== "sent" && how !== "midturn");
+  return { ok: true, how: held ? "held" : how, sentText };
+}
+try {
+  window.api.onPhemeRequest(async (req) => {
+    let result;
+    try {
+      if (req.kind === "selected") result = phemeSelected();
+      else if (req.kind === "send") result = await phemeSend(String(req.text || ""), req.expectPath);
+      else result = { ok: false, reason: "unknown-request" };
+    } catch (e) { result = { ok: false, reason: "renderer-error: " + (e && e.message) }; }
+    window.api.phemeReply(req.id, result);
+  });
+} catch (e) { /* older preload */ }
+
+// v1.113.0 voice inbox (src/voiceInbox.js). Part 1: tell main which agent is selected (written to <userData>\active-agent.json) so
+// PHEME can pin the agent when the dictation STARTS. Event driven only: selectAgent() and a class observer on <body> / the chat view.
+let lastAnnouncedSel = "";
+function announceActiveAgent() {
+  try {
+    if (!window.api || typeof window.api.activeAgentChanged !== "function") return;
+    const a = activeAgentPath ? agents.find((x) => x.path === activeAgentPath) : null;
+    const chat = !!activeAgentPath && !chatViewEl.classList.contains("hidden") && !PHEME_OVERLAY_CLASSES.some((c) => document.body.classList.contains(c));
+    const sel = { path: activeAgentPath || null, name: a ? a.displayName : "", view: chat ? "chat" : "other" };
+    const k = JSON.stringify(sel);
+    if (k === lastAnnouncedSel) return;
+    lastAnnouncedSel = k;
+    window.api.activeAgentChanged(sel);
+  } catch (e) { /* diagnostics only: dictation then falls back to the old behaviour */ }
+}
+try {
+  const mo = new MutationObserver(() => announceActiveAgent());
+  mo.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  mo.observe(chatViewEl, { attributes: true, attributeFilter: ["class"] });
+  setTimeout(announceActiveAgent, 0);
+} catch (e) { /* no observer: selectAgent still announces */ }
+// Part 2: deliver a dictation to the agent it was ADDRESSED to (never "whatever is visible"): outbox item (proof, retry, Not
+// delivered + Retry/Dismiss) + the same sendOrHold path as the compose box; the visible agent, its draft and focus are untouched.
+async function voiceInboxDeliver(req) {
+  const agentPath = String(req.agentPath || ""), text = String(req.text || "");
+  if (!agentPath || !text.trim()) return { ok: false, reason: "empty-request" };
+  for (let i = 0; i < 40 && !(Array.isArray(agents) && agents.length); i++) await sleep(500); // startup: wait for the roster
+  const agent = agents.find((x) => x.path === agentPath);
+  if (!agent) return { ok: false, reason: "agent-not-in-list" };
+  if (agent.paused) return { ok: false, reason: "agent-paused", agent: agent.displayName };
+  let session = terminals.get(agentPath);
+  if (!session || !session.started) {
+    // a never-wake agent (Health, Finance, ...) is only dictated to while its session is already running: a dropped file must not start it
+    if (req.neverWake) return { ok: false, reason: "never-wake-agent-not-running (" + req.neverWake + ")", agent: agent.displayName };
+    const attached = await attachSessionInBackground(agent);
+    if (!attached) return { ok: false, reason: "could-not-start-session", agent: agent.displayName };
+    session = terminals.get(agentPath);
+    if (!session) return { ok: false, reason: "no-session", agent: agent.displayName };
+  }
+  const obId = window.outbox ? window.outbox.add(agentPath, text) : null; // supersedes his older lost compose message, like the compose box
+  let entry = null;
+  if (session.started && session.sendQueue.length === 0 && !(window.guardsAgentInFlow && window.guardsAgentInFlow(agentPath)) &&
+      !(window.connHealth && window.connHealth.holding && window.connHealth.holding(agentPath))) {
+    const nowP = Date.now();
+    entry = { text, addedAt: nowP, sentAt: nowP, midTurn: false, provisional: true, obId };
+    session.pendingSent.push(entry);
+    if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {}); // only when that agent is the one on screen
+  }
+  let how = null;
+  const run = async () => {
+    let toSend = text;
+    if (text.length > LONG_MESSAGE_FILE_THRESHOLD) {
+      try {
+        const filePath = await window.api.saveLongMessage(text);
+        toSend = `This message was too long to paste directly, so it was saved to a file - please read it: "${filePath}"`;
+        longMessageCache.set(filePath, text);
+      } catch (e) { console.error("[agent-desktop] voice inbox saveLongMessage failed - sending inline instead:", e); }
+    }
+    try {
+      if (obId) window.outbox.bind(obId, toSend);
+      how = await sendOrHold(agentPath, session, toSend, entry);
+    } finally {
+      if (obId) window.outbox.dispatched(obId);
+    }
+  };
+  const prev = session.sendChain || Promise.resolve();
+  const mine = prev.then(run);
+  session.sendChain = mine.catch(() => {});
+  try { await mine; } catch (e) {
+    if (entry && session.pendingSent.includes(entry)) {
+      session.pendingSent = session.pendingSent.filter((p) => p !== entry);
+      if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+    }
+    if (obId && !(entry && entry.written)) window.outbox.cancel(obId);
+    return { ok: false, reason: "send-failed: " + ((e && e.message) || e), agent: agent.displayName };
+  }
+  return { ok: true, agent: agent.displayName, how: how === "held" ? "queued" : (how || "sent") };
+}
+try {
+  window.api.onVoiceInbox(async (req) => {
+    let result;
+    try { result = await voiceInboxDeliver(req); } catch (e) { result = { ok: false, reason: "renderer-error: " + ((e && e.message) || e) }; }
+    window.api.voiceInboxReply(req.id, result);
+  });
+} catch (e) { /* older preload */ }
+
+// v1.96.0 wake-agent: main has already checked caller, never-wake list, throttle and rate limit; this only starts the agent's
+// session in the background (no tab switch, no focus, no draft touched) and hands it the reason, like the Library send.
+try {
+  window.api.onWakeRequest(async (req) => {
+    let result;
+    try {
+      const agent = agents.find((a) => a.path === req.agentPath);
+      if (!agent) result = { ok: false, reason: "agent-not-in-list" };
+      else if (agent.paused) result = { ok: false, reason: "agent-paused" };
+      else {
+        const s0 = terminals.get(agent.path);
+        if (s0 && s0.started && (s0.busy || s0.transcriptWorking)) result = { ok: true, woke: false, note: "already-working" };
+        else {
+          const wasStarted = !!(s0 && s0.started);
+          const r = await window.libraryBridge.send(agent.path, String(req.text || ""), "wake"); // an agent's note, not the owner's: supersedes nothing
+          result = r && r.ok ? { ok: true, woke: true, how: r.how, started: !wasStarted } : { ok: false, reason: (r && r.error) || "send-failed" };
+        }
+      }
+    } catch (e) { result = { ok: false, reason: "renderer-error: " + (e && e.message) }; }
+    window.api.wakeReply(req.id, result);
+  });
+} catch (e) { /* older preload */ }
+
+function writeQueued(session, fn) {
+  const prev = (session && session.writeChain) || Promise.resolve();
+  const run = prev.then(fn);
+  const settled = run.catch(() => {});
+  if (session) session.writeChain = settled;
+  return run;
+}
+
+// 2026-09-20: the owner's direct ask after the whole splitLongMessage() saga -
+// "find a working way to send the entire message in one go" - rather than
+// keep splitting into pieces (which itself turned out to have its own
+// failure modes: pieces getting merged by the CLI, a delay-based fix that
+// silently lost a piece entirely). Two real changes together: (1)
+// submitToAgent() below now wraps the text in bracketed-paste escape codes,
+// the actual standard mechanism for telling a terminal program "this is one
+// paste" - almost certainly the real fix, since a raw write without it is
+// exactly what a real terminal never sends for an actual user paste. (2)
+// anything still long enough to feel risky even bracketed - past this
+// threshold - is written to a file and the agent is asked to read it
+// instead of typing/pasting it at all (same reliable file-reference
+// mechanism a pasted image already uses), rather than typed/pasted in any
+// form. No more multi-piece splitting for anything in between.
+//
+// 2026-09-21: this threshold was dangerously too high. Live-bisected against
+// the Testing agent (GuideTool open, ground-truth-checked against the raw
+// transcript, not the UI): messages at 1000/2000/2200 chars landed clean,
+// but 2500/3000/5866 chars silently never reached the CLI at all - not
+// merely un-echoed but genuinely stuck, confirmed via `claude agents --json`
+// showing the process idle with nothing pending. Worse: those "lost"
+// messages weren't actually gone - restarting Agent Desktop (which
+// reattaches to the same still-running `claude --bg` process, per this
+// file's own architecture notes) caused the CLI to suddenly flush them all
+// at once as ONE garbled turn, with content dropped from the front/middle of
+// each and no separator between them - the exact "two messages collided"
+// symptom the owner independently reported the same night. Tried chunking
+// `writeToPtyChunked()`'s writes at a safe size with no artificial delay
+// (main.js, PTY_WRITE_CHUNK_SIZE) on the theory this was a single-write size
+// limit - retested at 2500 chars post-fix and it still failed identically,
+// which rules that theory out: this isn't about how Agent Desktop splits its
+// writes, it's a limit somewhere on Claude Code's own reading/input-widget
+// side that no write pattern from this app can route around. Matches almost
+// exactly what an earlier, pre-bracketed-paste measurement already found
+// (~1800 safe / ~2420+ fails, see the v1.30.0 changelog entry) - that
+// finding was real and never actually superseded by bracketed paste, it
+// just looked that way because most testing that night happened to stay
+// under this ceiling. Lowered to 1800 - safely under every confirmed-safe
+// measurement from both nights - so anything at real risk goes through the
+// proven-reliable file-handoff path instead of ever attempting the risky
+// raw-typing path near its failure boundary.
+//
+// 2026-09-22: 1800 was still wrong, and it cost the owner a real message. He
+// dictated ~1,359 characters to the Product Development Agent;
+// sent-messages.jsonl proves the FULL text reached this app's write path, and
+// the CLI still dropped its head - the message arrived starting mid-sentence
+// at "and you will be able to calculate...". 1,359 is comfortably under 1800,
+// so it took exactly the inline path that 1800 was meant to protect.
+//
+// The measurements above were made with synthetic single-line test strings.
+// Real dictated text is multi-paragraph, and the CLI's input handling clearly
+// fails much earlier on it, so the boundary is not one number worth chasing.
+// Set below the shortest real message known to have survived (558 chars, same
+// agent, same night) so the proven file-handoff path carries anything longer
+// than a few sentences. Being wrong in this direction costs a file reference
+// in the transcript; being wrong the other way loses what the owner actually said.
+const LONG_MESSAGE_FILE_THRESHOLD = 500;
+
+async function sendChatInput() {
+  const text = chatInputEl.value;
+  const attachmentText = pendingAttachments.map((a) => `"${a.path}"`).join(" ");
+  // 2026-09-20: joining with a plain space put a long message's very first
+  // characters right after a quoted image path with nothing but a space
+  // between them - e.g. `"C:\...\pasted-123.png" 1. My long discussion...`.
+  // Confirmed live, repeatedly, across multiple retries and app restarts: a
+  // long multi-paragraph message combined with a pasted-image attachment
+  // this way never reached the transcript at all, or arrived missing its
+  // own first characters ("Your message arrived without its start") - the owner
+  // lost real content to this twice. Root cause is inside Claude Code's own
+  // CLI input handling (out of this app's control), not confirmed further
+  // than that, but a newline instead of a space - putting the attachment
+  // reference unambiguously on its own line rather than run into the start
+  // of the message - is a low-risk change that gives the CLI a much less
+  // ambiguous boundary to parse, and matches how a person would naturally
+  // write "here's a file" then start a new line for the actual message.
+  const combined = [attachmentText, text].filter(Boolean).join("\n");
+  if (!combined.trim() || !activeAgentPath) return;
+  const agentPath = activeAgentPath; // pin - everything below is addressed to THIS agent even if the owner switches tabs
+  const t0 = performance.now();
+  const session = terminals.get(agentPath);
+
+  // v1.68.0 INSTANT SEND (the owner: it must feel like Claude Desktop). Before any await: draw the pending bubble and
+  // clear the compose box. Saving a long message to a file and the permission-prompt check are IPC round trips that
+  // can wait behind a busy main process; they now run behind the instant frame, in the same order as before.
+  let entry = null;
+  const obId = window.outbox ? window.outbox.add(agentPath, combined) : null; // v1.100.0: on disk until the transcript has it
+  if (session && session.started && session.sendQueue.length === 0 && !(window.guardsAgentInFlow && window.guardsAgentInFlow(agentPath)) &&
+      !(window.connHealth && window.connHealth.holding && window.connHealth.holding(agentPath))) {
+    const nowP = Date.now();
+    entry = { text: combined, addedAt: nowP, sentAt: nowP, midTurn: false, provisional: true, obId };
+    session.pendingSent.push(entry);
+    renderChatBlocks(session.lastBlocks || [], session.pendingSent, { forceBottom: true });
+  }
+  chatInputEl.value = "";
+  clearAttachments();
+  clearTimeout(composeDraftTimer);
+  parkComposeDraft(agentPath); // sent: drop this agent's saved draft (box is empty now)
+  chatInputManualFloor = 0; // a fresh message starts from the default size again
+  setChatInputHeight(CHAT_INPUT_DEFAULT_HEIGHT);
+  chatInputEl.focus();
+  if (session) session.term.scrollToBottom(); // xterm does not auto-follow once scrolled up (see below)
+  perfProbe("send_to_bubble", performance.now() - t0, "agent=" + agentPath.split(/[\\/]/).pop() + " len=" + combined.length);
+
+  // One delivery at a time per agent, in the order Send was pressed: with the box clearing instantly, two quick
+  // sends must not overtake each other while the first one's file save is still in flight.
+  const run = async () => {
+    let toSend = combined;
+    if (combined.length > LONG_MESSAGE_FILE_THRESHOLD) {
+      try {
+        const filePath = await window.api.saveLongMessage(combined);
+        toSend = `This message was too long to paste directly, so it was saved to a file - please read it: "${filePath}"`;
+        // Keep what he wrote, so every place this message is drawn - the queue,
+        // the optimistic bubble, and the confirmed one once the transcript has
+        // it - shows the message rather than the path, with no file read and no
+        // race. See longMessageCache for why that matters.
+        longMessageCache.set(filePath, combined);
+      } catch (e) {
+        console.error("[agent-desktop] saveLongMessage failed - sending inline instead:", e);
+      }
+    }
+    try {
+      if (obId) window.outbox.bind(obId, toSend);
+      await deliverChatMessage(agentPath, session, toSend, entry);
+    } finally {
+      if (obId) window.outbox.dispatched(obId); // v1.101.0 (S1): from now on the outbox may judge it (never requeued mid-Send)
+    }
+  };
+  if (session) {
+    const prev = session.sendChain || Promise.resolve();
+    const mine = prev.then(run).catch((e) => {
+      console.error("[agent-desktop] send failed:", e);
+      if (entry && session.pendingSent.includes(entry)) { // never leave a bubble for a message that was not sent
+        session.pendingSent = session.pendingSent.filter((p) => p !== entry);
+        if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+        // give him his text back - in the box of the agent it was typed for, and never when it was already written
+        // to the pty (that would invite a duplicate)
+        if (!entry.written) {
+          if (obId && (agentPath !== activeAgentPath || !chatInputEl.value)) window.outbox.cancel(obId); // he gets the text back: the outbox must not send it as well
+          if (agentPath === activeAgentPath) { if (!chatInputEl.value) chatInputEl.value = combined; }
+          else composeDrafts.set(agentPath, { text: combined, attachments: [] });
+        }
+      }
+    });
+    session.sendChain = mine;
+    await mine;
+  } else {
+    await run();
+  }
+}
+
+// v1.115.0 WAITING-FOR-YOU QUEUE: send a message to ONE named agent from the queue panel (renderer/waiting-queue.js). It is the same
+// delivery path as sendChatInput() (outbox entry, optimistic bubble, long-message file, one delivery at a time per agent via
+// sendChain, deliverChatMessage -> sendOrHold), so the message also appears in that agent's own conversation. Differences: it never
+// touches the compose box, and on a failed delivery it cancels the outbox entry and returns {ok:false} (nothing is put back anywhere).
+async function sendToAgentFromQueue(agentPath, combined) {
+  if (!agentPath || !String(combined || "").trim()) return { ok: false, error: "empty" };
+  // v1.117.1: an agent that is not running (stop icon) used to take the message into a queue that only shows when its chat is opened,
+  // so the answer seemed to vanish. the owner answering from the queue is an explicit act: start the agent in the background first.
+  let session = terminals.get(agentPath);
+  if (!session || !session.started) {
+    const ag = agents.find((x) => x.path === agentPath);
+    if (!ag) return { ok: false, error: "agent not in the list" };
+    if (ag.paused) return { ok: false, error: "this agent is paused" };
+    if (!(await attachSessionInBackground(ag))) return { ok: false, error: "could not start the agent" };
+    session = terminals.get(agentPath);
+  }
+  let entry = null;
+  const obId = window.outbox ? window.outbox.add(agentPath, combined) : null;
+  if (session && session.started && session.sendQueue.length === 0 && !(window.guardsAgentInFlow && window.guardsAgentInFlow(agentPath)) &&
+      !(window.connHealth && window.connHealth.holding && window.connHealth.holding(agentPath))) {
+    const nowP = Date.now();
+    entry = { text: combined, addedAt: nowP, sentAt: nowP, midTurn: false, provisional: true, obId };
+    session.pendingSent.push(entry);
+    if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, { forceBottom: true });
+  }
+  const run = async () => {
+    let toSend = combined;
+    if (combined.length > LONG_MESSAGE_FILE_THRESHOLD) {
+      try {
+        const filePath = await window.api.saveLongMessage(combined);
+        toSend = `This message was too long to paste directly, so it was saved to a file - please read it: "${filePath}"`;
+        longMessageCache.set(filePath, combined);
+      } catch (e) {
+        console.error("[agent-desktop] saveLongMessage failed - sending inline instead:", e);
+      }
+    }
+    try {
+      if (obId) window.outbox.bind(obId, toSend);
+      await deliverChatMessage(agentPath, session, toSend, entry);
+    } finally {
+      if (obId) window.outbox.dispatched(obId);
+    }
+  };
+  try {
+    if (session) {
+      const prev = session.sendChain || Promise.resolve();
+      const mine = prev.then(run);
+      session.sendChain = mine.catch(() => {});
+      await mine;
+    } else {
+      await run();
+    }
+    return { ok: true };
+  } catch (e) {
+    console.error("[agent-desktop] queue send failed:", e);
+    if (entry && session && session.pendingSent.includes(entry)) {
+      session.pendingSent = session.pendingSent.filter((p) => p !== entry);
+      if (agentPath === activeAgentPath) renderChatBlocks(session.lastBlocks || [], session.pendingSent, {});
+    }
+    if (obId && !(entry && entry.written)) window.outbox.cancel(obId);
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+window.queueSendToAgent = sendToAgentFromQueue;
+
+async function deliverChatMessage(agentPath, session, toSend, entry) {
+  // !session.started covers a real, confirmed-live bug: window.api.startTerminal()
+  // is only issued from a requestAnimationFrame callback in showTerminalFor()
+  // (deferred so layout has settled), so there's a brief real window, right
+  // after opening a brand-new agent (or any agent right after an app
+  // restart, before it's reattached), where the compose box is fully active
+  // but main.js's ptySessions map has no entry for this agent yet - not even
+  // the "starting" placeholder that normally queues input. A message sent
+  // in that window hit terminal-input's `if (!session) return` and vanished
+  // with zero trace (confirmed directly against a session's job-state file:
+  // spawned, cwd correct, but sat "idle - send a prompt to start" forever).
+  // Routing it through the same sendQueue used for a busy session closes
+  // this - see the matching .then() in showTerminalFor() that flushes it
+  // once the real session actually exists.
+  // 2026-09-23: `session.busy` alone is not enough to decide this. It comes
+  // from pty silence with IDLE_TIMEOUT_MS at 900ms, and a working agent goes
+  // quiet for longer than that in the gap between two tool calls - traced
+  // live on the Optimization agent, whose transcript logged a tool_result
+  // every 5-20 seconds for ten minutes while this flag flickered. Sending
+  // straight into that gap is how a message gets dropped by the CLI, which
+  // does not queue input arriving mid-turn. `transcriptWorking` comes from
+  // the transcript itself and stays true across those gaps, so an OR of the
+  // two is strictly safer: the cost of queueing an idle agent's message is a
+  // few hundred milliseconds (setBusy flushes the queue immediately), and the
+  // cost of sending into a busy one is losing what the owner wrote. When in doubt,
+  // queue.
+  if (session) {
+    // v1.65.0: a working agent now gets the message at its next step (sendOrHold); only a session that
+    // is not started, a permission prompt or a handoff flow still queue it in the app, and setBusy()
+    // / showTerminalFor()'s startTerminal().then() send it once the agent is free as before.
+    await sendOrHold(agentPath, session, toSend, entry);
+  } else {
+    submitToAgent(agentPath, toSend);
+  }
+  // (compose box clearing and scroll-to-bottom moved in front of the awaits in sendChatInput, v1.68.0)
+}
+
+chatInputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendChatInput();
+  }
+});
+
+// Auto-grow as the content changes (typing, paste, cut, undo).
+chatInputEl.addEventListener("input", autoGrowChatInput);
+
+sendInputBtn.addEventListener("click", sendChatInput);
+
+// Drives Claude Code's own native /voice dictation (Anthropic shipped this
+// directly in the CLI, https://code.claude.com/docs/en/voice-dictation)
+// rather than a custom speech-to-text pipeline. This button exists only to
+// make that gesture reachable without a physical keyboard (mobile is the
+// main reason - typing is painful there), not to reimplement speech
+// recognition.
+//
+// Rebuilt from scratch 2026-08-23 after live-diagnosing why it did nothing
+// even after fixing an earlier click-vs-hold bug (see the click listener
+// below) - the whole hold-simulation design this used to be was wrong, not
+// just the event wiring. Root-caused via the CLI's own real docs, not
+// guessed:
+//
+// 1. Bare "/voice" (what this used to send) is documented as "toggle on or
+//    off, KEEP THE CURRENT MODE" - not "enable it." Voice dictation state
+//    persists across CLI sessions (it's a real setting,
+//    voice.enabled/voice.mode), so sending bare "/voice" on every button
+//    press is a coin flip: exactly as likely to silently DISABLE dictation
+//    as to arm it, depending on whatever state a previous press left it
+//    in. This alone explains "sometimes/never works."
+// 2. Confirmed live, by reading the real pty buffer through this app's own
+//    driver skill: after arming and waiting past the old warmup delay, the
+//    buffer showed literal accumulated space CHARACTERS, not a live
+//    waveform. The CLI's own troubleshooting docs name this exact symptom
+//    verbatim: "If spaces keep accumulating, voice dictation is likely
+//    off." That's a direct, documented match, not a guess.
+// 3. The old design also tried to fake a REAL held key via a JS setInterval
+//    blasting literal space bytes at the pty - conceptually shaky even
+//    when dictation was correctly on, since Claude Code's hold-mode
+//    warmup/finalization behavior is tuned around genuine OS key-repeat
+//    timing, an extra source of flakiness worth avoiding entirely rather
+//    than tuning around.
+//
+// Round 2, still 2026-08-23: switched the fix above to `/voice tap` because
+// it needs no held-key simulation at all - live-verified end to end through
+// this app's own driver skill (real click, real xterm buffer read), and it
+// genuinely worked there. But the owner tested the real button afterward and
+// found clicking alone did nothing, while clicking AND ALSO physically
+// holding his own Space bar worked. That's the signature of tap mode never
+// actually landing in his real session (root cause not pinned down - some
+// timing/environment difference between the driver's test session and his
+// real one) and dictation silently sitting in its CLI-default HOLD mode
+// instead, where a single tap is documented to do exactly nothing useful
+// ("A single Space tap still types a space, since hold detection only
+// triggers on rapid repeat") while a REAL held key works precisely because
+// hold-mode detection is pattern-based on repeat timing, which only a
+// genuine physical hold reliably produces.
+//
+// Rather than keep chasing why tap mode wasn't landing, rebuilt around
+// hold mode instead - the CLI's own default, and the one just proven to
+// actually work in the owner's hands. This also happens to be much closer to
+// the very first (2026-08-21) design's instinct that a rapid-repeat
+// interval could stand in for a real held key - that instinct was right,
+// it was just undermined by the two real bugs fixed earlier tonight (no
+// Enter ever sent, and blindly toggling instead of setting the mode).
+// Combined with those fixes, simulating the hold via interval should now
+// actually work.
+const voiceInputBtn = document.getElementById("voice-input-btn");
+// Delay between each arm step below - gives the CLI's own live autocomplete
+// matcher a moment to catch up before the next input lands, rather than
+// racing consecutive writes into the same pty.
+const VOICE_STEP_DELAY_MS = 300;
+// Matches a physical keyboard's typical OS auto-repeat rate - what hold
+// mode's own detection is watching for ("rapid key-repeat events").
+const VOICE_HOLD_REPEAT_MS = 40;
+// Safety net - if the owner forgets to click stop, auto-stop rather than leaving
+// a live mic recording into a background pty indefinitely. Recording also
+// auto-stops after 15s of silence or 2 minutes per the CLI's own docs, so
+// this is a backstop on top of that, not the primary limit.
+const VOICE_MAX_HOLD_MS = 90000;
+let voiceHeld = false;
+let voiceHoldInterval = null;
+let voiceMaxHoldTimer = null;
+let voiceArmToken = 0; // bumped on every stop, so a stale delayed step from a prior click can't fire late
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Diagnosed live, 2026-08-23 (earlier the same investigation): this used to
+// be mousedown/mouseup (real hold-to-talk), and the owner hit it exactly as
+// designed - a normal click is mousedown immediately followed by mouseup,
+// both firing well under the old arm-delay, so the simulated held-key
+// signal never started. A hold-for-the-entire-sentence gesture also isn't
+// what a mic button trains anyone to expect - every mainstream voice-input
+// UI (Google, Siri, WhatsApp) is click-to-start/click-to-stop. Kept that
+// model - the button still only needs one click to start, one to stop; it's
+// the simulated key underneath that's now a held repeat instead of a tap.
+async function startVoiceHold() {
+  if (!activeAgentPath || voiceHeld) return;
+  voiceHeld = true;
+  voiceInputBtn.classList.add("recording");
+  const agentPath = activeAgentPath;
+  const token = voiceArmToken;
+  voiceMaxHoldTimer = setTimeout(stopVoiceHold, VOICE_MAX_HOLD_MS);
+
+  // Each step bails if stopped (or a newer click superseded this one) in
+  // the meantime, rather than continuing to poke a session nobody's
+  // waiting on anymore.
+  const stillArming = () => voiceHeld && token === voiceArmToken;
+
+  // Bare "/voice" toggles (unpredictable alone); "/voice hold" SETS hold
+  // mode outright. Sending both in sequence deterministically ends in hold
+  // mode enabled regardless of starting state, same reasoning as the tap-
+  // mode version above, just aimed at the mode that's actually proven to
+  // work. Both need a real Enter to execute (see the long comment above).
+  window.api.sendInput(agentPath, "/voice");
+  await sleep(VOICE_STEP_DELAY_MS);
+  if (!stillArming()) return;
+  window.api.sendInput(agentPath, "\r");
+  await sleep(VOICE_STEP_DELAY_MS);
+  if (!stillArming()) return;
+  window.api.sendInput(agentPath, "/voice hold");
+  await sleep(VOICE_STEP_DELAY_MS);
+  if (!stillArming()) return;
+  window.api.sendInput(agentPath, "\r");
+  await sleep(VOICE_STEP_DELAY_MS);
+  if (!stillArming()) return;
+  // Simulated held key - repeated space bytes at roughly OS auto-repeat
+  // rate, for as long as the button stays toggled on. Hold mode's own
+  // warmup consumes the first couple of these (documented: "The first
+  // couple of key-repeat characters type into the input during warmup and
+  // are removed automatically when recording activates"), so a short burst
+  // before the button is clicked again is expected and harmless.
+  voiceHoldInterval = setInterval(() => {
+    window.api.sendInput(agentPath, " ");
+  }, VOICE_HOLD_REPEAT_MS);
+}
+
+function stopVoiceHold() {
+  if (!voiceHeld) return;
+  voiceHeld = false;
+  voiceArmToken++;
+  voiceInputBtn.classList.remove("recording");
+  if (voiceHoldInterval) {
+    clearInterval(voiceHoldInterval);
+    voiceHoldInterval = null;
+  }
+  // Releasing the held key stops recording and finalizes the transcript
+  // into the prompt, but hold mode does NOT auto-submit by default (unlike
+  // tap mode) - "Claude Code inserts the transcript and waits for you to
+  // press Enter" unless autoSubmit is configured, which nothing here sets.
+  // A brief pause lets the CLI actually finalize the transcript before
+  // Enter lands, rather than submitting whatever was in the prompt a
+  // moment before recording stopped.
+  if (activeAgentPath) {
+    const agentPath = activeAgentPath;
+    setTimeout(() => window.api.sendInput(agentPath, "\r"), 400);
+  }
+  if (voiceMaxHoldTimer) {
+    clearTimeout(voiceMaxHoldTimer);
+    voiceMaxHoldTimer = null;
+  }
+}
+
+// v1.23.3: the mic button now records in the app itself and transcribes with Whisper (Cloudflare
+// Workers AI, see voice-main.js) instead of driving the CLI's /voice mode through the pty (which
+// posted the transcript immediately, mixed it into the hidden CLI input line, and could garble or
+// cut messages). Click = start, click again = stop -> the transcript lands in the compose box for
+// review/editing; nothing is sent until Enter/Send. The legacy pty-based path above is kept and
+// can be re-enabled with localStorage.setItem("voiceLegacy","1") (DevTools console) if needed.
+// Raised from 2 minutes to 10 on 2026-09-22 - the owner dictates longer messages
+// than the old cap allowed ("it stopped recording after maybe 30s or 1m - too
+// short - I sometimes record a longer message"). Only safe to raise because
+// the audio is now split into ~50s chunks before transcription; sending ten
+// minutes as one base64 JSON body would be several megabytes in a single
+// request. Still a backstop against a mic left recording by accident.
+const VOICE_REC_MAX_MS = 600000;
+let voiceRec = null; // { stream, recorder, chunks, timer }
+
+// Visible toast above the compose box (the placeholder alone was too easy to miss - a failed
+// transcription looked like "nothing happened").
+// v1.59.5: optional `action` ({ label, fn }) adds a button - used for Retry after a failed
+// transcription, so a long dictation is one click from recovery instead of lost.
+function voiceToast(msg, ms, isError, action) {
+  let t = document.getElementById("voice-toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "voice-toast";
+    t.style.cssText = "position:fixed;left:50%;bottom:110px;transform:translateX(-50%);max-width:70%;padding:10px 16px;border-radius:8px;font-size:14px;z-index:9999;box-shadow:0 2px 10px rgba(0,0,0,.25);color:#fff;";
+    document.body.appendChild(t);
+  }
+  t.style.background = isError ? "#b3261e" : "#2e6b3a";
+  t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.textContent = action.label;
+    b.style.cssText = "margin-left:12px;padding:3px 12px;border-radius:6px;border:1px solid #fff;background:transparent;color:#fff;cursor:pointer;font-size:14px;";
+    b.addEventListener("click", () => { t.style.display = "none"; action.fn(); });
+    t.appendChild(b);
+  }
+  t.style.display = "block";
+  clearTimeout(voiceToast._t);
+  if (ms) voiceToast._t = setTimeout(() => { t.style.display = "none"; }, ms);
+}
+
+function voiceNote(msg, ms, action) {
+  if (window.predictReplies) window.predictReplies.dismiss(); // the ghost reply borrows the placeholder; do not save it as the 'old' one
+  voiceToast(msg, ms, /error|could not|failed|used up|not found|nothing/i.test(msg), action);
+  const old = chatInputEl.dataset.voiceOldPlaceholder !== undefined ? chatInputEl.dataset.voiceOldPlaceholder : chatInputEl.placeholder;
+  chatInputEl.dataset.voiceOldPlaceholder = old;
+  chatInputEl.placeholder = msg;
+  clearTimeout(voiceNote._t);
+  voiceNote._t = setTimeout(() => {
+    chatInputEl.placeholder = chatInputEl.dataset.voiceOldPlaceholder;
+    delete chatInputEl.dataset.voiceOldPlaceholder;
+  }, ms || 6000);
+}
+
+// Cloudflare Workers AI takes the audio as base64 inside a single JSON POST,
+// so one long recording becomes one very large request: 16 kHz mono 16-bit is
+// ~32 KB per second, and base64 adds a third on top. A few minutes of speech
+// is therefore several megabytes in one body, which is why the recording cap
+// could not simply be raised when the owner asked for longer dictation
+// (2026-09-22: "it stopped recording after maybe 30s or 1m - too short").
+//
+// Splitting the PCM into chunks and transcribing them in sequence removes the
+// ceiling entirely: each request stays small no matter how long he speaks.
+// Chunks are cut on the quietest sample in a short search window near the
+// boundary, so the split lands in a pause rather than mid-word - a hard cut
+// every N seconds reliably clips a syllable and Whisper then mis-hears the
+// word on both sides of the join.
+const VOICE_CHUNK_SECONDS = 50;
+const VOICE_CHUNK_SEEK_SECONDS = 3; // how far back to hunt for a quiet point
+const VOICE_CHUNK_OVERLAP_SECONDS = 1.5;
+// Each chunk after the first replays the last VOICE_CHUNK_OVERLAP_SECONDS of
+// the previous one. A cut that lands mid-word otherwise gives Whisper half a
+// word at the end of one chunk and half at the start of the next, and it
+// either drops the word or emits it twice. With an overlap the word is intact
+// in at least one chunk, and the repeat is removed afterwards by
+// stitchTranscripts(). Tested 2026-09-22 by the owner counting 1-130 aloud: the
+// transcript came back missing 66 and 77 and with 110 twice - exactly that
+// shape of damage, though whether those fell on cuts was unprovable because
+// nothing logged where the cuts were. It does now.
+
+function encodeWav16k(pcm, rate) {
+  const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) out.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); out.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVEfmt "); out.setUint32(16, 16, true);
+  out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true); out.setUint32(28, rate * 2, true);
+  out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  const bytes = new Uint8Array(out.buffer);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// Index of the quietest sample within the last VOICE_CHUNK_SEEK_SECONDS before
+// `hardEnd`, measured as the smallest local energy over a 20 ms window.
+function quietestCut(pcm, hardEnd, rate) {
+  const seek = Math.min(Math.floor(VOICE_CHUNK_SEEK_SECONDS * rate), hardEnd);
+  if (seek <= 0) return hardEnd;
+  const win = Math.max(1, Math.floor(rate * 0.02));
+  let best = hardEnd;
+  let bestEnergy = Infinity;
+  for (let i = hardEnd - seek; i + win <= hardEnd; i += win) {
+    let energy = 0;
+    for (let j = i; j < i + win; j++) energy += Math.abs(pcm[j]);
+    if (energy < bestEnergy) { bestEnergy = energy; best = i + win; }
+  }
+  return best;
+}
+
+// Returns an array of base64 WAV chunks, in order. One element for a short
+// recording, several for a long one.
+// Joins transcribed chunks, removing the words the overlap caused to appear
+// twice. Compares the last words of one part against the first words of the
+// next and drops the longest run that matches, normalising case and
+// punctuation first so "110," and "110" count as the same word.
+//
+// Deliberately conservative: it only removes a repeat it can actually see. If
+// no overlap matches, the parts are joined untouched - a duplicated word is a
+// far smaller problem than silently deleting something the owner said.
+const VOICE_STITCH_MAX_WORDS = 12;
+
+function stitchTranscripts(parts) {
+  const norm = (w) => w.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return parts.reduce((acc, part) => {
+    if (!acc) return part;
+    const a = acc.trim().split(/\s+/);
+    const b = part.trim().split(/\s+/);
+    const max = Math.min(VOICE_STITCH_MAX_WORDS, a.length, b.length);
+    for (let n = max; n >= 2; n--) {
+      const tail = a.slice(a.length - n).map(norm).join(" ");
+      const head = b.slice(0, n).map(norm).join(" ");
+      if (tail && tail === head) return a.concat(b.slice(n)).join(" ");
+    }
+    return acc + " " + part;
+  }, "");
+}
+
+async function blobToPcm16k(blob) {
+  const buf = await blob.arrayBuffer();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(buf);
+  } finally {
+    ctx.close();
+  }
+  const rate = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  return (await off.startRendering()).getChannelData(0);
+}
+
+function pcmToWavChunks(pcm) {
+  const rate = 16000;
+  const chunkLen = VOICE_CHUNK_SECONDS * rate;
+  const overlap = Math.floor(VOICE_CHUNK_OVERLAP_SECONDS * rate);
+  const chunks = [];
+  const bounds = [];
+  let pos = 0;
+  while (pos < pcm.length) {
+    let end = Math.min(pos + chunkLen, pcm.length);
+    if (end < pcm.length) end = Math.max(pos + Math.floor(chunkLen / 2), quietestCut(pcm, end, rate));
+    const from = chunks.length === 0 ? pos : Math.max(0, pos - overlap);
+    chunks.push(encodeWav16k(pcm.subarray(from, end), rate));
+    bounds.push((end / rate).toFixed(1));
+    pos = end;
+  }
+  // Logged so a future oddity can be checked against where the cuts actually
+  // fell, instead of guessed at.
+  if (chunks.length > 1) {
+    console.log(`[voice] ${(pcm.length / rate).toFixed(1)}s split into ${chunks.length} chunks, cuts at ${bounds.slice(0, -1).join("s, ")}s`);
+  }
+  return chunks;
+}
+
+// v1.121.0: no speech engine on this computer and no online service: say so calmly (with a Set up button) BEFORE recording anything.
+const VOICE_SETUP_MSG = "Voice typing is not set up on this computer yet. It needs a speech program and a speech model installed here. Open Setup > Voice to pick them.";
+async function voiceNeedsSetup() { try { const e = window.api.voiceEngine ? await window.api.voiceEngine() : null; return !!(e && e.needsSetup); } catch (e) { return false; } }
+const voiceSetupAction = () => ({ label: "Set up", fn: () => { if (window.setupView && window.setupView.open) window.setupView.open(); } });
+async function startVoiceRecording() {
+  try {
+    if (await voiceNeedsSetup()) { voiceNote(VOICE_SETUP_MSG, 0, voiceSetupAction()); return; }
+    try { if (window.api.voiceWarm) window.api.voiceWarm(); } catch (e) {} // load the model while speaking
+    // v1.99.1: a remembered microphone (chosen with "Choose microphone"); otherwise Windows' default. On 2026-10-08 the default flipped to a
+    // silent channel after a restart and the speech engine "heard" the word "you" in the silence.
+    let micId = ""; try { micId = localStorage.getItem("voiceMicId") || ""; } catch (e) {}
+    let stream;
+    try {
+      stream = micId ? await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: micId } } }) : await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      if (!micId) throw e;
+      try { localStorage.removeItem("voiceMicId"); } catch (e2) {}   // the remembered microphone no longer exists: forget it
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });   // the remembered microphone is gone: fall back to the default
+    }
+    const micLabel = (stream.getAudioTracks()[0] && stream.getAudioTracks()[0].label) || "the default microphone";
+    const recorder = new MediaRecorder(stream);
+    const rec = { stream, recorder, chunks: [], timer: null, target: activeAgentPath, micLabel };   // v1.85.2: the agent you started recording in gets the text, wherever you are when it is ready
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+    recorder.onstop = () => finishVoiceRecording(rec);
+    recorder.start();
+    rec.timer = setTimeout(stopVoiceRecording, VOICE_REC_MAX_MS);
+    voiceRec = rec;
+    voiceInputBtn.classList.add("recording");
+    voiceNote("Recording... click the mic again to stop and transcribe", VOICE_REC_MAX_MS);
+  } catch (e) {
+    voiceRec = null;
+    voiceInputBtn.classList.remove("recording");
+    voiceNote("Could not use the microphone: " + e.message + " (check Windows Settings > Privacy > Microphone allows desktop apps)", 10000);
+  }
+}
+
+function stopVoiceRecording() {
+  if (!voiceRec) return;
+  clearTimeout(voiceRec.timer);
+  voiceInputBtn.classList.remove("recording");
+  try { voiceRec.recorder.stop(); } catch (e) {}
+  voiceRec.stream.getTracks().forEach((t) => t.stop());
+}
+
+// v1.59.5: the recording is saved to disk (voice-save) BEFORE transcription, and a failure
+// shows a Retry button instead of discarding it. On 2026-09-25 a long dictation was lost when
+// Cloudflare's daily allowance ran out - the audio simply wasn't kept anywhere. With the local
+// engine (voice-main.js) the whole recording goes in one pass; the 50 s chunking below is only
+// for the Cloudflare fallback, whose requests must stay small.
+async function finishVoiceRecording(rec) {
+  voiceRec = null;
+  try {
+    voiceNote("Transcribing...", 60000);
+    voiceInputBtn.disabled = true;
+    const blob = new Blob(rec.chunks, { type: rec.recorder.mimeType || "audio/webm" });
+    const pcm = await blobToPcm16k(blob);
+    // v1.99.1: digital silence (nothing came from the microphone) must never reach the speech engine: it invents words ("you", "Thank you").
+    let peak = 0; for (let i = 0; i < pcm.length; i++) { const a = Math.abs(pcm[i]); if (a > peak) peak = a; }
+    if (pcm.length > 8000 && peak < 0.004) {
+      voiceNote('No sound came from the microphone "' + (rec.micLabel || "default") + '" (it recorded silence). Nothing was transcribed.', 0, { label: "Choose microphone", fn: showMicChooser });
+      return;
+    }
+    let saved = null;
+    try { saved = await window.api.voiceSave(encodeWav16k(pcm, 16000)); } catch (e) {}
+    await transcribeVoicePcm(pcm, saved && saved.ok ? saved.file : null, rec.target);
+  } catch (e) {
+    voiceNote("Voice input error: " + e.message, 10000);
+  } finally {
+    voiceInputBtn.disabled = false;
+  }
+}
+
+async function transcribeVoicePcm(pcm, savedFile, target) {
+  const retry = {
+    label: "Retry",
+    fn: async () => {
+      voiceInputBtn.disabled = true;
+      try { await transcribeVoicePcm(pcm, savedFile, target); } finally { voiceInputBtn.disabled = false; }
+    },
+  };
+  const keptNote = savedFile ? " The recording is saved - click Retry." : " Click Retry to try again.";
+  let local = false;
+  try { local = !!(window.api.voiceEngine && (await window.api.voiceEngine()).local); } catch (e) {}
+  voiceNote(local ? "Transcribing on this PC..." : "Transcribing...", 600000);
+  const parts = [];
+  if (local) {
+    const res = savedFile ? await window.api.transcribeAudio(null, savedFile) : await window.api.transcribeAudio(encodeWav16k(pcm, 16000));
+    if (!res || !res.ok) {
+      voiceNote(((res && res.error) || "Transcription failed.") + keptNote, 0, retry);
+      return;
+    }
+    if (res.text) parts.push(res.text.trim());
+  } else {
+    const wavChunks = pcmToWavChunks(pcm);
+    for (let i = 0; i < wavChunks.length; i++) {
+      if (wavChunks.length > 1) voiceNote(`Transcribing part ${i + 1} of ${wavChunks.length}...`, 60000);
+      const res = await window.api.transcribeAudio(wavChunks[i]);
+      if (res && res.reason === "needs-setup") { voiceNote(VOICE_SETUP_MSG, 0, voiceSetupAction()); return; }
+      if (!res || !res.ok) {
+        // Keep what already transcribed rather than discarding everything.
+        if (parts.length) {
+          voiceNote(`Part ${i + 1} failed (${(res && res.error) || "unknown"}) - keeping the rest.` + keptNote, 0, retry);
+          break;
+        }
+        voiceNote(((res && res.error) || "Transcription failed.") + keptNote, 0, retry);
+        return;
+      }
+      if (res.text) parts.push(res.text.trim());
+    }
+  }
+  // v1.106.0: the speech engine invents a lowercase "you" in the silence before speech ("you Translate the last..."); a real sentence starts "You"
+  const joined = stitchTranscripts(parts).trim().replace(/^you[,.]?\s+(?=[A-Z֐-׿0-9])/, "");
+  {   // a one-word "you" / "Thank you." from very quiet audio is the speech engine's classic invention, not speech
+    let peak2 = 0; for (let i = 0; i < pcm.length; i++) { const a = Math.abs(pcm[i]); if (a > peak2) peak2 = a; }
+    if (peak2 < 0.02 && /^(you|thank you|thanks|thanks for watching)[.!]?$/i.test(joined)) {
+      voiceNote('Only a very quiet sound was heard, so nothing was inserted (the engine invents words such as "' + joined + '" from near-silence). Check the microphone.', 0, { label: "Choose microphone", fn: showMicChooser });
+      return;
+    }
+  }
+  if (!joined) {
+    voiceNote("Nothing was heard - try again a bit closer to the mic.", 6000);
+    return;
+  }
+  deliverVoiceText(joined, target);
+}
+
+// v1.99.1: pick the microphone for voice input (remembered). Lists the real input devices; the first entry returns to Windows' default.
+async function showMicChooser() {
+  let devs = [];
+  try { await navigator.mediaDevices.getUserMedia({ audio: true }).then((st) => st.getTracks().forEach((t) => t.stop())); } catch (e) {}
+  try { devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.deviceId !== "default" && d.deviceId !== "communications"); } catch (e) {}
+  const old = document.getElementById("mic-chooser"); if (old) old.remove();
+  const box = document.createElement("div"); box.id = "mic-chooser"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "Choose microphone");
+  box.style.cssText = "position:fixed;right:24px;bottom:96px;z-index:9999;background:var(--bg-panel,#fff);color:var(--text,#222);border:1px solid var(--border,#ccc);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.2);padding:10px;min-width:280px;max-width:420px;font-size:14px";
+  const h = document.createElement("div"); h.textContent = "Which microphone should voice input use?"; h.style.cssText = "font-weight:600;margin-bottom:8px"; box.append(h);
+  let cur = ""; try { cur = localStorage.getItem("voiceMicId") || ""; } catch (e) {}
+  const add = (label, id) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = (id === cur ? "\u2713 " : "") + label;
+    b.style.cssText = "display:block;width:100%;text-align:start;padding:7px 10px;margin:2px 0;border:1px solid var(--border,#ddd);border-radius:8px;background:transparent;color:inherit;cursor:pointer;font:inherit";
+    b.addEventListener("click", () => { try { if (id) localStorage.setItem("voiceMicId", id); else localStorage.removeItem("voiceMicId"); } catch (e) {} box.remove(); voiceNote("Microphone set to: " + label + ". Click the mic and try again.", 6000); });
+    box.append(b);
+  };
+  add("Windows default microphone", "");
+  for (const d of devs) add(d.label || ("Microphone " + d.deviceId.slice(0, 6)), d.deviceId);
+  const x = document.createElement("button"); x.type = "button"; x.textContent = "Close"; x.style.cssText = "margin-top:6px;padding:5px 10px;border-radius:8px;border:1px solid var(--border,#ddd);background:transparent;color:inherit;cursor:pointer;font:inherit";
+  x.addEventListener("click", () => box.remove()); box.append(x);
+  document.body.append(box);
+}
+
+// Where a finished transcript goes: the agent you started recording in (target), even if you have since moved to another one.
+function deliverVoiceText(joined, target) {
+  if (target && target !== activeAgentPath) {
+    // You moved to another agent while this was being transcribed: the text belongs to the agent you spoke to. It is put in THAT
+    // agent's compose draft (never in the box you are looking at now), and a button takes you there to review and send.
+    const d = composeDrafts.get(target) || { text: "", attachments: [] };
+    d.text = d.text && !/\s$/.test(d.text) ? d.text + " " + joined : d.text + joined;
+    composeDrafts.set(target, d);
+    persistComposeDrafts();
+    const ag = agents.find((x) => x.path === target);
+    const nm = ag ? (ag.displayName || ag.name || "that agent") : "that agent";
+    voiceNote("Your voice message for " + nm + " is ready in its message box (not in this one).", 0, { label: "Go to " + nm, fn: async () => { if (ag) selectAgent(ag); } });
+    return;
+  }
+  const cur = chatInputEl.value;
+  chatInputEl.value = cur && !/\s$/.test(cur) ? cur + " " + joined : cur + joined;
+  autoGrowChatInput();
+  chatInputEl.focus();
+  chatInputEl.setSelectionRange(chatInputEl.value.length, chatInputEl.value.length);
+  parkComposeDraft(activeAgentPath);   // a programmatic fill fires no input event: save it now so a restart cannot lose a long dictation
+  voiceNote("Transcribed - review it, then press Enter to send", 5000);
+}
+
+voiceInputBtn.addEventListener("click", () => {
+  let legacy = false;
+  try { legacy = localStorage.getItem("voiceLegacy") === "1"; } catch (e) {}
+  if (legacy || !window.api.transcribeAudio) {
+    if (voiceHeld) stopVoiceHold();
+    else startVoiceHold();
+    return;
+  }
+  if (voiceRec) stopVoiceRecording();
+  else startVoiceRecording();
+});
+
+// v1.64.0: a small bridge for the Library (library.js) so "comment on a document and send it to an
+// agent" reuses THIS file's send path (the same busy-queue / submitToAgent the compose box uses) and the
+// same local whisper dictation, instead of a second transport. Nothing here runs until the Library calls it.
+window.libraryBridge = {
+  agents: () => agents.map((a) => ({ path: a.path, folderName: a.folderName, displayName: a.displayName, role: a.role || "", paused: !!a.paused })),
+  warmVoice: () => { try { if (window.api.voiceWarm) window.api.voiceWarm(); } catch (e) {} },
+  // Sends `text` to an agent exactly as if typed in its compose box, without changing the visible agent
+  // or touching anyone's draft. Starts the agent's session in the background if it has none yet.
+  // origin "wake" = wake-agent (an agent-to-agent note); anything else is the owner sending from the Library.
+  async send(agentPath, text, origin) {
+    const agent = agents.find((a) => a.path === agentPath);
+    if (!agent) return { ok: false, error: "That agent is not in the list." };
+    if (agent.paused) return { ok: false, error: agent.displayName + " is paused - resume it first." };
+    let toSend = String(text || "");
+    if (!toSend.trim()) return { ok: false, error: "Nothing to send." };
+    // v1.101.0 (re-review F1): the owner's Library message supersedes an older lost compose message (never re-sent after it)
+    if (origin !== "wake") { try { if (window.outbox && window.outbox.noteSend) window.outbox.noteSend(agentPath, "a later Library message"); } catch (e) {} }
+    if (toSend.length > LONG_MESSAGE_FILE_THRESHOLD) {
+      try {
+        const filePath = await window.api.saveLongMessage(toSend);
+        longMessageCache.set(filePath, toSend);
+        toSend = `This message was too long to paste directly, so it was saved to a file - please read it: "${filePath}"`;
+      } catch (e) { /* send inline */ }
+    }
+    let session = terminals.get(agentPath);
+    if (!session || !session.started) {
+      const ok = await attachSessionInBackground(agent);
+      if (!ok) return { ok: false, error: "Could not start " + agent.displayName + "'s session." };
+      session = terminals.get(agentPath);
+    }
+    const how = await sendOrHold(agentPath, session, toSend);
+    return { ok: true, how: how === "held" ? "queued" : "sent" };
+  },
+  // Audio blob -> text through the same engine as the chat mic (local whisper, Cloudflare fallback).
+  async dictate(blob, note) {
+    const say = typeof note === "function" ? note : () => {};
+    try {
+      const pcm = await blobToPcm16k(blob);
+      let saved = null;
+      try { saved = await window.api.voiceSave(encodeWav16k(pcm, 16000)); } catch (e) {}
+      const savedFile = saved && saved.ok ? saved.file : null;
+      let local = false;
+      try { local = !!(window.api.voiceEngine && (await window.api.voiceEngine()).local); } catch (e) {}
+      say(local ? "Transcribing on this PC..." : "Transcribing...");
+      const parts = [];
+      if (local) {
+        const res = savedFile ? await window.api.transcribeAudio(null, savedFile) : await window.api.transcribeAudio(encodeWav16k(pcm, 16000));
+        if (!res || !res.ok) return { ok: false, error: (res && res.error) || "Transcription failed." };
+        if (res.text) parts.push(res.text.trim());
+      } else {
+        const wavChunks = pcmToWavChunks(pcm);
+        for (let i = 0; i < wavChunks.length; i++) {
+          const res = await window.api.transcribeAudio(wavChunks[i]);
+          if (res && res.reason === "needs-setup") return { ok: false, reason: "needs-setup", error: VOICE_SETUP_MSG };
+          if (!res || !res.ok) {
+            if (parts.length) break;
+            return { ok: false, error: (res && res.error) || "Transcription failed." };
+          }
+          if (res.text) parts.push(res.text.trim());
+        }
+      }
+      return { ok: true, text: stitchTranscripts(parts).trim() };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+};
+
+// Pure visual reminder/shortcut - just prefills the compose box, doesn't
+// send anything itself. Prepends rather than overwrites so it still works
+// if the user already started typing what to save before remembering to
+// press it. The current agent is the one that actually acts on this text -
+// per the root CLAUDE.md, that means appending a dated note to
+// Master_Context\pending_updates.md, not editing the master file
+// directly - the Acmeco Business Context Agent is the only one that
+// integrates pending updates into the real file (2026-08-20).
+const SAVE_TO_MASTER_PREFIX = "Save to master file: ";
+saveToMasterBtn.addEventListener("click", () => {
+  const existing = chatInputEl.value;
+  chatInputEl.value = existing.startsWith(SAVE_TO_MASTER_PREFIX)
+    ? existing
+    : SAVE_TO_MASTER_PREFIX + existing;
+  chatInputEl.focus();
+  const end = chatInputEl.value.length;
+  chatInputEl.setSelectionRange(end, end);
+});
+
+// Drag-to-resize: grabbing the handle and moving the mouse up/down grows or
+// shrinks the box from its TOP edge (the box is anchored to the bottom of the
+// window, so "pulling up" is what should make it taller - native CSS resize
+// only ever grows toward the bottom-right, which is why it isn't used here).
+let dragStartY = null;
+let dragStartHeight = null;
+
+resizeHandleEl.addEventListener("mousedown", (e) => {
+  dragStartY = e.clientY;
+  dragStartHeight = chatInputEl.getBoundingClientRect().height;
+  resizeHandleEl.classList.add("dragging");
+  e.preventDefault();
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (dragStartY === null) return;
+  const delta = dragStartY - e.clientY; // moving up (smaller clientY) increases height
+  setChatInputHeight(dragStartHeight + delta);
+});
+
+window.addEventListener("mouseup", () => {
+  if (dragStartY === null) return;
+  dragStartY = null;
+  dragStartHeight = null;
+  resizeHandleEl.classList.remove("dragging");
+  // Remember the size the user chose so auto-grow won't shrink below it.
+  chatInputManualFloor = chatInputEl.getBoundingClientRect().height;
+});
+
+// ---------------------------------------------------- drag-and-drop files --
+
+// Chromium's default behavior for a drop it doesn't otherwise handle is to
+// NAVIGATE THE WHOLE PAGE to the dropped file, as if opening it directly -
+// silently replacing this entire app's UI. Binding drag/drop listeners only
+// to the compose box (an earlier version of this code did that) means a drop
+// landing even slightly outside that narrow strip hits this default behavior
+// unimpeded and breaks the app until it's restarted - confirmed to actually
+// happen. Every drag/drop event is therefore handled on the whole `document`
+// instead, both to guarantee preventDefault() always runs (the safety net)
+// and to make the drop zone the entire window rather than a thin bar at the
+// bottom (much easier to hit). The compose box is a plain textarea feeding
+// text keystrokes into the pty - there's no binary image channel over a
+// terminal connection, so a dropped file becomes a removable thumbnail chip
+// (or a filename fallback for non-images) rather than raw text - Claude Code
+// itself reads the actual file content via its own Read tool once the
+// message is sent, using the real path carried alongside the chip, exactly
+// as if the user had typed the path himself.
+let dragDepth = 0;
+
+document.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  dragDepth++;
+  chatInputBarEl.classList.add("drag-over");
+});
+
+// preventDefault is required on dragover too, or the browser's default
+// "reject the drop" behavior wins and the drop event never fires.
+document.addEventListener("dragover", (e) => e.preventDefault());
+
+document.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) chatInputBarEl.classList.remove("drag-over");
+});
+
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  chatInputBarEl.classList.remove("drag-over");
+
+  const files = Array.from(e.dataTransfer.files || []);
+  for (const file of files) {
+    const filePath = window.api.getPathForFile(file);
+    if (!filePath) continue;
+    const previewUrl = file.type && file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+    addAttachment(filePath, previewUrl);
+  }
+});
+
+// A pasted clipboard image (Ctrl+V of a copied screenshot, for example) has
+// no filesystem path at all - unlike a dropped file, it only exists as raw
+// bytes in the clipboard. Only intercept when the clipboard actually
+// contains image data; plain-text paste is left completely alone so it
+// still lands in the textarea normally.
+document.addEventListener("paste", async (e) => {
+  const items = Array.from(e.clipboardData ? e.clipboardData.items : []);
+  const imageItem = items.find((item) => item.kind === "file" && item.type.startsWith("image/"));
+  if (!imageItem) return;
+  e.preventDefault();
+
+  const blob = imageItem.getAsFile();
+  const previewUrl = URL.createObjectURL(blob);
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const base64 = reader.result.split(",")[1];
+    const savedPath = await window.api.savePastedImage(base64, mimeToExt(imageItem.type));
+    addAttachment(savedPath, previewUrl);
+  };
+  reader.readAsDataURL(blob);
+});
+
+// -------------------------------------------------------------- history --
+
+const HISTORY_DAYS_PAGE_SIZE = 7;
+let historyDaysShown = HISTORY_DAYS_PAGE_SIZE;
+
+function setHistoryMode(on) {
+  if (on) setConversationsMode(false); // History and Chats are mutually exclusive full-panel views
+  historyToggleBtn.classList.toggle("active", on);
+  historyViewEl.classList.toggle("hidden", !on);
+  chatBodyEl.classList.toggle("hidden", on);
+  chatInputBarEl.classList.toggle("hidden", on);
+  if (on) {
+    historyDaysShown = HISTORY_DAYS_PAGE_SIZE;
+    loadHistoryDays();
+  } else {
+    // Coming back to the live chat may mean the panel changed size while
+    // history was showing instead of it - keep the terminal's own canvas in
+    // sync (only matters if raw mode is what's actually visible - refitting
+    // a visibility:hidden terminal is harmless either way, just a no-op
+    // it'll redo next time it's actually shown).
+    requestAnimationFrame(refitActiveTerminal);
+    if (activeAgentPath) rebuildChatView(activeAgentPath);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderEntryBodyHtml(bodyLines) {
+  const htmlParts = [];
+  let paragraphBuffer = [];
+  function flushParagraph() {
+    if (paragraphBuffer.length === 0) return;
+    htmlParts.push(`<p>${escapeHtml(paragraphBuffer.join("\n"))}</p>`);
+    paragraphBuffer = [];
+  }
+  for (const line of bodyLines) {
+    if (line.trim() === "") {
+      flushParagraph();
+    } else {
+      paragraphBuffer.push(line);
+    }
+  }
+  flushParagraph();
+  return htmlParts.join("\n");
+}
+
+// Renders the specific, simple markdown shape archive.js generates
+// (# heading, ### subheadings, blank-line-separated paragraphs) - not a
+// general-purpose parser. Escapes everything first since this is displaying
+// arbitrary conversation text, not trusted markup. Entries are shown most
+// recent first (reversed from the underlying file's natural chronological
+// order) so the latest exchange is visible immediately without scrolling
+// all the way down - the saved .md file on disk stays chronological (an
+// agent reading its own history later benefits from that order), this only
+// changes how the History tab displays it.
+function renderHistoryMarkdown(md) {
+  const lines = md.split("\n");
+  let title = "";
+  const entries = []; // { heading, bodyLines: [] }
+  let current = null;
+
+  for (const line of lines) {
+    if (line.startsWith("### ")) {
+      current = { heading: line.slice(4), bodyLines: [] };
+      entries.push(current);
+    } else if (line.startsWith("# ")) {
+      title = line.slice(2);
+    } else if (current) {
+      current.bodyLines.push(line);
+    }
+  }
+
+  const htmlParts = [];
+  if (title) htmlParts.push(`<h1>${escapeHtml(title)}</h1>`);
+  for (const entry of entries.slice().reverse()) {
+    htmlParts.push(`<h3>${escapeHtml(entry.heading)}</h3>`);
+    htmlParts.push(renderEntryBodyHtml(entry.bodyLines));
+  }
+  return htmlParts.join("\n");
+}
+
+async function loadHistoryDays() {
+  if (!activeAgentPath) return;
+  const days = await window.api.listArchivedDays(activeAgentPath);
+
+  if (days.length === 0) {
+    historyDayListEl.innerHTML = "";
+    historyContentEl.innerHTML =
+      '<div id="history-empty">No conversation history yet for this agent.</div>';
+    return;
+  }
+
+  const visibleDays = days.slice(0, historyDaysShown);
+  historyDayListEl.innerHTML = "";
+  for (const dateKey of visibleDays) {
+    const item = document.createElement("div");
+    item.className = "history-day-item";
+    item.textContent = dateKey;
+    item.addEventListener("click", () => loadHistoryDay(dateKey));
+    historyDayListEl.appendChild(item);
+  }
+  if (days.length > historyDaysShown) {
+    const showMoreBtn = document.createElement("button");
+    showMoreBtn.id = "history-show-more-btn";
+    showMoreBtn.textContent = `Show more (${days.length - historyDaysShown} older)`;
+    showMoreBtn.addEventListener("click", () => {
+      historyDaysShown += HISTORY_DAYS_PAGE_SIZE;
+      loadHistoryDays();
+    });
+    historyDayListEl.appendChild(showMoreBtn);
+  }
+
+  loadHistoryDay(visibleDays[0]);
+}
+
+async function loadHistoryDay(dateKey) {
+  if (!activeAgentPath) return;
+  document.querySelectorAll(".history-day-item").forEach((el) => {
+    el.classList.toggle("active", el.textContent === dateKey);
+  });
+  const content = await window.api.readArchivedDay(activeAgentPath, dateKey);
+  historyContentEl.innerHTML = content
+    ? renderHistoryMarkdown(content)
+    : '<div id="history-empty">Could not load this day.</div>';
+}
+
+historyToggleBtn.addEventListener("click", () => {
+  setHistoryMode(historyViewEl.classList.contains("hidden"));
+});
+
+// ------------------------------------------------------- conversations --
+//
+// Each agent's `.claude-session` cwd holds one <sessionId>.jsonl per
+// distinct conversation (a new one on first open, another on every /clear).
+// This panel lists them - titled, newest first - so the user can resume any
+// past conversation in place, start a fresh one, or rename one (which also
+// updates the label on claude.ai/code, since the web reads the same
+// custom-title record `-n` writes). Backed by list-conversations /
+// switch-conversation / rename-conversation in main.js.
+
+let conversationsMode = false;
+let switchingConversation = false;
+
+// Set right after switch-conversation dispatches a specific session, keyed
+// by agentPath, consumed (and cleared) the very next time showTerminalFor()
+// attaches for that same agent - see its own comment for why this is
+// needed: without it, the subsequent plain "open this agent" call has no
+// way to know a specific fresh/resumed session already exists and falls
+// back to generic discovery, which can miss it entirely (confirmed live -
+// a forceFresh dispatch was left orphaned while a second, unwanted session
+// got dispatched and attached instead).
+const pendingKnownAgentIdByPath = new Map();
+
+// Switching the live session to a different past conversation, and starting
+// a brand-new one, both work at the data layer (switch-conversation in
+// main.js stops the bg daemon and re-dispatches with --bg --resume <id> /
+// --bg), and were verified doing exactly that. What's NOT solved yet: after
+// resuming an OLDER conversation, getLiveTranscriptBlocks() still picks the
+// transcript file with the newest entry timestamps (fine for --continue,
+// wrong here), so the chat view keeps showing the conversation you just
+// left.
+//
+// 2026-09-16: fixed the more fundamental half of this - switchConversation()
+// dispatched the right session and returned its id, but nothing downstream
+// ever used that id. reloadAgentSessionView()+selectAgent() just re-ran the
+// normal open flow, which has no memory of "a specific session was just
+// created" and falls back to generic find-or-dispatch discovery - which
+// picks by --continue's own "most recent conversation with real content"
+// heuristic. A just-forceFresh-dispatched, zero-message conversation
+// doesn't have any content yet, so that heuristic skips right past it -
+// confirmed live, not theoretical: a standalone forceFresh dispatch was
+// correctly created and left running, and the very next plain "open this
+// agent" dispatched a SECOND session and attached to the old conversation
+// instead, never finding the fresh one at all. Now threaded through
+// properly (pendingKnownAgentIdByPath -> startTerminal's knownAgentId ->
+// startTerminalSession, skipping discovery entirely) so a switch/new-chat
+// always attaches to the exact session it just dispatched, not a guess.
+//
+// The transcript-picks-by-newest-timestamp quirk above is real but narrower
+// than it first appears: it only bites when switching to an OLDER
+// already-populated conversation while a MORE recently active one exists
+// for the same cwd. For "+ New chat" specifically, there's no competing
+// content initially - Chat View naturally starts following the new
+// session the moment it gets its first real entry, since that's when it
+// actually becomes "the newest." Good enough to ship "+ New chat" on this
+// fix alone; resuming an arbitrary OLDER past conversation may still need
+// the fuller session-scoped transcript-reader fix later.
+const CONVERSATION_SWITCH_ENABLED = true;
+
+function relativeTime(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
+
+function setConversationsMode(on) {
+  conversationsMode = on;
+  if (on) setHistoryMode(false); // History and Chats are mutually exclusive full-panel views
+  chatsToggleBtn.classList.toggle("active", on);
+  conversationsViewEl.classList.toggle("hidden", !on);
+  chatBodyEl.classList.toggle("hidden", on);
+  chatInputBarEl.classList.toggle("hidden", on);
+  if (on) {
+    loadConversations();
+  } else {
+    requestAnimationFrame(refitActiveTerminal);
+    if (activeAgentPath) rebuildChatView(activeAgentPath);
+  }
+}
+
+async function loadConversations() {
+  if (!activeAgentPath) return;
+  const agentPath = activeAgentPath;
+  conversationsListEl.innerHTML = '<div id="conversations-empty">Loading…</div>';
+  let convos;
+  try {
+    convos = await window.api.listConversations(agentPath);
+  } catch (e) {
+    conversationsListEl.innerHTML = `<div id="conversations-empty">Couldn't load conversations: ${escapeHtml(e.message || String(e))}</div>`;
+    return;
+  }
+  if (agentPath !== activeAgentPath || !conversationsMode) return; // user moved on while awaiting
+  if (!convos || convos.length === 0) {
+    conversationsListEl.innerHTML = '<div id="conversations-empty">No past conversations yet for this agent.</div>';
+    return;
+  }
+  conversationsListEl.innerHTML = "";
+  for (const c of convos) {
+    conversationsListEl.appendChild(renderConversationItem(agentPath, c));
+  }
+}
+
+function renderConversationItem(agentPath, c) {
+  const item = document.createElement("div");
+  item.className = "conversation-item" + (c.isCurrent ? " current" : "");
+
+  const main = document.createElement("div");
+  main.className = "conversation-main";
+
+  const titleRow = document.createElement("div");
+  titleRow.className = "conversation-title-row";
+  const titleEl = document.createElement("span");
+  titleEl.className = "conversation-title";
+  titleEl.textContent = c.title;
+  titleRow.appendChild(titleEl);
+  if (c.isCurrent) {
+    const tag = document.createElement("span");
+    tag.className = "conversation-current-tag";
+    tag.textContent = "current";
+    titleRow.appendChild(tag);
+  }
+  main.appendChild(titleRow);
+
+  if (c.preview) {
+    const preview = document.createElement("div");
+    preview.className = "conversation-preview";
+    preview.textContent = c.preview;
+    main.appendChild(preview);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "conversation-meta";
+  const msgs = c.humanMessageCount === 1 ? "1 message" : `${c.humanMessageCount} messages`;
+  meta.textContent = `Last active ${relativeTime(c.lastActivityAt)} · ${msgs}`;
+  main.appendChild(meta);
+
+  if (!CONVERSATION_SWITCH_ENABLED && !c.isCurrent) {
+    item.style.cursor = "default";
+    item.title = "Resuming a past conversation from here is coming soon - for now, rename it and switch by reopening the agent.";
+  }
+
+  const renameBtn = document.createElement("button");
+  renameBtn.className = "conversation-rename-btn";
+  renameBtn.textContent = "Rename";
+  renameBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginRename(agentPath, c, item, titleRow, renameBtn);
+  });
+
+  item.appendChild(main);
+  item.appendChild(renameBtn);
+
+  if (CONVERSATION_SWITCH_ENABLED && !c.isCurrent) {
+    item.addEventListener("click", () => switchToConversation(agentPath, { resumeSessionId: c.sessionId }, c.title));
+  }
+  return item;
+}
+
+function beginRename(agentPath, c, item, titleRow, renameBtn) {
+  if (titleRow.querySelector(".conversation-rename-input")) return;
+  const input = document.createElement("input");
+  input.className = "conversation-rename-input";
+  input.type = "text";
+  input.value = c.title.startsWith("(") ? "" : c.title;
+  input.maxLength = 200;
+  const titleEl = titleRow.querySelector(".conversation-title");
+  if (titleEl) titleEl.style.display = "none";
+  titleRow.prepend(input);
+  renameBtn.disabled = true;
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    input.remove();
+    if (titleEl) titleEl.style.display = "";
+    renameBtn.disabled = false;
+    const next = input.value.trim();
+    if (!save || !next || next === c.title) return;
+    try {
+      const res = await window.api.renameConversation(agentPath, c.sessionId, next);
+      c.title = res.title;
+      if (titleEl) titleEl.textContent = res.title;
+    } catch (e) {
+      alert("Rename failed: " + (e.message || String(e)));
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function switchToConversation(agentPath, opts, label) {
+  if (switchingConversation) return;
+  const session = terminals.get(agentPath);
+  if (session && session.busy) {
+    const ok = confirm(
+      "This agent is in the middle of a response. Switching conversations will interrupt it. Switch anyway?"
+    );
+    if (!ok) return;
+  }
+  switchingConversation = true;
+  conversationsListEl.querySelectorAll(".conversation-item").forEach((el) => (el.style.pointerEvents = "none"));
+  const note = document.createElement("div");
+  note.id = "conversations-busy-note";
+  note.textContent = opts.newConversation
+    ? "Starting a new conversation…"
+    : `Switching to “${label || "that conversation"}”…`;
+  conversationsViewEl.prepend(note);
+  try {
+    const result = await window.api.switchConversation(agentPath, opts);
+    if (result && result.agentId) pendingKnownAgentIdByPath.set(agentPath, result.agentId);
+    // Tear the local view down to the same state a cold app start would be
+    // in for this agent, then let selectAgent rebuild it - which re-runs
+    // start-terminal, attaching to the freshly dispatched bg session (see
+    // pendingKnownAgentIdByPath above for how it finds that exact one).
+    reloadAgentSessionView(agentPath);
+    note.remove();
+    setConversationsMode(false);
+    const agent = agents.find((a) => a.path === agentPath);
+    if (agent) selectAgent(agent);
+  } catch (e) {
+    note.textContent = "Switch failed: " + (e.message || String(e));
+    note.style.color = "var(--health-critical)";
+  } finally {
+    switchingConversation = false;
+  }
+}
+
+// Drop this agent's cached terminal/session state so the next showTerminalFor
+// rebuilds it from scratch (fresh xterm, fresh start-terminal call). Used
+// after switch-conversation replaces the underlying bg process.
+function reloadAgentSessionView(agentPath) {
+  const session = terminals.get(agentPath);
+  if (session) {
+    try {
+      session.term.dispose();
+    } catch (e) {}
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    if (session.chatRebuildTimer) clearTimeout(session.chatRebuildTimer);
+    if (session.thinkingQuietTimer) clearTimeout(session.thinkingQuietTimer);
+    terminals.delete(agentPath);
+  }
+}
+
+chatsToggleBtn.addEventListener("click", () => {
+  setConversationsMode(conversationsViewEl.classList.contains("hidden"));
+});
+
+newConversationBtn.addEventListener("click", () => {
+  if (!activeAgentPath) return;
+  const ok = confirm(
+    "Start a new conversation for this agent? The current one stays saved and you can switch back to it here anytime."
+  );
+  if (!ok) return;
+  switchToConversation(activeAgentPath, { newConversation: true });
+});
+
+// Until session-scoped switching lands (see CONVERSATION_SWITCH_ENABLED),
+// the panel is a titled, renameable list of this agent's conversations -
+// hide the "+ New chat" control and reword the hint so it doesn't promise
+// an action that isn't wired up yet.
+if (!CONVERSATION_SWITCH_ENABLED) {
+  newConversationBtn.classList.add("hidden");
+  const hint = document.getElementById("conversations-hint");
+  if (hint) {
+    hint.textContent =
+      "This agent's past conversations, newest first. Rename any of them - the new name also shows on claude.ai/code once that conversation is the live one there.";
+  }
+}
+
+// ---------------------------------------------------------- model picker --
+
+// Claude Code's own CLI already has an interactive model picker (with
+// descriptions of what each model is good for) behind the `/model` slash
+// command - rather than Agent Desktop maintaining its own list of models/
+// costs/speeds (which would drift out of date), this button just types that
+// command into the session for you and hands focus to the terminal so the
+// arrow-key picker it opens works immediately, without you ever typing
+// anything yourself.
+modelPickerBtn.addEventListener("click", () => {
+  if (!activeAgentPath) return;
+  if (!historyViewEl.classList.contains("hidden")) {
+    setHistoryMode(false);
+  }
+  if (!conversationsViewEl.classList.contains("hidden")) {
+    setConversationsMode(false);
+  }
+  // The picker needs real arrow-key/number keystrokes, which only the raw
+  // terminal can provide - the chat view has no concept of an interactive
+  // in-place selector.
+  setRawTerminalMode(true);
+  submitToAgent(activeAgentPath, "/model");
+  const session = terminals.get(activeAgentPath);
+  if (session) {
+    session.term.scrollToBottom();
+    requestAnimationFrame(() => session.term.focus());
+  }
+});
+
+// ---------------------------------------------------------- reset session --
+
+// Sends Claude Code's own "/clear" command, which wipes the session's
+// current conversation context and starts fresh - the same underlying
+// mechanism as typing it directly, just one click. Confirmed first since
+// it's a real loss of live context (unlike closing/reopening the app,
+// which keeps it via --continue); the full conversation stays permanently
+// available in History regardless; it's already built from the saved JSONL
+// transcript, not from live session state. Briefly touches Raw Terminal in
+// case "/clear" ever asks for a y/n confirmation, but - confirmed live,
+// "/clear" is actually instant with no confirmation step, unlike the Model
+// picker's genuinely ongoing arrow-key interaction - hands focus back to
+// the compose box shortly after rather than leaving it stuck on the
+// terminal (that stuck focus is exactly what made the user unable to type
+// right after using this the first time).
+// Timing figures below are measured, not guessed: a live harness sent
+// "/clear" to a real, otherwise-idle claude pty 6 times in a row and timed
+// each one to its own real quiet point (2026-08-23). Steady-state was a
+// consistent 1149-1172ms; the one cold-start run (right after the pty
+// itself came up) hit 1796ms. RESET_SESSION_POLL_MS/RESET_SESSION_QUIET_MS
+// below are tuned off that data, not the slower 3000ms
+// THINKING_INDICATOR_QUIET_MS used for normal chat turns - that number is
+// deliberately conservative for "is a real response still streaming,"
+// which doesn't apply here: /clear produces no assistant text, so there's
+// nothing worth waiting an extra 3s for once its own output has genuinely
+// stopped.
+const RESET_SESSION_MIN_MS = 400; // floor - don't declare done before /clear's own first byte could plausibly have landed
+const RESET_SESSION_QUIET_MS = 900; // no pty output for this long = real work is done
+const RESET_SESSION_SLOW_HINT_MS = 4000; // >2x the measured worst case (1796ms) - genuinely unusual, say so
+const RESET_SESSION_CEILING_MS = 15000; // give up waiting and hand control back regardless, rather than blocking forever
+
+function waitForPtyQuiet(agentPath, { minMs, quietMs, pollMs = 100 }) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const poll = () => {
+      const session = terminals.get(agentPath);
+      const elapsed = Date.now() - startedAt;
+      const sinceLastByte = session && session.lastActivityAt ? Date.now() - session.lastActivityAt : Infinity;
+      if ((elapsed >= minMs && sinceLastByte >= quietMs) || elapsed >= RESET_SESSION_CEILING_MS) {
+        resolve({ elapsed, timedOut: elapsed >= RESET_SESSION_CEILING_MS });
+        return;
+      }
+      setTimeout(poll, pollMs);
+    };
+    poll();
+  });
+}
+
+resetSessionBtn.addEventListener("click", async () => {
+  if (!activeAgentPath) return;
+  const confirmed = confirm(
+    "Reset this session? This clears the agent's current conversation context and starts fresh. The full conversation stays available in History either way."
+  );
+  if (!confirmed) return;
+  try {
+    await performSessionReset(activeAgentPath);
+  } catch (e) {
+    alert("Reset failed: " + (e.message || String(e)));
+  }
+});
+
+// Split out of the click handler (1.23.0) so guards.js's "Save handoff & reset"
+// flow can reuse the exact same, live-tested reset sequence without the confirm().
+//
+// v1.24.0: NO LONGER TYPES /clear. Reproduced/observed 2026-09-19 on two agents' handoffs
+// (Optimization 15:18, IBC 19:41): after /clear on a large `--bg`+`attach` session the CLI
+// process stayed alive and reported itself idle but silently ignored everything typed into the
+// pty afterwards - the resume message AND the user's own next message were logged as sent by
+// this app (sent-messages.jsonl) yet never reached the transcript. Same signature as the
+// long-standing "/clear hang" occurrences documented in CLAUDE.md. A small session's /clear
+// works fine (tested), so it bites exactly the big sessions a handoff exists to reset.
+// Instead: stop the bg process and dispatch a fresh one (the same switch-conversation path as
+// the Chats panel's "+ New chat"): a new conversation with a clean process, old one stays in
+// History/Chats. The caller (guards.js) then delivers its first message and VERIFIES it landed.
+async function performSessionReset(agentPath, opts = {}) {
+  if (switchingConversation) throw new Error("another conversation switch is already in progress");
+  switchingConversation = true;
+  const isActive = activeAgentPath === agentPath;
+  if (isActive) {
+    if (!historyViewEl.classList.contains("hidden")) setHistoryMode(false);
+    if (!conversationsViewEl.classList.contains("hidden")) setConversationsMode(false);
+    resetSessionBtn.disabled = true;
+  }
+  const tickStartedAt = Date.now();
+  const tick = setInterval(() => {
+    if (!isActive) return;
+    const elapsedSec = ((Date.now() - tickStartedAt) / 1000).toFixed(1);
+    resetSessionBtn.textContent =
+      Date.now() - tickStartedAt > RESET_SESSION_SLOW_HINT_MS ? `Resetting… ${elapsedSec}s (longer than usual)` : `Resetting… ${elapsedSec}s`;
+  }, 100);
+  try {
+    const result = await window.api.switchConversation(agentPath, { newConversation: true, initialPrompt: opts.initialPrompt });
+    if (result && result.agentId) pendingKnownAgentIdByPath.set(agentPath, result.agentId);
+    // Same teardown the Chats panel uses: drop the cached terminal so the next
+    // showTerminalFor() builds a fresh one and attaches to the new bg process.
+    reloadAgentSessionView(agentPath);
+    const agent = agents.find((a) => a.path === agentPath);
+    if (agent && activeAgentPath === agentPath) selectAgent(agent);
+    // Not the active agent: it re-attaches to the new process the next time it is opened.
+    if (isActive) resetSessionBtn.textContent = "✓ Reset";
+  } finally {
+    clearInterval(tick);
+    switchingConversation = false;
+    setTimeout(() => {
+      resetSessionBtn.textContent = "Reset Session";
+      resetSessionBtn.disabled = false;
+    }, 1200);
+  }
+  if (activeAgentPath === agentPath) chatInputEl.focus();
+}
+
+// Restart Session: kill and re-dispatch this agent's `claude --bg` process,
+// resuming the SAME conversation (`--bg --resume <id>`), so scrollback and
+// context are kept but the fresh process re-reads `.claude/settings.local.json`
+// and `CLAUDE.md`. This is the piece that was missing for "I changed the
+// agent's config or instructions - make it take effect without starting
+// over": a normal app restart just re-attaches to the still-running bg
+// process (old settings), and Reset Session (/clear) keeps the same process
+// too. Uses the same stop-daemon + re-dispatch path as the Chats panel's
+// conversation switch (switch-conversation IPC), just targeting the current
+// conversation.
+const restartSessionBtn = document.getElementById("restart-session-btn");
+
+// 2026-09-20: the owner's ask - the button's own text ("Restarting… Ns" / "✓
+// Restarted") was the ONLY feedback, and it's easy to miss (small, in a
+// row of other buttons, reverts after 1.5s). This mirrors that same
+// button-text state as a much harder-to-miss banner directly above the
+// conversation itself, and stays up long enough to actually read.
+const restartStatusBannerEl = document.getElementById("restart-status-banner");
+let restartStatusHideTimer = null;
+function showRestartStatusBanner(kind, text) {
+  clearTimeout(restartStatusHideTimer);
+  restartStatusBannerEl.className = "restart-status-banner " + kind;
+  restartStatusBannerEl.textContent = text;
+}
+function hideRestartStatusBannerSoon(delayMs) {
+  clearTimeout(restartStatusHideTimer);
+  restartStatusHideTimer = setTimeout(() => {
+    restartStatusBannerEl.className = "restart-status-banner hidden";
+  }, delayMs);
+}
+
+restartSessionBtn.addEventListener("click", async () => {
+  if (!activeAgentPath || switchingConversation) return;
+  const agentPath = activeAgentPath;
+  const session = terminals.get(agentPath);
+  const busy = session && session.busy;
+  const ok = confirm(
+    busy
+      ? "This agent is mid-response. Restarting its process will interrupt the current turn. Restart anyway?\n\nKeeps the conversation; picks up changes to the agent's settings or CLAUDE.md."
+      : "Restart this agent's process?\n\nKeeps the current conversation and scrollback, and picks up any changes to the agent's settings (.claude/settings.local.json) or CLAUDE.md. Takes a few seconds."
+  );
+  if (!ok) return;
+
+  let sessionId = null;
+  try {
+    const convos = await window.api.listConversations(agentPath);
+    const cur = (convos || []).find((c) => c.isCurrent) || (convos || [])[0];
+    sessionId = cur && cur.sessionId;
+  } catch (e) {}
+  if (!sessionId) {
+    alert("Couldn't find this agent's current conversation to resume. Send it a message first, then try again.");
+    return;
+  }
+
+  switchingConversation = true;
+  restartSessionBtn.disabled = true;
+  const startedAt = Date.now();
+  showRestartStatusBanner("info", "🔄 Restarting this agent's process… 0s (conversation is kept - this can take a few seconds)");
+  const tick = setInterval(() => {
+    const secs = Math.round((Date.now() - startedAt) / 1000);
+    restartSessionBtn.textContent = `Restarting… ${secs}s`;
+    showRestartStatusBanner("info", `🔄 Restarting this agent's process… ${secs}s (conversation is kept - this can take a few seconds)`);
+  }, 250);
+  try {
+    if (!historyViewEl.classList.contains("hidden")) setHistoryMode(false);
+    if (!conversationsViewEl.classList.contains("hidden")) setConversationsMode(false);
+    await window.api.switchConversation(agentPath, { resumeSessionId: sessionId });
+    try { if (window.guardsClearFlow) window.guardsClearFlow(agentPath, "Restart Session"); } catch (e) {}   // v1.111.2: a restarted agent starts no stale handoff flow
+    reloadAgentSessionView(agentPath);
+    const agent = agents.find((a) => a.path === agentPath);
+    if (agent) selectAgent(agent);
+    restartSessionBtn.textContent = "✓ Restarted";
+    showRestartStatusBanner("success", "✓ Finished restarting - conversation kept, go ahead.");
+    hideRestartStatusBannerSoon(4000);
+  } catch (e) {
+    restartSessionBtn.textContent = "Restart failed";
+    showRestartStatusBanner("error", "✗ Restart failed: " + (e.message || String(e)));
+    hideRestartStatusBannerSoon(8000);
+    alert("Restart failed: " + (e.message || String(e)));
+  } finally {
+    clearInterval(tick);
+    switchingConversation = false;
+    setTimeout(() => {
+      restartSessionBtn.textContent = "Restart Session";
+      restartSessionBtn.disabled = false;
+    }, 1500);
+  }
+});
+
+// Restart All: the same per-agent restart (kill + re-dispatch `claude --bg
+// --resume <id>`, conversation kept) run across the whole fleet, or a chosen
+// subset. the owner's ask (2026-10-02) - after changing an autoMode/settings
+// change that applies fleet-wide, clicking Restart Session on 8 agents by
+// hand was the actual friction.
+//
+// Busy/paused handling deliberately does NOT reuse the single-agent button's
+// `session.busy` (renderer-side, pty-silence-derived, and only populated for
+// an agent whose chat has been opened this launch - see showTerminalFor()).
+// That would silently skip the busy check entirely for any agent never
+// clicked into yet. Instead this calls getSessionActivity() (the same
+// transcript+pid-liveness check the main process already uses - see
+// archive.js finishSessionActivity) fresh, right before each agent's own
+// restart, since that is backed by the live session cwd on disk and works
+// identically whether or not that agent's terminal has ever been attached.
+// Paused agents (agent.paused) are left unchecked by default in the picker
+// rather than silently included - a fleet restart that quietly un-pauses
+// something a human paused on purpose would be a surprising side effect.
+//
+// Restarts run sequentially, not in parallel: it keeps the per-row progress
+// readable, and avoids N `claude --bg` processes all starting at once.
+const restartAllBtn = document.getElementById("restart-all-btn");
+const restartAllModalEl = document.getElementById("restart-all-modal");
+const restartAllListEl = document.getElementById("restart-all-list");
+const restartAllSelectAllCb = document.getElementById("restart-all-select-all-cb");
+const restartAllCountEl = document.getElementById("restart-all-count");
+const restartAllSummaryEl = document.getElementById("restart-all-summary");
+const cancelRestartAllBtn = document.getElementById("cancel-restart-all-btn");
+const confirmRestartAllBtn = document.getElementById("confirm-restart-all-btn");
+
+let restartAllInProgress = false;
+let restartAllRows = new Map(); // agentPath -> { checkbox, statusEl }
+
+function restartAllSetRowStatus(agentPath, cls, text) {
+  const row = restartAllRows.get(agentPath);
+  if (!row) return;
+  row.statusEl.className = "restart-all-row-status " + cls;
+  row.statusEl.textContent = text;
+}
+
+function restartAllUpdateCount() {
+  let checked = 0;
+  for (const { checkbox } of restartAllRows.values()) if (checkbox.checked) checked++;
+  restartAllCountEl.textContent = checked + " selected";
+  confirmRestartAllBtn.disabled = restartAllInProgress || checked === 0;
+  confirmRestartAllBtn.textContent = checked > 0 ? `Restart ${checked} agent${checked === 1 ? "" : "s"}` : "Restart agents";
+  restartAllSelectAllCb.checked = checked > 0 && checked === restartAllRows.size;
+}
+
+function openRestartAllModal() {
+  restartAllListEl.innerHTML = "";
+  restartAllRows = new Map();
+  restartAllSummaryEl.classList.add("hidden");
+  restartAllInProgress = false;
+  restartAllLastSkippedNames = [];
+  cancelRestartAllBtn.disabled = false;
+  cancelRestartAllBtn.textContent = "Cancel";
+  retrySkippedRestartAllBtn.classList.add("hidden");
+  retrySkippedRestartAllBtn.disabled = false;
+
+  const sorted = [...agents].sort((a, b) => (a.displayName || "").localeCompare(b.displayName || ""));
+  for (const agent of sorted) {
+    const row = document.createElement("div");
+    row.className = "restart-all-row";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !agent.paused;
+    checkbox.addEventListener("change", restartAllUpdateCount);
+
+    const name = document.createElement("span");
+    name.className = "restart-all-row-name";
+    name.textContent = agent.displayName || agent.folderName || agent.path;
+    if (agent.paused) {
+      const note = document.createElement("span");
+      note.className = "restart-all-row-note";
+      note.textContent = " (paused - unchecked by default)";
+      name.appendChild(note);
+    }
+
+    const status = document.createElement("span");
+    status.className = "restart-all-row-status status-pending";
+    status.textContent = "";
+
+    row.appendChild(checkbox);
+    row.appendChild(name);
+    row.appendChild(status);
+    restartAllListEl.appendChild(row);
+    restartAllRows.set(agent.path, { checkbox, statusEl: status });
+  }
+
+  restartAllUpdateCount();
+  restartAllModalEl.classList.remove("hidden");
+}
+
+restartAllBtn.addEventListener("click", openRestartAllModal);
+
+restartAllSelectAllCb.addEventListener("click", () => {
+  const checkAll = restartAllSelectAllCb.checked;
+  for (const { checkbox } of restartAllRows.values()) checkbox.checked = checkAll;
+  restartAllUpdateCount();
+});
+
+cancelRestartAllBtn.addEventListener("click", () => {
+  if (restartAllInProgress) return; // disabled while running - see below
+  restartAllModalEl.classList.add("hidden");
+});
+
+const retrySkippedRestartAllBtn = document.getElementById("retry-skipped-restart-all-btn");
+let restartAllLastSkippedNames = []; // [{ path, name }] - busy OR unknown-state skips, for the summary + Retry
+
+// Shared by the initial run and "Retry skipped" - runs the given agent paths
+// sequentially through check-then-restart and returns the per-reason counts
+// plus which ones were skipped (by path+displayName, for the summary text
+// and so Retry skipped can target exactly those next).
+async function restartAllRunBatch(paths) {
+  let restarted = 0, skipped = 0, failed = 0;
+  const skippedEntries = [];
+  for (const agentPath of paths) {
+    restartAllSetRowStatus(agentPath, "status-active", "Checking…");
+    let activity;
+    let checkFailed = false;
+    try {
+      activity = await window.api.getSessionActivity(agentPath);
+    } catch (e) {
+      checkFailed = true; // unknown MUST mean skip here - a false "not busy" would kill a mid-turn agent
+    }
+    if (checkFailed) {
+      restartAllSetRowStatus(agentPath, "status-skip", "Skipped (couldn't check)");
+      skipped++;
+      const agentObj = agents.find((a) => a.path === agentPath);
+      skippedEntries.push({ path: agentPath, name: (agentObj && agentObj.displayName) || agentPath });
+      continue;
+    }
+    if (activity && activity.working) {
+      restartAllSetRowStatus(agentPath, "status-skip", "Skipped (busy)");
+      skipped++;
+      const agentObj = agents.find((a) => a.path === agentPath);
+      skippedEntries.push({ path: agentPath, name: (agentObj && agentObj.displayName) || agentPath });
+      continue;
+    }
+
+    restartAllSetRowStatus(agentPath, "status-active", "Restarting…");
+    try {
+      const convos = await window.api.listConversations(agentPath);
+      const cur = (convos || []).find((c) => c.isCurrent) || (convos || [])[0];
+      const sessionId = cur && cur.sessionId;
+      if (!sessionId) {
+        restartAllSetRowStatus(agentPath, "status-error", "No conversation yet");
+        failed++;
+        continue;
+      }
+      await window.api.switchConversation(agentPath, { resumeSessionId: sessionId });
+      try { if (window.guardsClearFlow) window.guardsClearFlow(agentPath, "Restart All"); } catch (e) {}   // v1.111.2
+      // Same as the single-agent Restart Session handler: if this is the
+      // currently open chat, refresh its view so it re-attaches immediately
+      // instead of showing a stale terminal until next clicked.
+      if (activeAgentPath === agentPath) {
+        reloadAgentSessionView(agentPath);
+        const agentObj = agents.find((a) => a.path === agentPath);
+        if (agentObj) selectAgent(agentObj);
+      }
+      restartAllSetRowStatus(agentPath, "status-success", "✓ Restarted");
+      restarted++;
+    } catch (e) {
+      restartAllSetRowStatus(agentPath, "status-error", "✗ " + (e.message || String(e)));
+      failed++;
+    }
+  }
+  return { restarted, skipped, failed, skippedEntries };
+}
+
+function restartAllShowSummary(prefix, result, notSelectedCount) {
+  restartAllLastSkippedNames = result.skippedEntries;
+  let text = `${prefix} - ${result.restarted} restarted, ${result.skipped} skipped, ${result.failed} failed`;
+  if (notSelectedCount > 0) text += `, ${notSelectedCount} not selected`;
+  text += ".";
+  if (result.skippedEntries.length > 0) {
+    text += ` Skipped: ${result.skippedEntries.map((e) => e.name).join(", ")}.`;
+  }
+  restartAllSummaryEl.textContent = text;
+  restartAllSummaryEl.classList.remove("hidden");
+  retrySkippedRestartAllBtn.classList.toggle("hidden", result.skippedEntries.length === 0);
+}
+
+function restartAllSetBatchUi(running) {
+  restartAllInProgress = running;
+  // "Restart Selected" and the checkboxes stay disabled for the rest of this
+  // picker's lifetime once a batch has started, even after it finishes -
+  // reopening the picker (close + click Restart All again) is the way to get
+  // a fresh run, rather than letting a second pass silently reuse stale row
+  // state. Retry skipped is the one control meant to re-enable after a run.
+  confirmRestartAllBtn.disabled = true;
+  restartAllSelectAllCb.disabled = true;
+  for (const { checkbox } of restartAllRows.values()) checkbox.disabled = true;
+  cancelRestartAllBtn.disabled = running;
+  retrySkippedRestartAllBtn.disabled = running;
+  cancelRestartAllBtn.textContent = running ? "Cancel" : "Close";
+}
+
+confirmRestartAllBtn.addEventListener("click", async () => {
+  if (restartAllInProgress) return;
+  const selected = [...restartAllRows.entries()].filter(([, row]) => row.checkbox.checked).map(([path]) => path);
+  if (selected.length === 0) return;
+
+  restartAllSetBatchUi(true);
+  const result = await restartAllRunBatch(selected);
+  restartAllSetBatchUi(false);
+  restartAllShowSummary("Done", result, restartAllRows.size - selected.length);
+});
+
+retrySkippedRestartAllBtn.addEventListener("click", async () => {
+  if (restartAllInProgress || restartAllLastSkippedNames.length === 0) return;
+  const paths = restartAllLastSkippedNames.map((e) => e.path);
+  for (const path of paths) restartAllSetRowStatus(path, "status-pending", "");
+  retrySkippedRestartAllBtn.classList.add("hidden");
+
+  restartAllSetBatchUi(true);
+  const result = await restartAllRunBatch(paths);
+  restartAllSetBatchUi(false);
+  restartAllShowSummary("Retry done", result, 0);
+});
+
+loadAgents();
+
+window.api.getAppVersion().then((v) => {
+  const node = document.getElementById("app-version");
+  node.textContent = `Agent Desktop v${v}`;
+  // The Bridge's narrow avatar strip has no room for the full string and
+  // renders "v<x>" from this attribute instead (styles-argus.css).
+  node.dataset.v = v;
+  node.title = `Agent Desktop v${v}`;
+});
+
+// Plan dropdown - populated from PLAN_FIVE_HOUR_ESTIMATES itself (not
+// hardcoded <option> tags in index.html) so adding a future plan (the owner's
+// own words: "currently 3 but maybe they will add more later") is a
+// one-line addition to that object, not an HTML edit too.
+const planSelectEl = document.getElementById("plan-select");
+if (!getSelectedPlanId()) { const none = document.createElement("option"); none.value = ""; none.textContent = "Plan: not set"; planSelectEl.appendChild(none); } // v1.121.0: an unknown plan is shown as unknown
+for (const [planId, plan] of Object.entries(PLAN_FIVE_HOUR_ESTIMATES)) {
+  const option = document.createElement("option");
+  option.value = planId;
+  option.textContent = plan.label;
+  planSelectEl.appendChild(option);
+}
+const planUnsetOption = document.createElement("option");
+planUnsetOption.value = "";
+planUnsetOption.textContent = "Not set";
+planSelectEl.insertBefore(planUnsetOption, planSelectEl.firstChild);
+planSelectEl.value = getSelectedPlanId() || "";
+getEffectivePlanId(); // sync the dropdown to the configured plan right away, not only once the fallback estimate happens to be needed
+planSelectEl.addEventListener("change", () => {
+  setSelectedPlanId(planSelectEl.value);
+  refreshUsageWindows();
+});
+// Keeps the dropdown showing whatever getEffectivePlanId() (above) just
+// synced into localStorage from infrastructure_facts.md, so it never sits
+// visibly stale even though nothing here required the owner to click it.
+function syncPlanDropdown() {
+  planSelectEl.value = getSelectedPlanId() || "";
+}
+
+// --------------------------------------------------- Claude Code updates --
+//
+// Checked once on startup, not polled repeatedly - a stale "update
+// available" state for the rest of a running session is a fine tradeoff
+// against hitting the npm registry on some recurring timer, especially
+// since this app already gets fully relaunched often anyway (no
+// auto-reload for its own code changes either). Only shown at all when an
+// update is genuinely available - stays hidden entirely otherwise.
+const updateAvailableBtn = document.getElementById("update-available-btn");
+
+async function checkForClaudeCodeUpdate() {
+  const { current, latest, updateAvailable } = await window.api.checkClaudeCodeUpdate();
+  // Always show which Claude Code the app is actually dispatching agents
+  // with, right under the Agent Desktop version - so "I see a new version"
+  // isn't ambiguous between the two.
+  const cliVerEl = document.getElementById("claude-cli-version");
+  if (cliVerEl) cliVerEl.textContent = current ? `Claude Code v${current}` : "";
+  if (!updateAvailable) return;
+  updateAvailableBtn.textContent = `Update Claude Code ${current || "?"} → ${latest}`;
+  updateAvailableBtn.title =
+    "Updates Agent Desktop's own managed copy of the Claude Code CLI, then restarts the app so every agent " +
+    "comes back on the new version. Claude Desktop's own CLI is left untouched.";
+  updateAvailableBtn.classList.remove("hidden");
+}
+
+updateAvailableBtn.addEventListener("click", async () => {
+  // Installs/updates Agent Desktop's private CLI copy - see the
+  // update-claude-cli handler in main.js. No app quit; only this app's own
+  // background agents restart (and auto-reattach).
+  updateAvailableBtn.disabled = true;
+  const original = updateAvailableBtn.textContent;
+  // v1.69.9: this takes about 2 minutes (stops every agent, downloads, verifies, restarts) and used to show one
+  // frozen line, which looked stuck. Now: the real stage, seconds elapsed, an estimate, ticking every second.
+  const CLI_UPDATE_ESTIMATE_S = 150;
+  const startedAt = Date.now();
+  let stage = "starting";
+  const paint = () => {
+    const el = Math.round((Date.now() - startedAt) / 1000);
+    const left = CLI_UPDATE_ESTIMATE_S - el;
+    updateAvailableBtn.textContent = `Updating Claude Code - ${stage} (${el}s; ${left > 0 ? "about " + left + "s left, this takes ~2 min" : "taking longer than usual, still working"})`;
+  };
+  window.api.onCliUpdateProgress((d) => { if (d && d.stage) { stage = d.stage; paint(); } });
+  paint();
+  const ticker = setInterval(paint, 1000);
+  try {
+    // main.js installs into its private CLI dir, verifies, then shows a
+    // "Restart now" dialog and relaunches - so this await normally never
+    // resolves (the window is torn down first). If it does resolve, the
+    // relaunch didn't happen for some reason; reflect that.
+    const { version, restarting } = await window.api.updateClaudeCli();
+    clearInterval(ticker);
+    updateAvailableBtn.textContent = restarting
+      ? `Updated to Claude Code ${version || "latest"} - restarting…`
+      : `Updated to Claude Code ${version || "latest"} - reopen the app to load it`;
+    setTimeout(() => updateAvailableBtn.classList.add("hidden"), 8000);
+  } catch (e) {
+    clearInterval(ticker);
+    updateAvailableBtn.disabled = false;
+    if (/cancelled by the user/i.test(String((e && e.message) || e))) { updateAvailableBtn.textContent = original; updateAvailableBtn.title = "Update cancelled - nothing was stopped."; return; }
+    updateAvailableBtn.textContent = original + "  (update failed - click to retry)";
+    updateAvailableBtn.title = String((e && e.message) || e);
+  }
+});
+
+checkForClaudeCodeUpdate();
+
+// -------------------------------------- known-interfering-software check --
+//
+// See KNOWN_INTERFERING_SERVICES in main.js for the full diagnosis story -
+// this is the UI half: a real warning (not the neutral update-nudge look
+// above) since the whole point is that this failure mode looks completely
+// unrelated (a confusing "File not found"/"not recognized" error from the
+// claude CLI itself) unless you already know to suspect it. textContent
+// throughout, not innerHTML - the service label/explanation ultimately
+// comes from this app's own source (KNOWN_INTERFERING_SERVICES), not user
+// input, but there's no reason to open an injection surface for it anyway.
+const interferingServiceWarningEl = document.getElementById("interfering-service-warning");
+
+async function checkForInterferingServices() {
+  let services;
+  try {
+    services = await window.api.checkInterferingServices();
+  } catch (e) {
+    return; // best-effort - never block the app opening over this check itself failing
+  }
+  if (!services || !services.length) return;
+
+  interferingServiceWarningEl.innerHTML = "";
+  for (const svc of services) {
+    const title = document.createElement("div");
+    title.className = "warning-title";
+    title.textContent = "⚠ " + svc.label + " may cause failures";
+    interferingServiceWarningEl.appendChild(title);
+
+    const body = document.createElement("div");
+    body.className = "warning-body";
+    body.textContent = svc.explanation;
+    interferingServiceWarningEl.appendChild(body);
+
+    const fixBtn = document.createElement("button");
+    fixBtn.textContent = "Disable it (asks for admin permission)";
+    fixBtn.addEventListener("click", async () => {
+      fixBtn.disabled = true;
+      fixBtn.textContent = "Disabling (approve the Windows prompt)...";
+      try {
+        const result = await window.api.disableInterferingService(svc.matchedServiceName);
+        if (result.ok) {
+          fixBtn.textContent = "Disabled - restart Agent Desktop to confirm";
+        } else {
+          fixBtn.disabled = false;
+          fixBtn.textContent = "Failed - click to retry";
+          fixBtn.title = result.error || "";
+        }
+      } catch (e) {
+        fixBtn.disabled = false;
+        fixBtn.textContent = "Failed - click to retry";
+        fixBtn.title = e.message;
+      }
+    });
+    interferingServiceWarningEl.appendChild(fixBtn);
+  }
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.className = "dismiss-btn";
+  dismissBtn.textContent = "Dismiss for now";
+  dismissBtn.addEventListener("click", () => interferingServiceWarningEl.classList.add("hidden"));
+  interferingServiceWarningEl.appendChild(dismissBtn);
+
+  interferingServiceWarningEl.classList.remove("hidden");
+}
+
+checkForInterferingServices();
+
+// Startup health check for "the 2 sec problem" (see CLAUDE.md's own
+// top-of-file section by that name) and anything else that would keep the
+// `claude` CLI from actually launching - added 2026-08-23 after that exact
+// failure cost a multi-hour live debugging session before being pinned
+// down, precisely because nothing surfaced it until an agent was already
+// being used. This runs a real `claude --version` at startup (main.js's
+// checkClaudeExecutableHealth()) rather than just checking that a file
+// exists, since a file existing was never the reliable signal here.
+const claudeCliWarningEl = document.getElementById("claude-cli-warning");
+
+function claudeCliWarningMessage(result) {
+  if (result.viaSymlink) {
+    return (
+      "The resolved claude.cmd is a symlink into Claude Desktop's own package storage, and it isn't " +
+      "responding right now - this is exactly \"the 2 sec problem\" (see CLAUDE.md or the README's " +
+      "troubleshooting section). Run this in PowerShell to confirm: " +
+      "Get-Item \"$env:APPDATA\\npm\\claude.cmd\" | Select-Object LinkType, Target"
+    );
+  }
+  if (result.reason === "not-installed") return result.detail; // already plain words (launchEnv.js CLAUDE_MISSING_MESSAGE)
+  if (result.reason === "missing" || result.reason === "not-resolved") {
+    return (
+      "Couldn't find the Claude Code CLI" + (result.detail ? ` (looked for it at: ${result.detail})` : "") +
+      ". Make sure Claude Code is installed and you've signed in at least once, then restart Agent Desktop."
+    );
+  }
+  return (
+    "Claude Code CLI was found but didn't respond to a test launch" +
+    (result.detail ? ` (${result.detail})` : "") +
+    ". This may be transient - try Retry below, or check the README's troubleshooting section if it keeps happening."
+  );
+}
+
+async function checkClaudeCliHealth() {
+  let result;
+  try {
+    result = await window.api.checkClaudeExecutableHealth();
+  } catch (e) {
+    return; // best-effort - never block the app opening over this check itself failing
+  }
+  if (!result || result.healthy) {
+    claudeCliWarningEl.classList.add("hidden");
+    return;
+  }
+
+  claudeCliWarningEl.innerHTML = "";
+  claudeCliWarningEl.classList.toggle("calm", result.reason === "not-installed"); // v1.121.0: a setup step, shown amber, never red
+
+  const title = document.createElement("div");
+  title.className = "warning-title";
+  title.textContent = result.reason === "not-installed" ? "Claude Code is not installed" : "⚠ Claude Code CLI isn't launching";
+  claudeCliWarningEl.appendChild(title);
+
+  const body = document.createElement("div");
+  body.className = "warning-body";
+  body.textContent = claudeCliWarningMessage(result);
+  claudeCliWarningEl.appendChild(body);
+
+  const retryBtn = document.createElement("button");
+  retryBtn.textContent = "Retry";
+  retryBtn.addEventListener("click", async () => {
+    retryBtn.disabled = true;
+    retryBtn.textContent = "Checking...";
+    await checkClaudeCliHealth();
+  });
+  claudeCliWarningEl.appendChild(retryBtn);
+
+  if (result.reason === "not-installed") { // v1.121.0: a calm, fixable state: the Setup panel has a Claude Code row
+    const setupBtn = document.createElement("button");
+    setupBtn.textContent = "Open Setup";
+    setupBtn.addEventListener("click", () => { const sn = document.getElementById("setup-nav"); if (sn) sn.click(); });
+    claudeCliWarningEl.appendChild(setupBtn);
+  }
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.className = "dismiss-btn";
+  dismissBtn.textContent = "Dismiss for now";
+  dismissBtn.addEventListener("click", () => claudeCliWarningEl.classList.add("hidden"));
+  claudeCliWarningEl.appendChild(dismissBtn);
+
+  claudeCliWarningEl.classList.remove("hidden");
+}
+
+checkClaudeCliHealth();

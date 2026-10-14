@@ -1,0 +1,19 @@
+/* My Finance sidebar entry (v1.90.0). Same look as the My Health / My Research entries. The view's own styles are in styles-finance.css, loaded on first open. */
+.finance-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.finance-nav:hover { background: var(--bg-hover); }
+.finance-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.finance-nav-name { flex: 1; min-width: 0; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+body:not(.lp-on).argus-open .finance-nav, body:not(.lp-on).iris-open .finance-nav { display: none; }
+body.lp-f #systems-group .finance-nav-name { flex: 1; min-width: 0; font-size: 13px; }
+/* layout C: the tile is narrow, so it shows the short word "Finance" at 12 px instead of a cut-off "My Fina..." (review S8) */
+.finance-nav-short { display: none; }
+body.lp-c #systems-group .finance-nav-name { display: none; }
+body.lp-c #systems-group .finance-nav-short { display: block; flex: none; font-size: 12px; font-weight: 500; letter-spacing: .01em; line-height: 1.1; white-space: nowrap; max-width: 100%; }
+/* an opened My Finance hides the other views, exactly as My Research does */
+body.finance-open #chat-view, body.finance-open #empty-state, body.finance-open #library-view, body.finance-open #argus-view,
+body.finance-open #iris-view, body.finance-open #memory-view, body.finance-open #daily-view, body.finance-open #health-view, body.finance-open #tools-view,
+body.finance-open #research-view, body.finance-open #xp-panel { display: none !important; }

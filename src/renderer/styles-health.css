@@ -1,0 +1,308 @@
+/* My Health view (v1.81.0). Loaded on first open of My Health, not at startup. Look follows the UI-UX HYGIEIA v1 mockups and the
+   My Daily styles; colours come from the app tokens (the only literals are the band and optimal-zone tints, defined once below). */
+:root { --hl-band: rgba(22, 163, 74, .16); --hl-ref: rgba(22, 163, 74, .20); --hl-opt: rgba(22, 163, 74, .55); --hl-blue: #3f7fd0; }
+
+#health-view { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg-app); position: relative; }
+#health-view.hidden { display: none; }
+.hl-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
+.hl-title { font-size: 15px; }
+.hl-date { color: var(--text-muted); font-size: 12px; }
+.hl-chip { font-size: 11px; color: var(--health-healthy); border: 1px solid var(--health-healthy); border-radius: 999px; padding: 1px 8px; }
+.hl-sp { flex: 1; }
+.hl-btn { font: inherit; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; height: 30px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.hl-btn:hover { background: var(--bg-hover); }
+.hl-btn:disabled { opacity: .5; cursor: default; }
+.hl-btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+.hl-btn.pri:hover { background: var(--accent-2); }
+.hl-btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+.hl-tabs { display: flex; gap: 6px; padding: 8px 16px 0; background: var(--bg-panel); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.hl-tab { font: inherit; color: var(--text); border: 0; border-bottom: 2px solid transparent; background: none; height: 32px; padding: 0 12px; cursor: pointer; white-space: nowrap; flex: none; }
+.hl-tab:hover { background: var(--bg-hover); }
+.hl-tab.on { border-bottom-color: var(--accent); font-weight: 600; }
+.hl-body { flex: 1; overflow-y: auto; padding: 14px 16px 30px; display: flex; flex-direction: column; gap: 12px; max-width: 1100px; width: 100%; }
+.hl-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: #26241f; color: #fff; border-radius: 8px; padding: 8px 14px; font-size: 13px; z-index: 5; max-width: 80%; }
+.hl-toast.hidden { display: none; }
+.hl-muted { color: var(--text-muted); }
+.hl-small { font-size: 12px; }
+.hl-pad { padding: 8px 0; }
+.hl-error { color: var(--health-critical); }
+.hl-p { margin: 0 0 6px; }
+.hl-ul { margin: 0 0 8px; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+.hl-actions { display: flex; gap: 8px; }
+
+.hl-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.hl-card-h { margin: 0 0 8px; font-size: 12.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+.hl-tag { font-size: 11px; text-transform: none; letter-spacing: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; }
+
+/* ---- Today tiles ---- */
+.hl-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.hl-tile { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hl-tile-t { font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); }
+.hl-tile-v { font-size: 22px; font-weight: 700; line-height: 1.15; }
+.hl-tile-s { font-size: 12px; color: var(--text-muted); }
+.hl-tile-src { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.hl-spark { width: 100%; height: 30px; margin-top: 4px; display: block; }
+.hl-band { fill: var(--hl-band); }
+.hl-line { fill: none; stroke: var(--text); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.hl-dot { fill: var(--text); }
+.hl-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-bottom: 6px; font-size: 12.5px; }
+.hl-sw { display: inline-block; width: 16px; height: 12px; border-radius: 3px; background: var(--hl-band); border: 1px solid var(--border); vertical-align: middle; }
+.hl-sw-ref { background: var(--hl-ref); }
+.hl-sw-opt { background: repeating-linear-gradient(45deg, var(--hl-opt) 0 3px, transparent 3px 6px); }
+.hl-ok { color: var(--health-healthy); } .hl-warn { color: var(--health-warning); } .hl-bad { color: var(--health-critical); }
+
+/* ---- Labs ---- */
+.hl-labs { display: flex; flex-direction: column; }
+.hl-lab { display: grid; grid-template-columns: minmax(110px, 1.1fr) minmax(170px, 2fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(90px, .8fr); gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--border); }
+.hl-lab-h { border-top: 0; font-size: 11px; letter-spacing: .05em; color: var(--text-muted); padding-top: 0; }
+.hl-lab-m { display: flex; flex-direction: column; min-width: 0; }
+.hl-lab-s.ok { color: var(--health-healthy); } .hl-lab-s.warn { color: var(--health-warning); } .hl-lab-s.bad { color: var(--health-critical); } .hl-lab-s.none { color: var(--text-muted); }
+.hl-rbar { position: relative; height: 12px; border-radius: 6px; background: var(--bg-sidebar); border: 1px solid var(--border); }
+.hl-rbar .hl-ref, .hl-rbar .hl-opt { position: absolute; top: 0; bottom: 0; }
+.hl-rbar .hl-ref { background: var(--hl-ref); }
+.hl-rbar .hl-opt { background: repeating-linear-gradient(45deg, var(--hl-opt) 0 3px, transparent 3px 6px); }
+.hl-rdot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--text); border: 2px solid var(--bg-panel); }
+.hl-rdot.ok { background: var(--text); } .hl-rdot.warn { background: var(--health-warning); } .hl-rdot.bad { background: var(--health-critical); } .hl-rdot.none { background: var(--health-unknown); }
+@media (max-width: 760px) { .hl-lab { grid-template-columns: 1fr 1fr; } .hl-lab-h { display: none; } }
+
+/* ---- Meds ---- */
+.hl-med { display: grid; grid-template-columns: 90px minmax(120px, 1.3fr) 110px minmax(120px, 2fr) auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+.hl-med:first-of-type { border-top: 0; }
+.hl-med-a { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+
+/* ---- forms ---- */
+.hl-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.hl-field { display: flex; flex-direction: column; gap: 3px; min-width: 110px; flex: 1 1 130px; }
+.hl-field.wide { flex: 2 1 220px; }
+.hl-flabel { font-size: 11.5px; color: var(--text-muted); }
+.hl-input { font: inherit; height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text); min-width: 0; }
+.hl-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* ---- agent-written screens: Insights, Trends, Plan, Experiments ---- */
+.hl-ins-head { display: flex; align-items: baseline; gap: 12px; }
+.hl-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.hl-filter { height: 28px; }
+.hl-ins, .hl-plan { display: flex; flex-direction: column; gap: 6px; }
+.hl-plan { padding: 8px 0; border-top: 1px solid var(--border); }
+.hl-plan:first-of-type { border-top: 0; }
+.hl-ins-t { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hl-chips, .hl-refs, .hl-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.hl-chip2 { font-size: 11.5px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; background: var(--bg-sidebar); color: var(--text); white-space: nowrap; }
+.hl-chip2.ev-guideline, .hl-chip2.ev-meta-analysis { border-color: var(--health-healthy); color: var(--health-healthy); }
+.hl-chip2.ev-single-study { border-color: var(--hl-blue); color: var(--hl-blue); }
+.hl-chip2.ev-preclinical, .hl-chip2.ev-anecdote { border-color: var(--health-warning); color: var(--health-warning); }
+.hl-chip2.ev-traditional { border-color: var(--accent); color: var(--accent); }
+.hl-chip2.ref { background: transparent; border-style: dashed; }
+.hl-chip2.st-new { background: var(--accent); border-color: var(--accent); color: #fff; }
+.hl-chip2.st-saved, .hl-chip2.st-trying, .hl-chip2.st-running { border-color: var(--hl-blue); color: var(--hl-blue); }
+.hl-chip2.st-dismissed, .hl-chip2.st-stopped, .hl-chip2.st-dropped { color: var(--text-muted); }
+.hl-chip2.st-kept, .hl-chip2.st-tried { border-color: var(--health-healthy); color: var(--health-healthy); }
+.hl-why { background: var(--bg-sidebar); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.hl-link { font: inherit; font-size: 12px; color: var(--hl-blue); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-align: left; }
+.hl-doctor { font-size: 12px; color: var(--health-warning); border-left: 3px solid var(--health-warning); padding-left: 8px; }
+.hl-note { font-size: 12.5px; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
+.hl-worldview { white-space: pre-wrap; line-height: 1.45; font-size: 13.5px; }
+.hl-trends { display: flex; flex-direction: column; }
+.hl-trend { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(150px, 1.6fr) minmax(130px, 1.2fr) minmax(110px, 1fr); gap: 12px; align-items: center; padding: 8px 0 2px; border-top: 1px solid var(--border); }
+.hl-trend.hl-lab-h { border-top: 0; padding-top: 0; }
+.hl-trend-note { padding: 0 0 8px; }
+.hl-exp-cmp { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.hl-exp-chart { height: 46px; }
+.hl-before { stroke: var(--text-muted); } .hl-after { stroke: var(--accent); }
+.hl-startline { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+@media (max-width: 760px) { .hl-trend { grid-template-columns: 1fr 1fr; } }
+
+/* ---- stage 1b: Longevity, Routines, Interactions, Evidence, Weekly, Reading ---- */
+.hl-h3 { margin: 0 0 6px; font-size: 14px; }
+.hl-hint .hl-actions { align-items: center; }
+.hl-bio { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin: 8px 0; }
+.hl-dial { width: 220px; height: 124px; flex: none; }
+.hl-dial-track { fill: none; stroke: var(--bg-active); stroke-width: 12; stroke-linecap: round; }
+.hl-dial-good { fill: none; stroke: var(--health-healthy); stroke-width: 12; stroke-linecap: round; }
+.hl-dial-warn { fill: none; stroke: var(--health-warning); stroke-width: 12; stroke-linecap: round; }
+.hl-dial-cal { stroke: var(--text); stroke-width: 2; }
+.hl-dial-dot { fill: var(--text); stroke: var(--bg-panel); stroke-width: 2; }
+.hl-dial-num { font-size: 30px; font-weight: 700; fill: var(--text); }
+.hl-dial-sub { font-size: 11px; fill: var(--text-muted); }
+.hl-bio-side { display: flex; flex-direction: column; gap: 4px; min-width: 200px; flex: 1; }
+.hl-bio-h { font-size: 16px; font-weight: 700; }
+.hl-pheno-in { display: flex; flex-direction: column; margin: 8px 0; }
+.hl-pin { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr .8fr; gap: 10px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+.hl-pin.hl-lab-h { border-top: 0; }
+.hl-formula { background: var(--bg-sidebar); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; overflow-x: auto; margin: 4px 0 8px; white-space: pre; }
+.hl-rts { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.hl-rt { display: flex; flex-direction: column; gap: 10px; }
+.hl-rt.paused { opacity: .75; }
+.hl-rt-top { display: flex; align-items: center; gap: 12px; }
+.hl-rt-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hl-streak { font-size: 12px; color: var(--accent); font-weight: 700; white-space: nowrap; }
+.hl-ring { width: 64px; height: 64px; flex: none; }
+.hl-ring-bg { fill: none; stroke: var(--bg-active); stroke-width: 7; }
+.hl-ring-fg { fill: none; stroke: var(--accent); stroke-width: 7; stroke-linecap: round; transition: stroke-dasharray .35s ease; }
+.hl-ring-fg.full { stroke: var(--health-healthy); }
+.hl-ring-t { font-size: 14px; font-weight: 700; fill: var(--text); }
+.hl-rt.done { border-color: var(--health-healthy); animation: hl-pop .5s ease; }
+@keyframes hl-pop { 0% { transform: scale(1); } 40% { transform: scale(1.02); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .hl-rt.done { animation: none; } .hl-ring-fg { transition: none; } }
+.hl-rt-btns { display: flex; gap: 8px; }
+.hl-big { flex: 1; min-height: 52px; font-size: 17px; font-weight: 700; justify-content: center; }
+.hl-rt-btns .hl-btn:not(.hl-big) { min-height: 52px; }
+.hl-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.hl-day { display: flex; flex-direction: column; align-items: center; border: 1px dashed var(--border); border-radius: 8px; padding: 2px 0; font-size: 11px; color: var(--text-muted); }
+.hl-day.met { background: var(--hl-ref); border: 1px solid var(--health-healthy); color: var(--text); }
+.hl-day.part { background: var(--bg-sidebar); border-style: solid; color: var(--text); }
+.hl-day.skip { background: transparent; border-style: dotted; }
+.hl-day-n { font-weight: 700; }
+.hl-rem { display: flex; flex-direction: column; gap: 6px; background: var(--bg-sidebar); border-radius: 8px; padding: 8px 10px; }
+.hl-chip-btn { font: inherit; font-size: 12px; cursor: pointer; }
+.hl-chip-btn:hover { background: var(--bg-hover); }
+.hl-ix { display: flex; flex-direction: column; gap: 6px; }
+.hl-ebars { display: flex; flex-direction: column; gap: 6px; }
+.hl-ebar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hl-meter { display: inline-flex; gap: 3px; }
+.hl-meter i { width: 18px; height: 9px; border-radius: 3px; background: var(--bg-active); display: inline-block; }
+.hl-meter i.on { background: var(--text-muted); }
+.hl-meter.lv-guideline i.on, .hl-meter.lv-meta-analysis i.on { background: var(--health-healthy); }
+.hl-meter.lv-single-study i.on { background: var(--hl-blue); }
+.hl-meter.lv-preclinical i.on, .hl-meter.lv-anecdote i.on { background: var(--health-warning); }
+.hl-meter.lv-traditional i.on { background: var(--accent); }
+.hl-weekly { display: grid; grid-template-columns: 170px 1fr; gap: 14px; align-items: start; }
+.hl-weeks { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.hl-week-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.hl-wkrow { display: grid; grid-template-columns: 1.3fr 1.6fr 1.2fr 1fr; gap: 10px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+.hl-wkrow.hl-lab-h { border-top: 0; }
+.hl-points li { margin-bottom: 2px; }
+@media (max-width: 760px) { .hl-weekly { grid-template-columns: 1fr; } .hl-med { grid-template-columns: 1fr 1fr; } .hl-pin, .hl-wkrow { grid-template-columns: 1fr 1fr; } }
+
+/* ---- the shared chart (health-chart.js): real markers, axes with numbers, band edges, read-out, numbers table ---- */
+.hl-chart { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; min-width: 0; }
+.hl-chart-svg { width: 100%; height: auto; max-width: 760px; display: block; overflow: visible; }
+.hl-axis { font-size: 9px; fill: var(--text-muted); }
+.hl-axis-unit { font-weight: 700; }
+.hl-grid { stroke: var(--border); stroke-width: .7; }
+.hl-axisline { stroke: var(--text-muted); stroke-width: .7; }
+.hl-bandedge { stroke: var(--health-healthy); stroke-width: .8; stroke-dasharray: 3 2; }
+.hl-bandtxt { fill: var(--health-healthy); }
+.hl-bandlbl { font-style: italic; }
+.hl-ptlbl { font-size: 9px; fill: var(--text); }
+.hl-ptlbl.last { font-weight: 700; }
+.hl-pt { fill: var(--bg-panel); stroke: var(--text); stroke-width: 1.6; cursor: default; }
+.hl-pt.last { fill: var(--text); }
+.hl-pt.after { fill: var(--accent); stroke: var(--accent); }
+.hl-pt.hot, .hl-pt:focus { stroke: var(--accent); stroke-width: 3; outline: none; }
+.hl-chart-read { min-height: 16px; }
+.hl-numtable { border-collapse: collapse; font-size: 12px; max-height: 220px; }
+.hl-numtable th, .hl-numtable td { text-align: left; padding: 2px 14px 2px 0; border-bottom: 1px solid var(--border); }
+.hl-numtable caption { text-align: left; }
+.hl-lab-chart { padding: 4px 0 10px; }
+.hl-tiles { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.hl-wk-stats { display: flex; flex-direction: column; }
+.hl-wkrow { grid-template-columns: 1.2fr 1.5fr 1.1fr .9fr auto; }
+
+/* ---- Nutrition ---- */
+.hl-focus { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.hl-focus-i { background: var(--bg-sidebar); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.hl-focus-i .hl-chart { align-self: stretch; }
+.hl-shop { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); min-height: 36px; cursor: pointer; }
+.hl-shop.done .hl-shop-n { text-decoration: line-through; color: var(--text-muted); }
+.hl-shop input { width: 20px; height: 20px; }
+.hl-shop-n { flex: 1; }
+.hl-recipe { display: flex; flex-direction: column; gap: 6px; }
+.hl-recipe-img { max-width: 360px; max-height: 220px; border-radius: 8px; object-fit: cover; }
+.hl-ing { columns: 2; column-gap: 24px; }
+@media (max-width: 760px) { .hl-ing { columns: 1; } }
+
+/* ======================= v1.82.2: UI-UX v3 layout (grouped navigation, chart rule, compact rows, dark and narrow) ======================= */
+#health-view { container-type: inline-size; container-name: hlv; }
+body.dark, html[data-theme="dark"] body { --hl-band: rgba(74, 222, 128, .14); --hl-ref: rgba(74, 222, 128, .2); --hl-opt: rgba(74, 222, 128, .5); --hl-blue: #7aa7e6; }
+
+/* group tabs and sub-pills */
+.hl-tabs { padding-top: 4px; gap: 2px; }
+.hl-tab { padding: 6px 14px 7px; height: auto; font-size: 14px; border-bottom-width: 3px; }
+.hl-tab-short { display: none; }
+.hl-subtabs { display: flex; gap: 6px; padding: 8px 16px; background: var(--bg-app); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.hl-subtabs[hidden] { display: none; }
+.hl-pill { font: inherit; font-size: 13px; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 15px; height: 28px; padding: 0 13px; cursor: pointer; white-space: nowrap; flex: none; }
+.hl-pill:hover { background: var(--bg-hover); }
+.hl-pill.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.hl-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.hl-filterbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hl-more summary { cursor: pointer; color: var(--text-muted); }
+@container hlv (max-width: 640px) {
+  .hl-tab-full { display: none; } .hl-tab-short { display: inline; } .hl-tab { padding: 6px 10px 7px; }
+  .hl-head { flex-wrap: wrap; gap: 8px; padding: 8px 12px; } .hl-chip { display: none; }
+  .hl-body { padding: 10px 12px 24px; }
+  .hl-trow, .hl-nut2, .hl-lg2, .hl-weekly { grid-template-columns: 1fr; }
+  .hl-emap { grid-template-columns: 1fr; }
+  .hl-med, .hl-lab, .hl-trend, .hl-wkrow, .hl-pin { grid-template-columns: 1fr 1fr; }
+  .hl-ins-top { flex-direction: column; align-items: flex-start; }
+}
+
+/* the chart: markers, hollow diamonds outside the band, goal line, dark read-out box */
+.hl-chart-svg { max-width: 100%; }
+.hl-axis { font-size: 11.5px; } .hl-ptlbl { font-size: 12px; font-weight: 700; } .hl-ptlbl.last { font-size: 12.5px; }
+.hl-pt.out { fill: var(--bg-panel); stroke: var(--health-warning); stroke-width: 2; }
+.hl-pt.out.last { fill: var(--bg-panel); }
+.hl-goal { stroke: var(--hl-blue); stroke-width: 1.5; stroke-dasharray: 5 4; } .hl-goaltxt { fill: var(--hl-blue); }
+.hl-chart-read { background: var(--text); color: var(--bg-panel); border-radius: 8px; padding: 5px 10px; font-size: 12.5px; align-self: flex-start; max-width: 100%; }
+.hl-read-h { font-weight: 700; } .hl-read-s { opacity: .85; }
+.hl-numtable td:last-child { font-weight: 700; }
+
+/* Trends: one row per marker */
+.hl-trow { display: grid; grid-template-columns: 230px 1fr; gap: 16px; align-items: center; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; }
+.hl-trow.grid { grid-template-columns: 1fr; } .hl-trow .hl-trend-note { grid-column: 1 / -1; }
+.hl-trow-i { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.hl-trow-v { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.hl-pos { font-size: 12.5px; font-weight: 600; border: 1px solid; border-radius: 7px; padding: 1px 8px; }
+.hl-pos-out { color: var(--health-warning); border-color: var(--health-warning); background: rgba(180, 83, 9, .08); }
+.hl-pos-in { color: var(--health-healthy); border-color: var(--health-healthy); background: rgba(22, 163, 74, .08); }
+.hl-tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 10px; }
+@container hlv (max-width: 640px) { .hl-tgrid { grid-template-columns: 1fr; } }
+
+/* Insights: compact rows */
+.hl-ins-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.hl-ins-btns { display: flex; gap: 6px; }
+.hl-ins-title { font-weight: 700; margin-top: 2px; } .hl-ins-sum { margin: 0; color: var(--text); }
+.hl-chip2.tag { background: var(--bg-hover); border-color: transparent; }
+.hl-plan-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .hl-plan-t { min-width: 120px; }
+
+/* Evidence map: five columns */
+.hl-emap { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.hl-ecol { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-height: 80px; }
+.hl-ecol-h { margin: 0 0 4px; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); }
+.hl-eitem { font: inherit; font-size: 13px; text-align: left; border: 1.5px solid; border-radius: 8px; padding: 6px 9px; cursor: pointer; background: transparent; color: var(--text); }
+.hl-eitem.ev-guideline, .hl-eitem.ev-meta-analysis { border-color: var(--health-healthy); background: rgba(22, 163, 74, .10); }
+.hl-eitem.ev-single-study { border-color: var(--hl-blue); } .hl-eitem.ev-preclinical { border-color: var(--health-warning); background: rgba(180, 83, 9, .08); }
+.hl-eitem.ev-traditional { border-color: #8a5aa8; background: rgba(138, 90, 168, .10); } .hl-eitem.ev-anecdote { border-color: var(--border); }
+.hl-eitem.sel { outline: 3px solid var(--accent); outline-offset: 1px; }
+
+/* Routines: the big +1 */
+.hl-hero { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 16px; }
+.hl-hero.done { border-color: var(--health-healthy); }
+.hl-hero-l { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.hl-hero-n { font-size: 56px; font-weight: 700; line-height: 1; }
+.hl-plus { width: 96px; min-height: 60px; font-size: 24px; font-weight: 700; justify-content: center; margin: 4px 0; }
+.hl-center { justify-content: center; flex-wrap: wrap; }
+.hl-rlist { display: flex; flex-direction: column; gap: 6px; }
+.hl-rrow { font: inherit; display: flex; align-items: center; gap: 12px; background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; text-align: left; min-height: 48px; }
+.hl-rrow.sel { border-color: var(--accent); }
+.hl-rcheck { width: 24px; height: 24px; border: 2px solid var(--text-muted); border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; color: var(--health-healthy); font-weight: 700; flex: none; }
+.hl-rcheck.on { border-color: var(--health-healthy); }
+.hl-gentle { background: var(--bg-sidebar); }
+.hl-b { font-weight: 700; }
+
+/* Longevity and Nutrition two-column layouts */
+.hl-lg2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.hl-bio-big { font-size: 30px; font-weight: 700; line-height: 1.1; }
+.hl-nut2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); gap: 12px; align-items: start; }
+.hl-nut-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.hl-recipe-head { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; } .hl-recipe-hb { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 6px; }
+.hl-recipe-t { font-size: 18px; } .hl-recipe.hero { border-width: 1.5px; }
+.hl-photo { width: 150px; height: 120px; border-radius: 10px; background: repeating-linear-gradient(135deg, var(--bg-hover) 0 8px, var(--bg-sidebar) 8px 16px); display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 12px; flex: none; }
+.hl-focus { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.hl-focus-i { background: var(--bg-panel); border: 1px solid var(--border); }
+.hl-planned { background: var(--bg-sidebar); }
+.hl-wk-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.hl-wk-tile { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; } .hl-wk-v { font-size: 24px; font-weight: 700; }
+@container hlv (max-width: 760px) { .hl-nut2, .hl-lg2 { grid-template-columns: 1fr; } .hl-emap { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.hl-hero .hl-week { width: 100%; max-width: 440px; }

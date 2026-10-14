@@ -1,0 +1,662 @@
+{
+  "profile": {
+    "birthYM": "1988-06"
+  },
+  "series": [
+    {
+      "metric": "weight",
+      "source": "scale",
+      "base": 71.8,
+      "trend": -1.2,
+      "noise": 0.25,
+      "weekly": 0.2,
+      "decimals": 1,
+      "days": 90,
+      "hour": 7,
+      "minute": 10
+    },
+    {
+      "metric": "body_fat",
+      "source": "scale",
+      "base": 19.6,
+      "trend": -1.0,
+      "noise": 0.2,
+      "decimals": 1,
+      "days": 90,
+      "skipEvery": 3
+    },
+    {
+      "metric": "resting_hr",
+      "source": "watch",
+      "base": 60,
+      "trend": -3,
+      "noise": 1.2,
+      "weekly": 1,
+      "decimals": 0,
+      "days": 90
+    },
+    {
+      "metric": "hrv",
+      "source": "watch",
+      "base": 52,
+      "trend": 7,
+      "noise": 4,
+      "weekly": 3,
+      "decimals": 0,
+      "days": 90
+    },
+    {
+      "metric": "steps",
+      "source": "watch",
+      "base": 8300,
+      "trend": 900,
+      "noise": 1900,
+      "weekly": 1400,
+      "decimals": 0,
+      "days": 90,
+      "hour": 23,
+      "minute": 0
+    },
+    {
+      "metric": "sleep_minutes",
+      "source": "watch",
+      "base": 420,
+      "trend": 18,
+      "noise": 28,
+      "weekly": 10,
+      "decimals": 0,
+      "days": 90,
+      "hour": 6,
+      "minute": 45
+    },
+    {
+      "metric": "spo2",
+      "source": "watch",
+      "base": 97,
+      "trend": 0.3,
+      "noise": 0.8,
+      "decimals": 0,
+      "days": 90
+    },
+    {
+      "metric": "vo2max",
+      "source": "watch",
+      "base": 44.2,
+      "trend": 1.6,
+      "noise": 0.3,
+      "decimals": 1,
+      "days": 90,
+      "skipEvery": 4
+    },
+    {
+      "metric": "grip_strength",
+      "source": "clinic",
+      "base": 39.0,
+      "trend": 1.5,
+      "noise": 0.5,
+      "decimals": 1,
+      "days": 90,
+      "skipEvery": 7
+    }
+  ],
+  "bloodPressure": [
+    {
+      "days": 90,
+      "every": 3,
+      "sys": 116,
+      "dia": 74,
+      "noise": 5,
+      "seed": 7
+    }
+  ],
+  "labs": [
+    {
+      "test": "Albumin",
+      "value": 43,
+      "unit": "g/L",
+      "refLow": 35,
+      "refHigh": 50,
+      "daysAgo": 14
+    },
+    {
+      "test": "Creatinine",
+      "value": 80,
+      "unit": "umol/L",
+      "refLow": 45,
+      "refHigh": 90,
+      "daysAgo": 14
+    },
+    {
+      "test": "Glucose (fasting)",
+      "value": 5.3,
+      "unit": "mmol/L",
+      "refLow": 3.9,
+      "refHigh": 5.6,
+      "daysAgo": 14
+    },
+    {
+      "test": "CRP",
+      "value": 1.2,
+      "unit": "mg/L",
+      "refLow": 0,
+      "refHigh": 5,
+      "daysAgo": 14,
+      "optLow": 0,
+      "optHigh": 1
+    },
+    {
+      "test": "Lymphocytes",
+      "value": 30,
+      "unit": "%",
+      "refLow": 20,
+      "refHigh": 40,
+      "daysAgo": 14
+    },
+    {
+      "test": "MCV",
+      "value": 91,
+      "unit": "fL",
+      "refLow": 80,
+      "refHigh": 100,
+      "daysAgo": 14
+    },
+    {
+      "test": "RDW",
+      "value": 13.2,
+      "unit": "%",
+      "refLow": 11.5,
+      "refHigh": 14.5,
+      "daysAgo": 14
+    },
+    {
+      "test": "Alkaline phosphatase",
+      "value": 70,
+      "unit": "U/L",
+      "refLow": 40,
+      "refHigh": 130,
+      "daysAgo": 14
+    },
+    {
+      "test": "WBC",
+      "value": 5.9,
+      "unit": "10^3/uL",
+      "refLow": 4,
+      "refHigh": 10,
+      "daysAgo": 14
+    },
+    {
+      "test": "LDL cholesterol",
+      "value": 2.6,
+      "unit": "mmol/L",
+      "refLow": 0,
+      "refHigh": 3.4,
+      "daysAgo": 14,
+      "optLow": 0,
+      "optHigh": 2.6
+    },
+    {
+      "test": "HDL cholesterol",
+      "value": 1.6,
+      "unit": "mmol/L",
+      "refLow": 1.0,
+      "refHigh": 3.0,
+      "daysAgo": 14
+    },
+    {
+      "test": "Triglycerides",
+      "value": 0.9,
+      "unit": "mmol/L",
+      "refLow": 0,
+      "refHigh": 1.7,
+      "daysAgo": 14
+    },
+    {
+      "test": "HbA1c",
+      "value": 5.2,
+      "unit": "%",
+      "refLow": 4.0,
+      "refHigh": 5.7,
+      "daysAgo": 14
+    },
+    {
+      "test": "Vitamin D",
+      "value": 78,
+      "unit": "nmol/L",
+      "refLow": 50,
+      "refHigh": 125,
+      "daysAgo": 14,
+      "optLow": 75,
+      "optHigh": 125
+    },
+    {
+      "test": "Ferritin",
+      "value": 88,
+      "unit": "ug/L",
+      "refLow": 30,
+      "refHigh": 300,
+      "daysAgo": 14
+    },
+    {
+      "test": "Albumin",
+      "value": 42,
+      "unit": "g/L",
+      "refLow": 35,
+      "refHigh": 50,
+      "daysAgo": 200
+    },
+    {
+      "test": "Creatinine",
+      "value": 84,
+      "unit": "umol/L",
+      "refLow": 45,
+      "refHigh": 90,
+      "daysAgo": 200
+    },
+    {
+      "test": "Glucose (fasting)",
+      "value": 5.6,
+      "unit": "mmol/L",
+      "refLow": 3.9,
+      "refHigh": 5.6,
+      "daysAgo": 200
+    },
+    {
+      "test": "CRP",
+      "value": 2.4,
+      "unit": "mg/L",
+      "refLow": 0,
+      "refHigh": 5,
+      "daysAgo": 200,
+      "optLow": 0,
+      "optHigh": 1
+    },
+    {
+      "test": "Lymphocytes",
+      "value": 29,
+      "unit": "%",
+      "refLow": 20,
+      "refHigh": 40,
+      "daysAgo": 200
+    },
+    {
+      "test": "MCV",
+      "value": 92,
+      "unit": "fL",
+      "refLow": 80,
+      "refHigh": 100,
+      "daysAgo": 200
+    },
+    {
+      "test": "RDW",
+      "value": 13.6,
+      "unit": "%",
+      "refLow": 11.5,
+      "refHigh": 14.5,
+      "daysAgo": 200
+    },
+    {
+      "test": "Alkaline phosphatase",
+      "value": 76,
+      "unit": "U/L",
+      "refLow": 40,
+      "refHigh": 130,
+      "daysAgo": 200
+    },
+    {
+      "test": "WBC",
+      "value": 6.4,
+      "unit": "10^3/uL",
+      "refLow": 4,
+      "refHigh": 10,
+      "daysAgo": 200
+    },
+    {
+      "test": "LDL cholesterol",
+      "value": 3.1,
+      "unit": "mmol/L",
+      "refLow": 0,
+      "refHigh": 3.4,
+      "daysAgo": 200,
+      "optLow": 0,
+      "optHigh": 2.6
+    },
+    {
+      "test": "HDL cholesterol",
+      "value": 1.5,
+      "unit": "mmol/L",
+      "refLow": 1.0,
+      "refHigh": 3.0,
+      "daysAgo": 200
+    },
+    {
+      "test": "Triglycerides",
+      "value": 1.2,
+      "unit": "mmol/L",
+      "refLow": 0,
+      "refHigh": 1.7,
+      "daysAgo": 200
+    },
+    {
+      "test": "HbA1c",
+      "value": 5.4,
+      "unit": "%",
+      "refLow": 4.0,
+      "refHigh": 5.7,
+      "daysAgo": 200
+    },
+    {
+      "test": "Vitamin D",
+      "value": 52,
+      "unit": "nmol/L",
+      "refLow": 50,
+      "refHigh": 125,
+      "daysAgo": 200,
+      "optLow": 75,
+      "optHigh": 125
+    },
+    {
+      "test": "Ferritin",
+      "value": 76,
+      "unit": "ug/L",
+      "refLow": 30,
+      "refHigh": 300,
+      "daysAgo": 200
+    }
+  ],
+  "meds": [
+    {
+      "name": "Vitamin D",
+      "dose": "",
+      "schedule": "Morning",
+      "medKind": "supplement",
+      "startDaysAgo": 120,
+      "note": "Winter routine"
+    },
+    {
+      "name": "Magnesium",
+      "dose": "",
+      "schedule": "Evening",
+      "medKind": "supplement",
+      "startDaysAgo": 40
+    },
+    {
+      "name": "Omega-3",
+      "dose": "",
+      "schedule": "With breakfast",
+      "medKind": "supplement",
+      "startDaysAgo": 200
+    }
+  ],
+  "notes": [
+    {
+      "text": "Felt rested after an earlier night. Light run in the park.",
+      "daysAgo": 3,
+      "tags": [
+        "sleep",
+        "exercise"
+      ]
+    },
+    {
+      "text": "Started evening breathing practice.",
+      "daysAgo": 9,
+      "tags": [
+        "practice"
+      ]
+    }
+  ],
+  "agent": {
+    "interactions": [
+      {
+        "id": "mag-vitd",
+        "a": "Magnesium",
+        "b": "Vitamin D",
+        "severity": "info",
+        "summary": "Taken together they support each other: magnesium helps the body use vitamin D. No change needed."
+      },
+      {
+        "id": "iron-calcium",
+        "a": "Iron",
+        "b": "Calcium",
+        "severity": "timing",
+        "summary": "Calcium can reduce how much iron is absorbed. Taking them a few hours apart avoids the problem."
+      },
+      {
+        "id": "caffeine-melatonin",
+        "a": "Evening coffee",
+        "b": "Melatonin",
+        "severity": "caution",
+        "summary": "Caffeine late in the day can work against melatonin and shorten deep sleep. Consider moving the last coffee earlier."
+      },
+      {
+        "id": "omega-fishoil",
+        "a": "Omega-3",
+        "b": "Blood-thinning medicine",
+        "severity": "serious",
+        "summary": "Large amounts of omega-3 can add to the effect of blood thinners. Ask a doctor before combining them."
+      }
+    ],
+    "evidence": [
+      {
+        "id": "ev-magnesium",
+        "name": "Magnesium before bed",
+        "kind": "supplement",
+        "tradition": "western",
+        "summary": "Small trials suggest modest help with sleep quality.",
+        "evidence": [
+          {
+            "level": "single-study",
+            "strength": 2,
+            "note": "Small trials, mixed results"
+          }
+        ]
+      },
+      {
+        "id": "ev-zone2",
+        "name": "Zone 2 cardio",
+        "kind": "exercise",
+        "tradition": "western",
+        "summary": "Steady, easy-pace cardio is linked with better fitness and heart health.",
+        "evidence": [
+          {
+            "level": "meta-analysis",
+            "strength": 4,
+            "note": "Consistent across many studies"
+          }
+        ]
+      },
+      {
+        "id": "ev-breathwork",
+        "name": "Slow breathing",
+        "kind": "practice",
+        "tradition": "ayurveda",
+        "summary": "Slow breathing at about six breaths a minute can lower stress and resting heart rate.",
+        "evidence": [
+          {
+            "level": "single-study",
+            "strength": 3,
+            "note": "Several small trials"
+          }
+        ]
+      }
+    ],
+    "insights": [
+      {
+        "id": "insight-rhr",
+        "title": "Your resting heart rate is easing",
+        "summary": "Over the last 90 days your resting heart rate fell by about three beats while your fitness estimate rose. That combination usually means your regular walks and runs are working.",
+        "topic": "exercise",
+        "evidence": {
+          "level": "meta-analysis",
+          "strength": 4
+        },
+        "why": {
+          "text": "Matches your trend in resting heart rate and VO2max.",
+          "relates": [
+            {
+              "type": "metric",
+              "id": "resting_hr"
+            },
+            {
+              "type": "metric",
+              "id": "vo2max"
+            }
+          ]
+        }
+      },
+      {
+        "id": "insight-sleep",
+        "title": "Late nights cost you deep sleep",
+        "summary": "On the two nights after 23:30 your total sleep dropped by about 40 minutes. An earlier wind-down on Thursdays could help.",
+        "topic": "sleep",
+        "evidence": {
+          "level": "single-study",
+          "strength": 3
+        },
+        "why": {
+          "text": "Seen in your own sleep data.",
+          "relates": [
+            {
+              "type": "metric",
+              "id": "sleep_minutes"
+            }
+          ]
+        }
+      },
+      {
+        "id": "insight-vitd",
+        "title": "Vitamin D is now in the optimal range",
+        "summary": "Your latest result moved from low-normal to the optimal range after the autumn routine.",
+        "topic": "labs",
+        "evidence": {
+          "level": "guideline",
+          "strength": 4
+        },
+        "why": {
+          "text": "Latest blood test compared with six months ago.",
+          "relates": [
+            {
+              "type": "lab",
+              "id": "vitamin-d"
+            }
+          ]
+        }
+      }
+    ],
+    "plan": [
+      {
+        "id": "plan-zone2",
+        "group": "exercise",
+        "title": "Two easy 40-minute walks or jogs a week",
+        "evidence": {
+          "level": "meta-analysis",
+          "strength": 4
+        },
+        "why": {
+          "text": "Supports resting heart rate and VO2max.",
+          "relates": [
+            {
+              "type": "metric",
+              "id": "vo2max"
+            }
+          ]
+        }
+      },
+      {
+        "id": "plan-magnesium",
+        "group": "vitamins",
+        "title": "Magnesium in the evening",
+        "evidence": {
+          "level": "single-study",
+          "strength": 2
+        },
+        "why": {
+          "text": "Possible help with sleep quality.",
+          "relates": [
+            {
+              "type": "metric",
+              "id": "sleep_minutes"
+            }
+          ]
+        }
+      },
+      {
+        "id": "plan-breath",
+        "group": "practice",
+        "title": "Five minutes of slow breathing before bed",
+        "evidence": {
+          "level": "single-study",
+          "strength": 3
+        },
+        "why": {
+          "text": "May lower stress and help sleep.",
+          "relates": [
+            {
+              "type": "metric",
+              "id": "hrv"
+            }
+          ]
+        }
+      }
+    ],
+    "trendNotes": {
+      "resting_hr": "Down three beats in 90 days, steady.",
+      "hrv": "Rising trend; two dips after late nights.",
+      "weight": "Slowly down, about 1 kg in 90 days."
+    },
+    "reading": [
+      {
+        "id": "read-zone2",
+        "title": "Easy-pace training and long-term heart health",
+        "kind": "article",
+        "authors": "Invented Author",
+        "year": 2025,
+        "minutes": 8,
+        "points": [
+          "Easy, steady cardio builds an aerobic base.",
+          "Most people do their easy days too hard.",
+          "Two to three sessions a week is enough to start."
+        ],
+        "evidence": {
+          "level": "meta-analysis",
+          "strength": 4
+        },
+        "relates": [
+          {
+            "type": "metric",
+            "id": "vo2max"
+          }
+        ]
+      }
+    ],
+    "worldview": "Maya prefers small, steady habits over strict plans. She trains outdoors twice a week, values good sleep, and wants simple explanations with the evidence level stated.\n",
+    "weekly": {
+      "summary": "A good week: sleep and resting heart rate both improved, and steps were above goal on five days.",
+      "changed": [
+        "Added a magnesium supplement in the evening",
+        "Moved the last coffee to before 14:00"
+      ],
+      "improved": [
+        {
+          "label": "Resting heart rate",
+          "text": "Down two beats on the week."
+        },
+        {
+          "label": "Sleep",
+          "text": "Average up 15 minutes."
+        }
+      ],
+      "worsened": [
+        {
+          "label": "Late nights",
+          "text": "Two nights after 23:30."
+        }
+      ],
+      "experiments": [
+        "Evening breathing practice, day 9 of 14"
+      ],
+      "questions": [
+        "Would an earlier last coffee help the late-night sleep dip?"
+      ]
+    }
+  }
+}

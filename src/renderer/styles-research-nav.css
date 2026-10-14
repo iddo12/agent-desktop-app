@@ -1,0 +1,19 @@
+/* My Research sidebar entry (v1.87.0). Same look as the Tools entry. The view's own styles are in styles-research.css, loaded on first open. */
+.research-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.research-nav:hover { background: var(--bg-hover); }
+.research-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.research-nav-name { flex: 1; min-width: 0; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+body:not(.lp-on).argus-open .research-nav, body:not(.lp-on).iris-open .research-nav { display: none; }
+body.lp-f #systems-group .research-nav-name { flex: 1; min-width: 0; font-size: 13px; }
+body.lp-c #systems-group .research-nav-name { flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* an opened My Research view hides the other views, exactly as Tools does */
+body.research-open #chat-view, body.research-open #empty-state, body.research-open #library-view, body.research-open #argus-view,
+body.research-open #iris-view, body.research-open #memory-view, body.research-open #daily-view, body.research-open #health-view, body.research-open #tools-view, body.research-open #xp-panel { display: none !important; }
+/* v1.107.0 unread badge: the same blue badge as My Daily's (.daily-nav-badge.blue) */
+.research-nav-badge { min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--daily-blue, #3f7fd0); color: #fff;
+  font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.research-nav-badge.hidden { display: none; }

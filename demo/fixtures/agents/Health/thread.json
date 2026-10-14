@@ -1,0 +1,19 @@
+{
+  "tail": "idle",
+  "contextTokens": 28000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "How was my week?",
+      "minsAgo": 800
+    },
+    {
+      "role": "agent",
+      "text": "Good week overall: sleep averaged 7 h 20 min (up 15 minutes), resting heart rate eased by 2 beats, and you hit your step goal on five days. One thing to watch: two late nights on Thursday and Friday.",
+      "minsAgo": 795
+    }
+  ],
+  "replies": [
+    "Thanks - I'll include that in the weekly review. (Demo data only.)"
+  ]
+}

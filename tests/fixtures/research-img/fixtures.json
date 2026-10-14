@@ -1,0 +1,6 @@
+{
+ "example.org": "photo.jpg",
+ "logo.example.org": "logo.png",
+ "fake.example.org": "notreally.png",
+ "svg.example.org": "vector.svg"
+}

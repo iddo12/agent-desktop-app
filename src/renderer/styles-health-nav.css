@@ -1,0 +1,16 @@
+/* My Health sidebar entry (v1.81.0). Same look as the My Daily entry. The view's own styles are in styles-health.css, which loads on first open. */
+.health-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.health-nav:hover { background: var(--bg-hover); }
+.health-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.health-nav-name { flex: 1; min-width: 0; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+body:not(.lp-on).argus-open .health-nav, body:not(.lp-on).iris-open .health-nav { display: none; }
+/* left pane F and C (same sizing as the other tiles) */
+body.lp-f #systems-group .health-nav-name { flex: 1; min-width: 0; font-size: 13px; }
+body.lp-c #systems-group .health-nav-name { flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* an opened My Health hides the other views, exactly as My Daily does */
+body.health-open #chat-view, body.health-open #empty-state, body.health-open #library-view, body.health-open #argus-view,
+body.health-open #iris-view, body.health-open #memory-view, body.health-open #daily-view, body.health-open #xp-panel { display: none !important; }

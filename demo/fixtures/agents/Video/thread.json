@@ -1,0 +1,29 @@
+{
+  "tail": "idle",
+  "contextTokens": 21000,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Shot list for Saturday's garden-cafe shoot, please. Interior and terrace, about two hours.",
+      "minsAgo": 1500
+    },
+    {
+      "role": "agent",
+      "text": "Here is the shot list: 1) Wide establishing shot of the terrace, 2) Barista hands and pour, 3) Interior details, 4) Two portrait set-ups by the window, 5) Closing shot at golden hour. I've also added a battery and card checklist.",
+      "minsAgo": 1495
+    },
+    {
+      "role": "user",
+      "text": "Perfect, thanks.",
+      "minsAgo": 1490
+    },
+    {
+      "role": "agent",
+      "text": "Anytime. I'll wait for the footage before starting the edit notes.",
+      "minsAgo": 1489
+    }
+  ],
+  "replies": [
+    "Sure - tell me when the card is backed up and I'll start the edit notes."
+  ]
+}
