@@ -1211,7 +1211,7 @@ function createWindow() {
   mainWindow.webContents.on("will-navigate", (event, url) => { if (url !== ownUrl()) event.preventDefault(); });
   mainWindow.webContents.on("will-redirect", (event, url) => { if (url !== ownUrl()) event.preventDefault(); });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    if (/^https:\/\//i.test(url)) shell.openExternal(url);   // v1.131.0: https only (plain http is not opened); every new window stays denied
     return { action: "deny" };
   });
 

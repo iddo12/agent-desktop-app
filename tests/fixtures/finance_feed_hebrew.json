@@ -1,0 +1,3413 @@
+{
+ "feed_version": "0.2",
+ "generated_at": "2026-10-16T07:20:00",
+ "synthetic": true,
+ "future_field": {
+  "x": 1
+ },
+ "sources": [
+  {
+   "id": "bank_a_ils",
+   "label": "בנק א׳, שקל",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-15",
+   "as_of": "2026-10-15",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "bank_a_usd",
+   "label": "בנק א׳, דולר (USD)",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "USD"
+   ],
+   "last_import_date": "2026-10-03",
+   "as_of": "2026-10-03",
+   "fresh": false,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "bank_b_ils",
+   "label": "בנק ב׳ - עו״ש",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-07",
+   "as_of": "2026-10-07",
+   "fresh": false,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "paypal",
+   "label": "PayPal, USD",
+   "kind": "paypal",
+   "scope": "business",
+   "currencies": [
+    "USD"
+   ],
+   "last_import_date": "2026-10-15",
+   "as_of": "2026-10-15",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "card_p",
+   "label": "כרטיס אשראי פרטי",
+   "kind": "card",
+   "scope": "personal",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-12",
+   "as_of": "2026-10-12",
+   "fresh": true,
+   "manual": true,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "card_b",
+   "label": "כרטיס עסקי (Max)",
+   "kind": "card",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-12",
+   "as_of": "2026-10-12",
+   "fresh": true,
+   "manual": true,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "invoicing",
+   "label": "חשבונית ירוקה",
+   "kind": "invoicing",
+   "scope": "business",
+   "currencies": [
+    "ILS",
+    "USD",
+    "EUR"
+   ],
+   "last_import_date": "2026-10-16",
+   "as_of": "2026-10-16",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  }
+ ],
+ "balances": [
+  {
+   "source": "bank_a_ils",
+   "currency": "ILS",
+   "amount": 48200,
+   "nis": 48200,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  {
+   "source": "bank_a_usd",
+   "currency": "USD",
+   "amount": 6400,
+   "nis": 23296,
+   "rate": 3.64,
+   "rate_date": "2026-10-15",
+   "as_of": "2026-10-03"
+  },
+  {
+   "source": "bank_b_ils",
+   "currency": "ILS",
+   "amount": 12750,
+   "nis": 12750,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-07"
+  },
+  {
+   "source": "paypal",
+   "currency": "USD",
+   "amount": 860,
+   "nis": 3130,
+   "rate": 3.64,
+   "rate_date": "2026-10-15",
+   "as_of": "2026-10-15"
+  },
+  {
+   "source": "card_p",
+   "currency": "ILS",
+   "amount": -4980,
+   "nis": -4980,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-12"
+  },
+  {
+   "source": "card_b",
+   "currency": "ILS",
+   "amount": -2310,
+   "nis": -2310,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-12"
+  }
+ ],
+ "periods": [
+  {
+   "id": "2026-02",
+   "scope": "business",
+   "income": {
+    "amount": 26400,
+    "currency": "ILS",
+    "nis": 26400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 20300,
+    "currency": "ILS",
+    "nis": 20300,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6100,
+    "currency": "ILS",
+    "nis": 6100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-04",
+   "scope": "business",
+   "income": {
+    "amount": 28100,
+    "currency": "ILS",
+    "nis": 28100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 21500,
+    "currency": "ILS",
+    "nis": 21500,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6600,
+    "currency": "ILS",
+    "nis": 6600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-06",
+   "scope": "business",
+   "income": {
+    "amount": 27300,
+    "currency": "ILS",
+    "nis": 27300,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 20700,
+    "currency": "ILS",
+    "nis": 20700,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6600,
+    "currency": "ILS",
+    "nis": 6600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-08",
+   "scope": "business",
+   "income": {
+    "amount": 30200,
+    "currency": "ILS",
+    "nis": 30200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 22600,
+    "currency": "ILS",
+    "nis": 22600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 7600,
+    "currency": "ILS",
+    "nis": 7600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-09",
+   "scope": "business",
+   "income": {
+    "amount": 28900,
+    "currency": "ILS",
+    "nis": 28900,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 21100,
+    "currency": "ILS",
+    "nis": 21100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 7800,
+    "currency": "ILS",
+    "nis": 7800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-10",
+   "scope": "business",
+   "income": {
+    "amount": 31200,
+    "currency": "ILS",
+    "nis": 31200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 22400,
+    "currency": "ILS",
+    "nis": 22400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 8800,
+    "currency": "ILS",
+    "nis": 8800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-10",
+   "scope": "personal",
+   "income": {
+    "amount": 5000,
+    "currency": "ILS",
+    "nis": 5000,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 4200,
+    "currency": "ILS",
+    "nis": 4200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 800,
+    "currency": "ILS",
+    "nis": 800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 1,
+   "as_of": "2026-10-12",
+   "rate_date": null
+  }
+ ],
+ "nis_total": {
+  "business": {
+   "amount": 85066,
+   "currency": "ILS",
+   "nis": 85066,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  "personal": {
+   "amount": -4980,
+   "currency": "ILS",
+   "nis": -4980,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  "all": {
+   "amount": 80086,
+   "currency": "ILS",
+   "nis": 80086,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  }
+ },
+ "rates": [
+  {
+   "currency": "USD",
+   "rate": 3.64,
+   "date": "2026-10-15",
+   "source": "BoI"
+  },
+  {
+   "currency": "EUR",
+   "rate": 3.94,
+   "date": "2026-10-15",
+   "source": "BoI"
+  }
+ ],
+ "vat": {
+  "scope": "business",
+  "periods": [
+   {
+    "period": "2026-10",
+    "charged": {
+     "amount": 5300,
+     "currency": "ILS",
+     "nis": 5300,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "input": {
+     "amount": 7160,
+     "currency": "ILS",
+     "nis": 7160,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "refund_or_due": {
+     "amount": 1860,
+     "currency": "ILS",
+     "nis": 1860,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "to_check": 3,
+    "file_by": "2026-11-15",
+    "as_of": "2026-10-12"
+   },
+   {
+    "period": "2026-08",
+    "charged": {
+     "amount": 4900,
+     "currency": "ILS",
+     "nis": 4900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "input": {
+     "amount": 6440,
+     "currency": "ILS",
+     "nis": 6440,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "refund_or_due": {
+     "amount": 1540,
+     "currency": "ILS",
+     "nis": 1540,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "to_check": 0,
+    "file_by": "2026-09-15",
+    "as_of": "2026-09-14"
+   }
+  ]
+ },
+ "invoices": {
+  "unpaid": {
+   "count": 4,
+   "amount": {
+    "amount": 9600,
+    "currency": "ILS",
+    "nis": 9600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-16"
+   }
+  },
+  "overdue": {
+   "count": 1,
+   "amount": {
+    "amount": 2400,
+    "currency": "ILS",
+    "nis": 2400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-16"
+   }
+  },
+  "rows": [
+   {
+    "id": "2026-0141",
+    "direction": "out",
+    "party_masked": "לקוח א׳",
+    "date": "2026-10-02",
+    "due": "2026-10-16",
+    "status": "unpaid",
+    "scope": "business",
+    "money": {
+     "amount": 1000,
+     "currency": "USD",
+     "nis": 3640,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "2026-0138",
+    "direction": "out",
+    "party_masked": "לקוח ב׳ (IBC)",
+    "date": "2026-09-24",
+    "due": "2026-10-24",
+    "status": "unpaid",
+    "scope": "business",
+    "money": {
+     "amount": 3000,
+     "currency": "ILS",
+     "nis": 3000,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "R-5521",
+    "direction": "in",
+    "party_masked": "ספק 1",
+    "date": "2026-09-30",
+    "due": "2026-10-30",
+    "status": "unpaid",
+    "scope": "business",
+    "money": {
+     "amount": 1180,
+     "currency": "ILS",
+     "nis": 1180,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "R-5530",
+    "direction": "in",
+    "party_masked": "ספק 2",
+    "date": "2026-10-05",
+    "due": "2026-11-05",
+    "status": "unpaid",
+    "scope": "business",
+    "money": {
+     "amount": 1780,
+     "currency": "ILS",
+     "nis": 1780,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "2026-0131",
+    "direction": "out",
+    "party_masked": "Client C",
+    "date": "2026-09-05",
+    "due": "2026-10-05",
+    "status": "overdue",
+    "scope": "business",
+    "money": {
+     "amount": 2400,
+     "currency": "ILS",
+     "nis": 2400,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "2026-0127",
+    "direction": "out",
+    "party_masked": "לקוח א׳",
+    "date": "2026-08-28",
+    "due": "2026-09-27",
+    "status": "paid",
+    "scope": "business",
+    "money": {
+     "amount": 2000,
+     "currency": "USD",
+     "nis": 7280,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "R-5498",
+    "direction": "in",
+    "party_masked": "ספק 2",
+    "date": "2026-09-12",
+    "due": "2026-10-12",
+    "status": "paid",
+    "scope": "business",
+    "money": {
+     "amount": 90,
+     "currency": "USD",
+     "nis": 328,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   }
+  ]
+ },
+ "needs_you": {
+  "by_type": [
+   {
+    "type": "unclear_scope",
+    "count": 2
+   },
+   {
+    "type": "no_rate",
+    "count": 1
+   }
+  ],
+  "items": [
+   {
+    "type": "unclear_scope",
+    "label": "תשלום בכרטיס, עסקי או פרטי?",
+    "scope": "business",
+    "source": "card_b",
+    "age_days": 3,
+    "due": null
+   },
+   {
+    "type": "unclear_scope",
+    "label": "העברה, עסקי או פרטי?",
+    "scope": "personal",
+    "source": "bank_a_ils",
+    "age_days": 7,
+    "due": null
+   },
+   {
+    "type": "no_rate",
+    "label": "קבלה ללא שער",
+    "scope": "business",
+    "source": "card_b",
+    "age_days": 14,
+    "due": "2026-10-31"
+   }
+  ]
+ },
+ "transactions": [
+  {
+   "source": "card_b",
+   "date": "2026-10-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -50,
+    "currency": "ILS",
+    "nis": -50,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-14",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -57,
+    "currency": "ILS",
+    "nis": -57,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -64,
+    "currency": "ILS",
+    "nis": -64,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-12",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -71,
+    "currency": "ILS",
+    "nis": -71,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -78,
+    "currency": "ILS",
+    "nis": -78,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-10",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -85,
+    "currency": "ILS",
+    "nis": -85,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -92,
+    "currency": "ILS",
+    "nis": -92,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-08",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -99,
+    "currency": "ILS",
+    "nis": -99,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -106,
+    "currency": "ILS",
+    "nis": -106,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-06",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -113,
+    "currency": "ILS",
+    "nis": -113,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-05",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -120,
+    "currency": "ILS",
+    "nis": -120,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-04",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -127,
+    "currency": "ILS",
+    "nis": -127,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-03",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -134,
+    "currency": "ILS",
+    "nis": -134,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-02",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -141,
+    "currency": "ILS",
+    "nis": -141,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-01",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -148,
+    "currency": "ILS",
+    "nis": -148,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-30",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -155,
+    "currency": "ILS",
+    "nis": -155,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-29",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -162,
+    "currency": "ILS",
+    "nis": -162,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-28",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -169,
+    "currency": "ILS",
+    "nis": -169,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-27",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -176,
+    "currency": "ILS",
+    "nis": -176,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-26",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -183,
+    "currency": "ILS",
+    "nis": -183,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-25",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -190,
+    "currency": "ILS",
+    "nis": -190,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-24",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -197,
+    "currency": "ILS",
+    "nis": -197,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-23",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -204,
+    "currency": "ILS",
+    "nis": -204,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-22",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -211,
+    "currency": "ILS",
+    "nis": -211,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-21",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -218,
+    "currency": "ILS",
+    "nis": -218,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-20",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -225,
+    "currency": "ILS",
+    "nis": -225,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-19",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -232,
+    "currency": "ILS",
+    "nis": -232,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-18",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -239,
+    "currency": "ILS",
+    "nis": -239,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-17",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -246,
+    "currency": "ILS",
+    "nis": -246,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-16",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -253,
+    "currency": "ILS",
+    "nis": -253,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -260,
+    "currency": "ILS",
+    "nis": -260,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-14",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -267,
+    "currency": "ILS",
+    "nis": -267,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -274,
+    "currency": "ILS",
+    "nis": -274,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-12",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -281,
+    "currency": "ILS",
+    "nis": -281,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -288,
+    "currency": "ILS",
+    "nis": -288,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-10",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -295,
+    "currency": "ILS",
+    "nis": -295,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -302,
+    "currency": "ILS",
+    "nis": -302,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-08",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -309,
+    "currency": "ILS",
+    "nis": -309,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -316,
+    "currency": "ILS",
+    "nis": -316,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-06",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -323,
+    "currency": "ILS",
+    "nis": -323,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -330,
+    "currency": "ILS",
+    "nis": -330,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-14",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -337,
+    "currency": "ILS",
+    "nis": -337,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -344,
+    "currency": "ILS",
+    "nis": -344,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-12",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -351,
+    "currency": "ILS",
+    "nis": -351,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -358,
+    "currency": "ILS",
+    "nis": -358,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-10",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -365,
+    "currency": "ILS",
+    "nis": -365,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -372,
+    "currency": "ILS",
+    "nis": -372,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-08",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -379,
+    "currency": "ILS",
+    "nis": -379,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -386,
+    "currency": "ILS",
+    "nis": -386,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-06",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -393,
+    "currency": "ILS",
+    "nis": -393,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-05",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -400,
+    "currency": "ILS",
+    "nis": -400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-04",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -407,
+    "currency": "ILS",
+    "nis": -407,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-03",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -414,
+    "currency": "ILS",
+    "nis": -414,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-02",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -421,
+    "currency": "ILS",
+    "nis": -421,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-01",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -428,
+    "currency": "ILS",
+    "nis": -428,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-30",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -435,
+    "currency": "ILS",
+    "nis": -435,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-29",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -442,
+    "currency": "ILS",
+    "nis": -442,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-28",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -449,
+    "currency": "ILS",
+    "nis": -449,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-27",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -456,
+    "currency": "ILS",
+    "nis": -456,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-26",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -463,
+    "currency": "ILS",
+    "nis": -463,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-25",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -470,
+    "currency": "ILS",
+    "nis": -470,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-24",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -477,
+    "currency": "ILS",
+    "nis": -477,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-23",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -484,
+    "currency": "ILS",
+    "nis": -484,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-22",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -491,
+    "currency": "ILS",
+    "nis": -491,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-21",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -498,
+    "currency": "ILS",
+    "nis": -498,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-20",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -505,
+    "currency": "ILS",
+    "nis": -505,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-19",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -512,
+    "currency": "ILS",
+    "nis": -512,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-18",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -519,
+    "currency": "ILS",
+    "nis": -519,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-17",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -526,
+    "currency": "ILS",
+    "nis": -526,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-16",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -533,
+    "currency": "ILS",
+    "nis": -533,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -540,
+    "currency": "ILS",
+    "nis": -540,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-14",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -547,
+    "currency": "ILS",
+    "nis": -547,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -554,
+    "currency": "ILS",
+    "nis": -554,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-12",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -561,
+    "currency": "ILS",
+    "nis": -561,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -568,
+    "currency": "ILS",
+    "nis": -568,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-10",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -575,
+    "currency": "ILS",
+    "nis": -575,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -582,
+    "currency": "ILS",
+    "nis": -582,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-08",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -589,
+    "currency": "ILS",
+    "nis": -589,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -596,
+    "currency": "ILS",
+    "nis": -596,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-06",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -603,
+    "currency": "ILS",
+    "nis": -603,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -610,
+    "currency": "ILS",
+    "nis": -610,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-14",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -617,
+    "currency": "ILS",
+    "nis": -617,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -624,
+    "currency": "ILS",
+    "nis": -624,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-12",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -631,
+    "currency": "ILS",
+    "nis": -631,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -638,
+    "currency": "ILS",
+    "nis": -638,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-10",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -645,
+    "currency": "ILS",
+    "nis": -645,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -652,
+    "currency": "ILS",
+    "nis": -652,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-08",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -659,
+    "currency": "ILS",
+    "nis": -659,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -666,
+    "currency": "ILS",
+    "nis": -666,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-06",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -673,
+    "currency": "ILS",
+    "nis": -673,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-05",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -680,
+    "currency": "ILS",
+    "nis": -680,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-10-04",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -687,
+    "currency": "ILS",
+    "nis": -687,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-10-03",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -694,
+    "currency": "ILS",
+    "nis": -694,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-10-02",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -701,
+    "currency": "ILS",
+    "nis": -701,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-10-01",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -708,
+    "currency": "ILS",
+    "nis": -708,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-30",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -715,
+    "currency": "ILS",
+    "nis": -715,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-29",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -722,
+    "currency": "ILS",
+    "nis": -722,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-28",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -729,
+    "currency": "ILS",
+    "nis": -729,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-27",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -736,
+    "currency": "ILS",
+    "nis": -736,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-26",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -743,
+    "currency": "ILS",
+    "nis": -743,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-25",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -750,
+    "currency": "ILS",
+    "nis": -750,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-24",
+   "category": "משק בית",
+   "tag": "personal",
+   "money": {
+    "amount": -757,
+    "currency": "ILS",
+    "nis": -757,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-23",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -764,
+    "currency": "ILS",
+    "nis": -764,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-22",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -771,
+    "currency": "ILS",
+    "nis": -771,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-21",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -778,
+    "currency": "ILS",
+    "nis": -778,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-20",
+   "category": "ציוד",
+   "tag": "personal",
+   "money": {
+    "amount": -785,
+    "currency": "ILS",
+    "nis": -785,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-19",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -792,
+    "currency": "ILS",
+    "nis": -792,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-18",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -799,
+    "currency": "ILS",
+    "nis": -799,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-17",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -806,
+    "currency": "ILS",
+    "nis": -806,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-16",
+   "category": "משרד ואחסון",
+   "tag": "personal",
+   "money": {
+    "amount": -813,
+    "currency": "ILS",
+    "nis": -813,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-15",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -820,
+    "currency": "ILS",
+    "nis": -820,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-14",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -827,
+    "currency": "ILS",
+    "nis": -827,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-13",
+   "category": "תוכנה",
+   "tag": "business",
+   "money": {
+    "amount": -834,
+    "currency": "ILS",
+    "nis": -834,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-12",
+   "category": "נסיעות",
+   "tag": "personal",
+   "money": {
+    "amount": -841,
+    "currency": "ILS",
+    "nis": -841,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-11",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -848,
+    "currency": "ILS",
+    "nis": -848,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-10",
+   "category": "ציוד",
+   "tag": "business",
+   "money": {
+    "amount": -855,
+    "currency": "ILS",
+    "nis": -855,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  },
+  {
+   "source": "card_b",
+   "date": "2026-09-09",
+   "category": "משק בית",
+   "tag": "business",
+   "money": {
+    "amount": -862,
+    "currency": "ILS",
+    "nis": -862,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "card_p",
+   "date": "2026-09-08",
+   "category": "תוכנה",
+   "tag": "personal",
+   "money": {
+    "amount": -869,
+    "currency": "ILS",
+    "nis": -869,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "matched"
+  },
+  {
+   "source": "bank_a_ils",
+   "date": "2026-09-07",
+   "category": "נסיעות",
+   "tag": "business",
+   "money": {
+    "amount": -876,
+    "currency": "ILS",
+    "nis": -876,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "unmatched"
+  },
+  {
+   "source": "paypal",
+   "date": "2026-09-06",
+   "category": "משרד ואחסון",
+   "tag": "business",
+   "money": {
+    "amount": -883,
+    "currency": "ILS",
+    "nis": -883,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-15"
+   },
+   "match_status": "needs_check"
+  }
+ ],
+ "cards": [
+  {
+   "card_label": "כרטיס עסקי (Max)",
+   "scope": "business",
+   "cycle": {
+    "start": "2026-10-03",
+    "end": "2026-11-02"
+   },
+   "due_date": "2026-11-02",
+   "amount_due": {
+    "amount": 2310,
+    "currency": "ILS",
+    "nis": 2310,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "charges": [
+    {
+     "date": "2026-10-12",
+     "category": "משרד ואחסון",
+     "tag": "business",
+     "receipt": "matched",
+     "orig": {
+      "amount": 29,
+      "currency": "USD",
+      "nis": 106,
+      "rate": 3.64,
+      "rate_date": "2026-10-15",
+      "as_of": "2026-10-12"
+     },
+     "instalment": null
+    },
+    {
+     "date": "2026-10-11",
+     "category": "ציוד",
+     "tag": "business",
+     "receipt": "missing",
+     "orig": {
+      "amount": 1450,
+      "currency": "ILS",
+      "nis": 1450,
+      "rate": null,
+      "rate_date": null,
+      "as_of": "2026-10-12"
+     },
+     "instalment": null
+    },
+    {
+     "date": "2026-10-09",
+     "category": "תוכנה",
+     "tag": "business",
+     "receipt": "matched",
+     "orig": {
+      "amount": 20,
+      "currency": "EUR",
+      "nis": 79,
+      "rate": 3.94,
+      "rate_date": "2026-10-15",
+      "as_of": "2026-10-12"
+     },
+     "instalment": null
+    },
+    {
+     "date": "2026-10-05",
+     "category": "ציוד",
+     "tag": "business",
+     "receipt": "matched",
+     "orig": {
+      "amount": 560,
+      "currency": "ILS",
+      "nis": 560,
+      "rate": null,
+      "rate_date": null,
+      "as_of": "2026-10-12"
+     },
+     "instalment": {
+      "n": 5,
+      "of": 12
+     }
+    }
+   ]
+  },
+  {
+   "card_label": "כרטיס אשראי פרטי",
+   "scope": "personal",
+   "cycle": {
+    "start": "2026-10-11",
+    "end": "2026-11-10"
+   },
+   "due_date": "2026-11-10",
+   "amount_due": {
+    "amount": 4980,
+    "currency": "ILS",
+    "nis": 4980,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "charges": [
+    {
+     "date": "2026-10-10",
+     "category": "משק בית",
+     "tag": "personal",
+     "receipt": "matched",
+     "orig": {
+      "amount": 312,
+      "currency": "ILS",
+      "nis": 312,
+      "rate": null,
+      "rate_date": null,
+      "as_of": "2026-10-12"
+     },
+     "instalment": null
+    },
+    {
+     "date": "2026-10-07",
+     "category": "משק בית",
+     "tag": "personal",
+     "receipt": "matched",
+     "orig": {
+      "amount": 180,
+      "currency": "ILS",
+      "nis": 180,
+      "rate": null,
+      "rate_date": null,
+      "as_of": "2026-10-12"
+     },
+     "instalment": {
+      "n": 2,
+      "of": 6
+     }
+    }
+   ]
+  }
+ ],
+ "income": {
+  "by_client": [
+   {
+    "party_masked": "לקוח א׳",
+    "kind": "sales",
+    "currency": "USD",
+    "month": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 1000,
+     "currency": "USD",
+     "nis": 3640,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "party_masked": "לקוח ב׳ (IBC)",
+    "kind": "sponsorship",
+    "currency": "ILS",
+    "month": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 6000,
+     "currency": "ILS",
+     "nis": 6000,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "party_masked": "לקוח א׳",
+    "kind": "sales",
+    "currency": "USD",
+    "month": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 2000,
+     "currency": "USD",
+     "nis": 7280,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "party_masked": "רשת פרסום",
+    "kind": "other",
+    "currency": "EUR",
+    "month": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 1350,
+     "currency": "EUR",
+     "nis": 5319,
+     "rate": 3.94,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "party_masked": "שיעורים פרטיים",
+    "kind": "other",
+    "currency": "ILS",
+    "month": "2026-10",
+    "scope": "personal",
+    "money": {
+     "amount": 900,
+     "currency": "ILS",
+     "nis": 900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   }
+  ],
+  "expected_vs_received": [
+   {
+    "period": "2026-10",
+    "scope": "business",
+    "expected": {
+     "amount": 31200,
+     "currency": "ILS",
+     "nis": 31200,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    },
+    "received": {
+     "amount": 24100,
+     "currency": "ILS",
+     "nis": 24100,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "period": "2026-09",
+    "scope": "business",
+    "expected": {
+     "amount": 28900,
+     "currency": "ILS",
+     "nis": 28900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    },
+    "received": {
+     "amount": 28900,
+     "currency": "ILS",
+     "nis": 28900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "period": "2026-10",
+    "scope": "personal",
+    "expected": {
+     "amount": 5000,
+     "currency": "ILS",
+     "nis": 5000,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    },
+    "received": {
+     "amount": 900,
+     "currency": "ILS",
+     "nis": 900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   }
+  ]
+ },
+ "expenses": {
+  "by_category": [
+   {
+    "category": "ציוד",
+    "period": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 7900,
+     "currency": "ILS",
+     "nis": 7900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "ציוד",
+    "period": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 5200,
+     "currency": "ILS",
+     "nis": 5200,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "תוכנה ומנויים",
+    "period": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 3400,
+     "currency": "ILS",
+     "nis": 3400,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "תוכנה ומנויים",
+    "period": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 3300,
+     "currency": "ILS",
+     "nis": 3300,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "נסיעות",
+    "period": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 4100,
+     "currency": "ILS",
+     "nis": 4100,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "נסיעות",
+    "period": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 2900,
+     "currency": "ILS",
+     "nis": 2900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "משרד ואחסון",
+    "period": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 2700,
+     "currency": "ILS",
+     "nis": 2700,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "משרד ואחסון",
+    "period": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 2800,
+     "currency": "ILS",
+     "nis": 2800,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "ללא קטגוריה",
+    "period": "2026-10",
+    "scope": "business",
+    "money": {
+     "amount": 1200,
+     "currency": "ILS",
+     "nis": 1200,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "ללא קטגוריה",
+    "period": "2026-09",
+    "scope": "business",
+    "money": {
+     "amount": 400,
+     "currency": "ILS",
+     "nis": 400,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   },
+   {
+    "category": "משק בית",
+    "period": "2026-10",
+    "scope": "personal",
+    "money": {
+     "amount": 4200,
+     "currency": "ILS",
+     "nis": 4200,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-12"
+    }
+   }
+  ]
+ },
+ "accountant_package": {
+  "handover_date": "2026-10-31",
+  "parts_ready": 4,
+  "parts_total": 5,
+  "items_to_check": 3,
+  "parts": [
+   {
+    "name": "Sales invoices",
+    "ready": true
+   },
+   {
+    "name": "Purchase invoices and receipts",
+    "ready": true
+   },
+   {
+    "name": "VAT summary",
+    "ready": false
+   },
+   {
+    "name": "Bank and card statements",
+    "ready": true
+   },
+   {
+    "name": "Questions and notes",
+    "ready": true
+   }
+  ],
+  "prev_month": {
+   "parts_ready": 3,
+   "items_to_check": 5
+  },
+  "status": {
+   "send_blocked": true,
+   "reason": "3 items to check"
+  }
+ },
+ "period_end_rates": [
+  {
+   "currency": "USD",
+   "period": "2026-08",
+   "rate": 3.58,
+   "date": "2026-08-31"
+  },
+  {
+   "currency": "USD",
+   "period": "2026-09",
+   "rate": 3.61,
+   "date": "2026-09-30"
+  },
+  {
+   "currency": "EUR",
+   "period": "2026-09",
+   "rate": 3.92,
+   "date": "2026-09-30"
+  }
+ ],
+ "by_currency": {
+  "business": [
+   {
+    "currency": "ILS",
+    "amount": 60950,
+    "nis": 60950
+   },
+   {
+    "currency": "USD",
+    "amount": 7260,
+    "nis": 26426
+   }
+  ],
+  "personal": [
+   {
+    "currency": "ILS",
+    "amount": -4980,
+    "nis": -4980
+   }
+  ],
+  "all": [
+   {
+    "currency": "ILS",
+    "amount": 55970,
+    "nis": 55970
+   },
+   {
+    "currency": "USD",
+    "amount": 7260,
+    "nis": 26426
+   }
+  ]
+ },
+ "cash_flow_60d": {
+  "days": [
+   {
+    "date": "2026-10-16",
+    "balance_nis_projected": 80066,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-17",
+    "balance_nis_projected": 80046,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-18",
+    "balance_nis_projected": 80026,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-19",
+    "balance_nis_projected": 80006,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-20",
+    "balance_nis_projected": 79986,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-21",
+    "balance_nis_projected": 79966,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-22",
+    "balance_nis_projected": 79946,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-23",
+    "balance_nis_projected": 79926,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-24",
+    "balance_nis_projected": 79906,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-25",
+    "balance_nis_projected": 79886,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-26",
+    "balance_nis_projected": 79866,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-27",
+    "balance_nis_projected": 79846,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-28",
+    "balance_nis_projected": 79826,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-29",
+    "balance_nis_projected": 79806,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-30",
+    "balance_nis_projected": 79786,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-10-31",
+    "balance_nis_projected": 79766,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-01",
+    "balance_nis_projected": 79746,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-02",
+    "balance_nis_projected": 77416,
+    "in": 0,
+    "out": 2330
+   },
+   {
+    "date": "2026-11-03",
+    "balance_nis_projected": 77396,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-04",
+    "balance_nis_projected": 77376,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-05",
+    "balance_nis_projected": 77356,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-06",
+    "balance_nis_projected": 77336,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-07",
+    "balance_nis_projected": 77316,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-08",
+    "balance_nis_projected": 77296,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-09",
+    "balance_nis_projected": 77276,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-10",
+    "balance_nis_projected": 72276,
+    "in": 0,
+    "out": 5000
+   },
+   {
+    "date": "2026-11-11",
+    "balance_nis_projected": 72256,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-12",
+    "balance_nis_projected": 72236,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-13",
+    "balance_nis_projected": 72216,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-14",
+    "balance_nis_projected": 72196,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-15",
+    "balance_nis_projected": 74036,
+    "in": 1860,
+    "out": 20
+   },
+   {
+    "date": "2026-11-16",
+    "balance_nis_projected": 74016,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-17",
+    "balance_nis_projected": 73996,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-18",
+    "balance_nis_projected": 73976,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-19",
+    "balance_nis_projected": 73956,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-20",
+    "balance_nis_projected": 73936,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-21",
+    "balance_nis_projected": 73916,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-22",
+    "balance_nis_projected": 73896,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-23",
+    "balance_nis_projected": 73876,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-24",
+    "balance_nis_projected": 73856,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-25",
+    "balance_nis_projected": 73836,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-26",
+    "balance_nis_projected": 73816,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-27",
+    "balance_nis_projected": 73796,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-28",
+    "balance_nis_projected": 73776,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-29",
+    "balance_nis_projected": 73756,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-11-30",
+    "balance_nis_projected": 79736,
+    "in": 6000,
+    "out": 20
+   },
+   {
+    "date": "2026-12-01",
+    "balance_nis_projected": 79716,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-02",
+    "balance_nis_projected": 79696,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-03",
+    "balance_nis_projected": 79676,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-04",
+    "balance_nis_projected": 79656,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-05",
+    "balance_nis_projected": 79636,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-06",
+    "balance_nis_projected": 79616,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-07",
+    "balance_nis_projected": 79596,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-08",
+    "balance_nis_projected": 79576,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-09",
+    "balance_nis_projected": 79556,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-10",
+    "balance_nis_projected": 79536,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-11",
+    "balance_nis_projected": 79516,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-12",
+    "balance_nis_projected": 79496,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-13",
+    "balance_nis_projected": 79476,
+    "in": 0,
+    "out": 20
+   },
+   {
+    "date": "2026-12-14",
+    "balance_nis_projected": 79456,
+    "in": 0,
+    "out": 20
+   }
+  ],
+  "expected": [
+   {
+    "date": "2026-11-02",
+    "kind": "תשלום כרטיס עסקי",
+    "direction": "out",
+    "money": {
+     "amount": -2310,
+     "currency": "ILS",
+     "nis": -2310,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "date": "2026-11-10",
+    "kind": "Card P payment",
+    "direction": "out",
+    "money": {
+     "amount": -4980,
+     "currency": "ILS",
+     "nis": -4980,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "date": "2026-11-15",
+    "kind": "החזר מע״מ צפוי",
+    "direction": "in",
+    "money": {
+     "amount": 1860,
+     "currency": "ILS",
+     "nis": 1860,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "date": "2026-11-30",
+    "kind": "Invoice 2026-0138 due",
+    "direction": "in",
+    "money": {
+     "amount": 6000,
+     "currency": "ILS",
+     "nis": 6000,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-16"
+    }
+   }
+  ]
+ }
+}

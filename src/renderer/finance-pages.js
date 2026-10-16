@@ -237,6 +237,11 @@
         P.sources.map((s) => { const r = el("span"); const a = H.loginLink(s); if (a) r.append(a, document.createTextNode(" ")); r.appendChild(H.freshMark(s));
           return [{ node: auto(el("span", "", s.label)) }, shortDay(s.last_import_date) + (s.manual ? " (manual)" : ""), { node: sourceState(s) }, { node: r }, s.last_full_refresh ? shortDay(s.last_full_refresh) : "-",
             { node: s.next_due ? el("span", s.next_due_overdue ? "mf-stale" : "", (s.next_due_overdue ? "▲ Overdue " : "") + shortDay(s.next_due)) : el("span", "", "-") }]; })) : empty("No sources in this view."));
+      if (!P.links_set) {
+        const h = el("div", "mf-need mf-need-w"); h.setAttribute("role", "note");
+        h.append(el("b", "", "No login links are set. "), document.createTextNode("To get a \"Get fresh data\" link next to each source, open Setup and fill in the setting financeLoginLinks. One entry per source: the source id, an = sign, then the web address (https only); separate entries with a semicolon. Your source ids: " + (P.link_ids.length ? P.link_ids.join(", ") : "none") + ". Nothing is stored except the address you type."));
+        root.appendChild(h);
+      }
       root.appendChild(k);
       const o = el("ol", "mf-steps");
       for (const t of ["Log in to each institution with the links above (you type the login yourself; nothing is stored here).", "Export the statement, or take a screenshot if there is no export.", "Drop the files into the Import tab.", "Check the Needs you list."]) o.appendChild(el("li", "", t));
@@ -254,7 +259,7 @@
       tiles.append(tile("Now (projected)", nisT(P.now), "as of " + shortDay(P.as_of)), tile("Lowest point", nisT(P.min), "next " + P.days.length + " days", P.min < 0), tile("In " + P.days.length + " days", nisT(P.end), (P.end - P.now >= 0 ? "▲ +" : "▼ ") + grp(P.end - P.now) + " vs now"));
       root.appendChild(tiles);
       const k = card("Projected balance, next " + P.days.length + " days, in NIS", P.as_of);
-      const W = 620, Hh = 220, L = 10, R = 10, T = 28, B = 34, n = P.days.length;
+      const W = 620, Hh = 220, L = 10, R = 10, T = 28, B = 52, n = P.days.length;
       const lo = Math.min.apply(null, P.days.map((d) => d.bal)), hi = Math.max.apply(null, P.days.map((d) => d.bal)), span = Math.max(1, hi - lo);
       const X = (i) => L + (n > 1 ? (i * (W - L - R)) / (n - 1) : 0), Y = (v) => T + (Hh - T - B) * (1 - (v - lo) / span);
       const svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 " + W + " " + Hh); svg.setAttribute("class", "mf-hchart"); svg.setAttribute("role", "img");
@@ -262,9 +267,16 @@
       const add = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const a of Object.keys(attrs)) e.setAttribute(a, attrs[a]); if (text != null) e.textContent = text; svg.appendChild(e); return e; };
       add("polyline", { points: P.days.map((d, i) => X(i).toFixed(1) + "," + Y(d.bal).toFixed(1)).join(" "), class: "mf-cash-line", fill: "none" });
       const label = new Set([0, n - 1, P.days.findIndex((d) => d.bal === P.min)]); for (let i = 10; i < n - 5; i += 10) label.add(i);
-      for (const i of label) { const d = P.days[i]; add("circle", { cx: X(i).toFixed(1), cy: Y(d.bal).toFixed(1), r: 3, class: "mf-cash-dot" }); add("text", { x: Math.min(W - 24, Math.max(24, X(i))).toFixed(1), y: (Y(d.bal) - 8).toFixed(1), "text-anchor": "middle", class: "mf-hchart-t" }, nisT(d.bal)); }
+      const lowIdx = P.days.findIndex((d) => d.bal === P.min);
+      for (const i of label) {
+        const d = P.days[i];
+        add("circle", { cx: X(i).toFixed(1), cy: Y(d.bal).toFixed(1), r: 3, class: "mf-cash-dot" });
+        // the lowest point sits on the bottom edge with the line rising on both sides: its label goes UNDER the dot (the chart keeps 52 units free below the line for it and for the item ticks)
+        if (i === lowIdx && i !== 0 && i !== n - 1) add("text", { x: Math.min(W - 24, Math.max(24, X(i))).toFixed(1), y: (Y(d.bal) + 20).toFixed(1), "text-anchor": "middle", class: "mf-hchart-t mf-cash-low" }, nisT(d.bal));
+        else add("text", { x: Math.min(W - 24, Math.max(24, X(i))).toFixed(1), y: (Y(d.bal) - 8).toFixed(1), "text-anchor": "middle", class: "mf-hchart-t" }, nisT(d.bal));
+      }
       const idx = new Map(P.days.map((d, i) => [d.date, i]));
-      for (const e of P.expected) { const i = idx.get(e.date); if (i == null) continue; add("line", { x1: X(i).toFixed(1), x2: X(i).toFixed(1), y1: Hh - B + 2, y2: Hh - B + 10, class: "mf-cash-tick" }); }
+      for (const e of P.expected) { const i = idx.get(e.date); if (i == null) continue; add("line", { x1: X(i).toFixed(1), x2: X(i).toFixed(1), y1: Hh - B + 26, y2: Hh - B + 34, class: "mf-cash-tick" }); }
       add("text", { x: L, y: Hh - 8, "text-anchor": "start", class: "mf-hchart-t" }, shortDay(P.days[0].date)); add("text", { x: W - R, y: Hh - 8, "text-anchor": "end", class: "mf-hchart-t" }, shortDay(P.days[n - 1].date));
       k.appendChild(svg);
       k.appendChild(el("p", "mf-note", "Line = projected balance (value on the start, the lowest point, the end and every 10th day); ticks under the line = expected items. Covers all accounts together (the toggle does not change it)."));

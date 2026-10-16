@@ -155,7 +155,7 @@ t("main window: https links open in the OS browser, every window.open is denied,
   const i = m.indexOf("setWindowOpenHandler(");
   assert.ok(i > 0, "a window-open handler exists");
   const blk = m.slice(i, i + 260);
-  assert.ok(blk.includes("https?:") && /shell\.openExternal\(url\)/.test(blk) && /action: "deny"/.test(blk), "https opens externally, the new window is always denied");
+  assert.ok(/\/\^https:/.test(blk) && !blk.includes("https?:") && /shell\.openExternal\(url\)/.test(blk) && /action: "deny"/.test(blk), "https opens externally, the new window is always denied");
   assert.ok(/on\("will-navigate", \(event, url\) => \{ if \(url !== ownUrl\(\)\) event\.preventDefault\(\); \}\)/.test(m), "will-navigate cancels anything but the app page");
   assert.ok(/on\("will-redirect", \(event, url\) => \{ if \(url !== ownUrl\(\)\) event\.preventDefault\(\); \}\)/.test(m), "will-redirect too");
   const js = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8");
@@ -340,6 +340,45 @@ t("guards: finance-pages.js - read-only (no send/pay/save button), text only, no
   assert.ok(/blocked|Sending is blocked/.test(js) && /nothing can be sent from here/.test(js));
   assert.ok(/finance-pages\.js/.test(nav) && /load\("finance-pages\.js", view, view\)/.test(nav), "the pages module loads before finance.js");
   assert.ok(/Data as of/.test(js) && /\.mf-linkbtn/.test(fs.readFileSync(path.join(SRC, "renderer", "styles-finance.css"), "utf8")));
+});
+
+// ------------------------------------------------------------------ slice 3 (v1.131.0): Hebrew, hints, reader name check
+t("reader: a file name with ':' (NTFS alternate data stream) is refused before anything is opened; ino 0 skips only the same-file check", () => {
+  const dir = path.join(tmp(), "feed"), p = writeFeed(dir, good()); let opened = 0;
+  const spy = { lstatSync: () => { opened++; return { isSymbolicLink: () => false, ino: 1, dev: 1 }; }, openSync: () => { opened++; return 9; }, fstatSync: () => ({ isFile: () => true, size: 2, ino: 1, dev: 1 }), readSync: (fd, b, o, l) => { b.fill(32, o, o + l); return l; }, closeSync: () => {} };
+  for (const name of ["finance_feed.json:evil", "finance_feed.json::$DATA", "a:b.json"]) {
+    const r = R.createFeedReader({ getPath: () => path.join(dir, name), fs: spy }).readFeed();
+    assert.strictEqual(r.code, "BAD_NAME", name);
+  }
+  assert.strictEqual(opened, 0, "nothing was stat'ed or opened");
+  const rd = (lst, st) => R.createFeedReader({ getPath: () => p, fs: Object.assign({}, spy, { lstatSync: () => Object.assign({ isSymbolicLink: () => false }, lst), fstatSync: () => Object.assign({ isFile: () => true, size: 2 }, st) }) }).readFeed().code;
+  assert.strictEqual(rd({ ino: 0, dev: 1 }, { ino: 7, dev: 2 }), "PARSE", "ino 0: the same-file check is skipped (the content here is just blanks, so it gets as far as parsing)");
+  assert.strictEqual(rd({ ino: 5, dev: 1 }, { ino: 0, dev: 1 }), "PARSE");
+  assert.strictEqual(rd({ ino: 5, dev: 1 }, { ino: 7, dev: 1 }), "CHANGED", "real inodes that differ are refused");
+  assert.ok(/skipped when the file system reports no inode/.test(fs.readFileSync(path.join(SRC, "finance", "feedReader.js"), "utf8")), "documented in the code");
+});
+t("hebrew: the Hebrew synthetic feed validates; Hebrew labels pass through every page unchanged; the mixed strips use bdi islands", () => {
+  const he = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "finance_feed_hebrew.json"), "utf8"));
+  assert.deepStrictEqual(V.validateFeed(he), { ok: true, errors: [] });
+  const raw = JSON.stringify(he); assert.ok(/[\u0590-\u05FF]/.test(raw));
+  const heb = (v) => (JSON.stringify(v).match(/[\u0590-\u05FF]+/g) || []).length;
+  for (const p of ["cards", "invoices", "income", "expenses", "accounts", "queue", "sources", "cash"]) assert.ok(heb(FP.pageView(he, p, "all", { today: "2026-10-16" })) > 0, p + " carries Hebrew");
+  assert.ok(heb(R.homeView(he, "all", { today: "2026-10-16" })) > 0);
+  assert.strictEqual(FP.pageView(he, "cards", "business", { today: "2026-10-16" }).cards[0].label, "כרטיס עסקי (Max)");
+  const fin = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8");
+  assert.ok(/el\("bdi", "", s\.label\)/.test(fin) && /el\("bdi", "", l\)/.test(fin) && /el\("bdi", "", b\.label\)/.test(fin), "stale strip, needs-you strip and balance names are bidi islands");
+});
+t("sources page: a hint to Setup (financeLoginLinks) when no login links are set; no hint when one is; the text has no literal address", () => {
+  const none = FP.pageView(good(), "sources", "all", { today: "2026-10-16" });
+  assert.strictEqual(none.links_set, 0); assert.ok(none.link_ids.includes("bank_a_ils"));
+  const some = FP.pageView(good(), "sources", "all", { today: "2026-10-16", loginLinks: R.parseLoginLinks("bank_a_ils=https://login.example.test/a") });
+  assert.strictEqual(some.links_set, 1);
+  const js = fs.readFileSync(path.join(SRC, "renderer", "finance-pages.js"), "utf8");
+  assert.ok(/No login links are set/.test(js) && /financeLoginLinks/.test(js) && /!P\.links_set/.test(js));
+});
+t("cash chart: the lowest point's label sits under the dot with room reserved below the line (no overlap with the line or the ticks)", () => {
+  const js = fs.readFileSync(path.join(SRC, "renderer", "finance-pages.js"), "utf8");
+  assert.ok(/B = 52/.test(js) && /Y\(d\.bal\) \+ 20/.test(js) && /mf-cash-low/.test(js) && /y1: Hh - B \+ 26/.test(js), "label y = dot + 20, ticks start at +26");
 });
 
 // ------------------------------------------------------------------ config keys

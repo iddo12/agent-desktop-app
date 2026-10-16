@@ -132,7 +132,7 @@ function pageView(feed, page, scopeIn, o) {
     case "sources": {
       const sources = feed.sources.filter((s) => inScope(s.scope, scope)).map(srcRow);
       const lf = maxStr(sources.map((s) => s.last_full_refresh)), nd = sources.map((s) => s.next_due).filter(Boolean).sort()[0] || null;
-      return Object.assign(base, { sources, last_full_refresh: lf, next_due: nd, next_due_overdue: !!(nd && nd < today), as_of: generated });
+      return Object.assign(base, { sources, links_set: sources.filter((s) => s.link).length, link_ids: sources.map((s) => s.id).slice(0, 50), last_full_refresh: lf, next_due: nd, next_due_overdue: !!(nd && nd < today), as_of: generated });
     }
     case "cash": {
       const c = feed.cash_flow_60d;

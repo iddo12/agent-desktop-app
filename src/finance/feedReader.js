@@ -30,6 +30,8 @@ function createFeedReader(opts) {
     if (bad) { say("finance-feed refused: code=UNSAFE_FOLDER"); return { ok: false, code: "UNSAFE_FOLDER", reason: "The finance feed must sit in a private folder on this PC, not " + bad + "." }; }
     // One open, then everything on the same descriptor (no check-then-use gap): the path is looked at once for a link, the descriptor is
     // checked with fstat (regular file, same file as the path, size within the cap), read once, and fstat'ed again to catch a file that grew.
+    // a ":" in the file name is an NTFS alternate data stream (name:stream): never read one (the folder part has its own check in vault.unsafeReason)
+    if (path.basename(p).includes(":")) { say("finance-feed refused: code=BAD_NAME"); return { ok: false, code: "BAD_NAME", reason: "The finance feed file name is not allowed." }; }
     let fd = null, text;
     try {
       let lst;
@@ -38,6 +40,7 @@ function createFeedReader(opts) {
       try { fd = fsx.openSync(p, "r"); } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "OPEN")); return { ok: false, code: "READ", reason: "The finance feed file could not be read." }; }
       const st = fsx.fstatSync(fd);
       if (!st.isFile()) { say("finance-feed refused: code=NOT_PLAIN_FILE"); return { ok: false, code: "NOT_PLAIN_FILE", reason: "The finance feed must be a plain file (not a link)." }; }
+      // same-file check: skipped when the file system reports no inode (ino 0 or missing, which some Windows volumes do); the other checks still apply
       if (lst.ino && st.ino && (lst.ino !== st.ino || lst.dev !== st.dev)) { say("finance-feed refused: code=CHANGED"); return { ok: false, code: "CHANGED", reason: "The finance feed file changed while it was being opened." }; }
       if (st.size > MAX_BYTES) return { ok: false, code: "TOO_BIG", reason: "The finance feed file is too large." };
       const buf = Buffer.alloc(st.size);

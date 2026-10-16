@@ -12,3 +12,7 @@
 ## My Finance pages from the feed (v1.130.0, slice 2)
 
 - Eleven feed pages, paged and scope-filtered through `finance-feed`, plus reader hardening (single handle, size check). Details: `docs/CHANGELOG_v1.130.0.md`.
+
+## My Finance polish (v1.131.0, slice 3)
+
+- Hebrew text islands, cash-flow label, login-link hint, ":" file-name refusal, inode-0 note, https-only window opener. Details: `docs/CHANGELOG_v1.131.0.md`.

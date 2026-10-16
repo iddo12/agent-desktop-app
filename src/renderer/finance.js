@@ -295,12 +295,16 @@
     root.appendChild(renderHomeTiles(S, v));
     if (v.stale.length) {
       const n = el("div", "mf-need mf-need-w"); n.setAttribute("role", "note");
-      n.append(el("b", "", "▲ Stale data: "), document.createTextNode(v.stale.map((s) => s.label + " " + s.age_days + " days").join(", ") + ". "), goLink(S, "Refresh checklist", "fsources"));
+      n.appendChild(el("b", "", "▲ Stale data: "));
+      v.stale.forEach((s, i) => { if (i) n.appendChild(document.createTextNode(", ")); n.append(el("bdi", "", s.label), document.createTextNode(" " + s.age_days + " days")); });   // each name is its own bidi island (Hebrew names must not reorder the list)
+      n.append(document.createTextNode(". "), goLink(S, "Refresh checklist", "fsources"));
       root.appendChild(n);
     }
     if (v.needs) {
       const n = el("div", "mf-need"); n.setAttribute("role", "note");
-      n.append(el("b", "", v.needs.count ? "Needs you: " + v.needs.count + "." : "Nothing needs you ✓"), document.createTextNode(v.needs.count ? " " + v.needs.labels.join("; ") + " " : ""));
+      n.appendChild(el("b", "", v.needs.count ? "Needs you: " + v.needs.count + "." : "Nothing needs you ✓"));
+      v.needs.labels.forEach((l, i) => { n.appendChild(document.createTextNode(i ? "; " : " ")); n.appendChild(el("bdi", "", l)); });
+      n.appendChild(document.createTextNode(" "));
       if (v.needs.count) n.appendChild(goLink(S, "Review", "fqueue"));
       root.appendChild(n);
     }
