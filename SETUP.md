@@ -23,6 +23,7 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - registryTool (file): registry.py  [env AGENT_DESKTOP_REGISTRY_TOOL]
 - pcHealthScript (file): pc_health.py  [env AGENT_DESKTOP_PC_HEALTH_SCRIPT]
 - toolsCatalogue (file): Tools catalogue (tools.json)  [env AGENT_DESKTOP_TOOLS_CATALOGUE]
+- styleLibrary (folder): My Designs library folder (holds styles.json)  [env AGENT_DESKTOP_STYLE_LIBRARY]
 - toolsBasketLabel (text): Tools: heading of the first group of tools (the one your catalogue marks with basket "acmeco")  [env AGENT_DESKTOP_TOOLS_BASKET_LABEL]
 - financeVault (folder): Finance folder  [env AGENT_DESKTOP_FINANCE_VAULT]
 - healthParent (folder): Health folder  [env AGENT_DESKTOP_HEALTH_PARENT]
@@ -54,6 +55,11 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - roleSeo (text): Folder name of your SEO agent  [env AGENT_DESKTOP_ROLE_SEO]
 - argusJobPrefixes (text): ARGUS: scheduled-job prefixes per role (for example SEC_=security;OPT_=optimization)  [env AGENT_DESKTOP_ARGUS_JOB_PREFIXES]
 - argusShortNames (text): ARGUS: short names for agent folders (for example Some Folder=Short)  [env AGENT_DESKTOP_ARGUS_SHORT_NAMES]
+- governorMaxWorking (text): Load governor: most agents working at once (default 6)  [env AGENT_DESKTOP_GOVERNOR_MAX_WORKING]
+- governorMaxWorkingHeavy (text): Load governor: most agents working while a heavy app is in front (default 3)  [env AGENT_DESKTOP_GOVERNOR_MAX_WORKING_HEAVY]
+- governorHeavyApps (text): Load governor: heavy apps, program names separated by commas (default premiere)  [env AGENT_DESKTOP_GOVERNOR_HEAVY_APPS]
+- governorCalmCpuPct (text): Load governor: CPU percent below which the PC counts as calm (default 50)  [env AGENT_DESKTOP_GOVERNOR_CALM_CPU_PCT]
+- governorSlowLagMs (text): Load governor: system lag in milliseconds that triggers the slow-down (default 1500)  [env AGENT_DESKTOP_GOVERNOR_SLOW_LAG_MS]
 - planTier (choice: pro|max5x|max20x): Claude plan  [env AGENT_DESKTOP_PLAN_TIER]
 - whisperExe (file): Speech program (whisper-cli)  [env AGENT_DESKTOP_WHISPER_EXE]
 - whisperModel (file): Speech model (ggml .bin)  [env AGENT_DESKTOP_WHISPER_MODEL]
@@ -104,6 +110,10 @@ telegramTasksDir = folder of the bridge's task .json files; telegramBridgeDir = 
 Needs: toolsCatalogue
 toolsCatalogue = tools.json (default <sharedTools>/tools/tools.json); toolsAllowedRoots lists folders launchers may live in; toolsBasketLabel (optional text) = heading of the first group (basket "acmeco" in tools.json), default "Tools".
 
+### designs - My Designs
+Needs: styleLibrary
+styleLibrary = the folder with styles.json (schema lensvid.style_library: styles[] with id, name, group, type motion|still, kind, tags, preview (relative file: png/jpg/webp/gif/mp4/webm), source, reference, palette, status draft|approved); default <workspaceRoot>/shared_assets/style_library. The page is read only. To let the "Open source folder" button work, the design's source folder must be under the workspace folder or one of openPathRoots / outputRoots.
+
 ### library - Library
 Needs: workspaceRoot
 workspaceRoot = the folder that holds your agents' work; documentRoots (optional list, default the agents folder) lists the folders scanned for documents. The library does not run any tool, so nothing else is needed.
@@ -119,6 +129,10 @@ exchangeDir = shared mailbox folder (not set = the feature needs setup); exchang
 ### iris - IRIS
 Needs: agentsRoot
 IRIS is OFF by default and cannot be enabled by an agent: it listens on the local network, so it only turns on after the person at the machine confirms in Agent Desktop > Setup (a consent record, iris.consentAt, is written by the app UI only). Do not try to set iris.enabled yourself; ask the person to press Turn on for IRIS in Setup. IRIS data lives in userData/iris; it needs agentsRoot to deliver messages to an agent. leadRole = role word (for example COO) of the agent whose name receives incoming IRIS messages; unset = messages wait.
+
+### loadGovernor - Load governor
+Needs: nothing
+No setting is required. Optional text values: governorMaxWorking (default 6), governorMaxWorkingHeavy (3), governorHeavyApps (comma-separated program names, default premiere), governorCalmCpuPct (50), governorSlowLagMs (1500). Switch off with features.loadGovernor.enabled=false. Decisions are logged to stuck-turn-watchdog.log with the prefix "governor:".
 
 ### keepGoing - Keep working
 Needs: tasksTool, pythonExe

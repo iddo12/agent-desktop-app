@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 
 const CHANNELS = ["iris-approve-send", "iris-cancel-invite", "iris-create-invite", "iris-delivered", "iris-join", "iris-log", "iris-pending",
-  "iris-prepare-delivery", "iris-reject-send", "iris-send", "iris-set-enabled", "iris-set-name", "iris-set-peer", "iris-status", "iris-unpair"];
+  "iris-prepare-delivery", "iris-reject-send", "iris-chats", "iris-chat-send", "iris-chat-retry", "iris-chat-viewed", "iris-direct-set", "iris-send", "iris-set-enabled", "iris-set-name", "iris-set-peer", "iris-status", "iris-unpair"];
 const OFF = { ok: false, reason: "IRIS is off. Turn it on in Setup (it needs your consent)." };
 
 function hasPairedPeer(userDataDir, fsx) {

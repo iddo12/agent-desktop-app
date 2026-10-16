@@ -12,8 +12,8 @@ const make = (env) => { const c = createAppConfig({ userDataDir: mk("ud" + Math.
 
 // converted so far: pcHealth, claudeCode, claudeIntegration, telegram (launch / start-up area, v1.121.0); other areas add theirs here
 const CONVERTED = ["pcHealth", "claudeCode", "claudeIntegration", "telegram"];
-const WANTED = ["argus", "memory", "myDaily", "myHealth", "myFinance", "pcHealth", "claudeCode", "claudeIntegration", "telegram", "tools", "library", "research", "fleet", "iris", "keepGoing", "usage", "voice"];
-t("the registry declares exactly the 17 features (plus the hidden workspace card)", () => {
+const WANTED = ["argus", "memory", "myDaily", "myHealth", "myFinance", "pcHealth", "claudeCode", "claudeIntegration", "telegram", "tools", "designs", "library", "research", "fleet", "iris", "keepGoing", "usage", "voice", "loadGovernor"];
+t("the registry declares exactly the 19 features (plus the hidden workspace card)", () => {
   assert.deepStrictEqual(features.list().map((f) => f.id).sort(), WANTED.slice().sort());
   assert.ok(features.get("workspace").hidden);
 });
@@ -28,7 +28,7 @@ t("every feature says whether it is wired (converted to the config layer)", () =
   for (const f of features.list(true)) assert.strictEqual(typeof f.wired, "boolean", f.id);
 });
 t("tile ids match the real sidebar tiles", () => {
-  const lp = require("../src/leftpane.js"); const known = new Set(lp.SYSTEMS.map((s) => s.id).concat(["health", "tools", "research", "finance", "fleet"]));
+  const lp = require("../src/leftpane.js"); const known = new Set(lp.SYSTEMS.map((s) => s.id).concat(["health", "tools", "research", "finance", "designs", "fleet"]));
   for (const f of features.list()) if (f.tileId) assert.ok(known.has(f.tileId), f.id + " -> " + f.tileId);
 });
 t("states: unconfigured = needs-setup, configured = ready, no feature needs more than the keys it declares", () => {

@@ -10,6 +10,7 @@ const path = require("path");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "adtail-"));
 process.env.USERPROFILE = home;
 process.env.HOME = home;
+process.env.AD_USAGE_MEMO_MS = "0"; // v1.128.6: the usage figure is otherwise reused for 20 s without statting
 const archive = require("../src/archive");
 archive.setStatCacheTtl(0); // v1.77.3: this test appends and re-reads at once; the 1.5 s stat cache has its own test (statCache.test.js)
 

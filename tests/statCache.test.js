@@ -97,5 +97,19 @@ const l4 = agents.listAgents({ noAvatar: true });
 assert.strictEqual(l4[0].hasState, false);
 assert.strictEqual(l4[0].status, "No work plan yet");
 
+
+// v1.128.1: invalidateAgentCache drops ONE agent's cached listing at once (delivery checks must see a brand-new transcript file)
+{
+  archive.setStatCacheTtl(60000);
+  const before = archive.newestTranscript(cwd);
+  const f3 = path.join(proj, "33333333-cccc.jsonl");
+  fs.writeFileSync(f3, human + "\n");
+  fs.utimesSync(f3, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+  assert.strictEqual(archive.newestTranscript(cwd).jsonlPath, before.jsonlPath, "long TTL: new file not seen yet");
+  archive.invalidateAgentCache(cwd);
+  assert.strictEqual(path.basename(archive.newestTranscript(cwd).jsonlPath), "33333333-cccc.jsonl", "invalidateAgentCache shows the new file at once");
+  console.log("ok - invalidateAgentCache");
+}
+
 fs.rmSync(home, { recursive: true, force: true });
 console.log("statCache.test.js: all assertions passed");

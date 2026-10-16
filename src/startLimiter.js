@@ -11,7 +11,9 @@
 //     `since` is older than `staleMs` (30 min), and the wait is abandoned after `holdTimeoutMs` (15 min): a stale
 //     file can never block the app for good. Once abandoned it is ignored until it has disappeared once;
 //   - `urgent` requests (one explicit user action on one agent) never wait for anything;
-//   - `enabled: () => false` turns the whole thing off at once (limiterEnabled setting).
+//   - `enabled: () => false` turns the whole thing off at once (limiterEnabled setting);
+//   - v1.127.0 `gate(label) -> { ok, reason }` (the load governor): asked right before a start would be released; ok:false keeps it queued and
+//     re-asked every gatePollMs (2 s). A throwing gate counts as ok (fail-open). snapshot().gate says why the head is waiting.
 // The hold file is read only while something is queued (or by refreshHold()), at most every `pollMs` (5 s).
 // Timers exist only while starts are queued; an idle limiter has none.
 
@@ -23,6 +25,7 @@ const DEFAULTS = {
   maxConcurrent: 3,
   spacingMs: 4000,
   pollMs: 5000,
+  gatePollMs: 2000,
   holdTimeoutMs: 15 * 60 * 1000,
   staleMs: 30 * 60 * 1000,
   slotTimeoutMs: 3 * 60 * 1000, // a start that never reports back frees its slot after this
@@ -83,6 +86,7 @@ function createStartLimiter(options = {}) {
   let lastHoldCheck = -Infinity;
   let holdCached = false;
   let currentLabel = "";
+  let gateInfo = { blocked: false, reason: "" };
 
   function resetBatchIfIdle() {
     if (!queue.length && inflight === 0) {
@@ -191,6 +195,18 @@ function createStartLimiter(options = {}) {
       else schedule(o.pollMs);
       return;
     }
+    // v1.127.0 load governor: may the head of the queue start now? (one at a time, only when the PC is calm)
+    if (typeof o.gate === "function") {
+      let g = null;
+      try { g = o.gate(queue[0].label); } catch (e) { g = null; }
+      if (g && g.ok === false) {
+        gateInfo = { blocked: true, reason: g.reason || "" };
+        changed();
+        schedule(Math.min(o.gatePollMs, o.pollMs));
+        return;
+      }
+    }
+    gateInfo = { blocked: false, reason: "" };
     // One start per spacing interval, FIFO (a crowd of starts is what froze the PC).
     grant(queue.shift());
     lastWaveAt = t;
@@ -214,6 +230,7 @@ function createStartLimiter(options = {}) {
       started: batchStarted,
       total: batchTotal,
       current: currentLabel,
+      gate: gateInfo,
       waiting: queue.map((q) => q.label),
       hold: holdActive
         ? { active: true, since: (holdInfo && holdInfo.since) || null, boxed: Array.isArray(holdInfo && holdInfo.boxed) ? holdInfo.boxed : [], reason: (holdInfo && holdInfo.reason) || "" }

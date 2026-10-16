@@ -67,8 +67,18 @@ process.stdin.on("end", () => {
       cache.sevenDayResetsAt = rate.seven_day.resets_at || null;
     }
     if (fiveH !== null || sevenD !== null) {
-      cache.updatedAt = new Date().toISOString();
-      fs.writeFileSync(RATE_LIMITS_CACHE_PATH, JSON.stringify(cache));
+      // 2026-10-16 (Security): write only when a figure changed or the file is >5 min old.
+      // Every write into ~/.claude makes ALL open sessions rescan that folder, so one write per
+      // session per refresh turned into thousands of directory scans a second across the fleet.
+      let stale = true;
+      try { stale = Date.now() - fs.statSync(RATE_LIMITS_CACHE_PATH).mtimeMs > 300000; } catch (e) {}
+      const sig = JSON.stringify([cache.fiveHourUsedPct, cache.fiveHourResetsAt, cache.sevenDayUsedPct, cache.sevenDayResetsAt]);
+      let prevSig = "";
+      try { const o = JSON.parse(fs.readFileSync(RATE_LIMITS_CACHE_PATH, "utf8")); prevSig = JSON.stringify([o.fiveHourUsedPct, o.fiveHourResetsAt, o.sevenDayUsedPct, o.sevenDayResetsAt]); } catch (e) {}
+      if (stale || sig !== prevSig) {
+        cache.updatedAt = new Date().toISOString();
+        fs.writeFileSync(RATE_LIMITS_CACHE_PATH, JSON.stringify(cache));
+      }
     }
   } catch (e) {
     // Never let a cache-write failure blank out the actual status line.
@@ -94,9 +104,19 @@ process.stdin.on("end", () => {
       m[sid] = Object.assign(cur, { seenAt: now, changedAt: changed ? now : prev.changedAt, firstSeenAt: prev ? prev.firstSeenAt : now });
       const cutoff = Date.now() - 8 * 86400000;
       for (const k of Object.keys(m)) if (!(Date.parse(m[k].seenAt) > cutoff)) delete m[k];
-      const tmp = p + "." + process.pid + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(m));
-      fs.renameSync(tmp, p);
+      // 2026-10-16 (Security): skip the write when only seenAt would move (throttled to 5 min),
+      // and never leave a .tmp behind if the rename fails (980 orphans made every session's
+      // ~/.claude folder scan open ~1000 files per change).
+      const seenOnly = prev && !changed && Date.parse(prev.seenAt) > Date.now() - 300000;
+      if (!seenOnly) {
+        const tmp = p + "." + process.pid + ".tmp";
+        try {
+          fs.writeFileSync(tmp, JSON.stringify(m));
+          fs.renameSync(tmp, p);
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch (e2) {}
+        }
+      }
     }
   } catch (e) {}
 

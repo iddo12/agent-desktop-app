@@ -106,6 +106,12 @@ const FEATURES = [
     agentHelp: "toolsCatalogue = tools.json (default <sharedTools>/tools/tools.json); toolsAllowedRoots lists folders launchers may live in; toolsBasketLabel (optional text) = heading of the first group (basket \"acmeco\" in tools.json), default \"Tools\".",
   },
   {
+    id: "designs", group: "daily", title: "My Designs", tileId: "designs", wired: true, requires: ["styleLibrary"],
+    steps: [step("styleLibrary", "folder", "My Designs library folder", "The folder that holds styles.json and the preview files of your numbered designs.")],
+    help: "A numbered gallery of your designs (motion graphics and stills), so you can say \"use my design #12\".",
+    agentHelp: "styleLibrary = the folder with styles.json (schema lensvid.style_library: styles[] with id, name, group, type motion|still, kind, tags, preview (relative file: png/jpg/webp/gif/mp4/webm), source, reference, palette, status draft|approved); default <workspaceRoot>/shared_assets/style_library. The page is read only. To let the \"Open source folder\" button work, the design's source folder must be under the workspace folder or one of openPathRoots / outputRoots.",
+  },
+  {
     id: "library", group: "daily", title: "Library", tileId: "library", wired: true, requires: ["workspaceRoot"],
     steps: [CORE],
     help: "Documents, images and projects your agents made. It looks in the folders under your workspace folder.",
@@ -128,6 +134,16 @@ const FEATURES = [
     steps: [step("agentsRoot", "folder", "Agents folder", "The folder that contains one sub-folder per agent."), step("leadRole", "text", "Role of the agent that receives IRIS messages", "Incoming IRIS messages are handed to the agent whose name contains this role (for example COO). Leave empty and they wait until you set it.", { optional: true })],
     help: "A private link between your Agent Desktop and another person's. Pairing is done inside the IRIS panel.",
     agentHelp: "IRIS is OFF by default and cannot be enabled by an agent: it listens on the local network, so it only turns on after the person at the machine confirms in Agent Desktop > Setup (a consent record, iris.consentAt, is written by the app UI only). Do not try to set iris.enabled yourself; ask the person to press Turn on for IRIS in Setup. IRIS data lives in userData/iris; it needs agentsRoot to deliver messages to an agent. leadRole = role word (for example COO) of the agent whose name receives incoming IRIS messages; unset = messages wait.",
+  },
+  {
+    id: "loadGovernor", group: "computer", title: "Load governor", tileId: null, wired: true, requires: [],
+    steps: [
+      step("governorMaxWorking", "text", "Most agents working at once", "Agents above this number wait for a slot. Default 6.", { optional: true, suggest: () => "6" }),
+      step("governorMaxWorkingHeavy", "text", "Most agents working while a heavy app is in front", "Used while one of the heavy apps below is the window in front. Default 3.", { optional: true, suggest: () => "3" }),
+      step("governorHeavyApps", "text", "Heavy apps (program names, separated by commas)", "For example: premiere, afterfx, resolve. Default: premiere.", { optional: true, suggest: () => "premiere" }),
+    ],
+    help: "Keeps the PC responsive: agents start one at a time when the PC is calm, only a limited number work at once, and nudges and starts pause by themselves while the PC lags. On by default; turn it off here.",
+    agentHelp: "No setting is required. Optional text values: governorMaxWorking (default 6), governorMaxWorkingHeavy (3), governorHeavyApps (comma-separated program names, default premiere), governorCalmCpuPct (50), governorSlowLagMs (1500). Switch off with features.loadGovernor.enabled=false. Decisions are logged to stuck-turn-watchdog.log with the prefix \"governor:\".",
   },
   {
     id: "keepGoing", group: "advanced", title: "Keep working", tileId: null, wired: true, requires: ["tasksTool", "pythonExe"],

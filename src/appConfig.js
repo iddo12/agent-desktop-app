@@ -40,6 +40,7 @@ const KEYS = {
   registryTool: { kind: "file", exec: true, exts: [".py"], label: "registry.py", derive: (c) => c.sub("sharedTools", "registry.py") },
   pcHealthScript: { kind: "file", exec: true, exts: [".py"], label: "pc_health.py", derive: (c) => c.sub("sharedTools", "pc_health", "pc_health.py") },
   toolsCatalogue: { kind: "file", label: "Tools catalogue (tools.json)", derive: (c) => c.sub("sharedTools", "tools", "tools.json") },
+  styleLibrary: { kind: "folder", label: "My Designs library folder (holds styles.json)", derive: (c) => c.sub("workspaceRoot", "shared_assets", "style_library") },
   toolsBasketLabel: { kind: "text", label: "Tools: heading of the first group of tools (the one your catalogue marks with basket \"acmeco\")", derive: () => null },
   financeVault: { kind: "folder", autoCreate: true, label: "Finance folder", derive: (c) => c.userSub("finance-vault") },
   healthParent: { kind: "folder", autoCreate: true, label: "Health folder", derive: (c) => c.userSub("health") },
@@ -74,6 +75,12 @@ const KEYS = {
   // ARGUS: which scheduled-job name prefix belongs to which role, "PREFIX=role;PREFIX=role" (roles: coo, security, optimization, seo), and short display names "folder=Short;folder=Short"
   argusJobPrefixes: { kind: "text", label: "ARGUS: scheduled-job prefixes per role (for example SEC_=security;OPT_=optimization)", derive: () => null },
   argusShortNames: { kind: "text", label: "ARGUS: short names for agent folders (for example Some Folder=Short)", derive: () => null },
+  // Load governor (v1.127.0): optional text values (numbers as text; an unusable value falls back to the safe default inside src/loadGovernor.js)
+  governorMaxWorking: { kind: "text", label: "Load governor: most agents working at once (default 6)", derive: () => null },
+  governorMaxWorkingHeavy: { kind: "text", label: "Load governor: most agents working while a heavy app is in front (default 3)", derive: () => null },
+  governorHeavyApps: { kind: "text", label: "Load governor: heavy apps, program names separated by commas (default premiere)", derive: () => null },
+  governorCalmCpuPct: { kind: "text", label: "Load governor: CPU percent below which the PC counts as calm (default 50)", derive: () => null },
+  governorSlowLagMs: { kind: "text", label: "Load governor: system lag in milliseconds that triggers the slow-down (default 1500)", derive: () => null },
   planTier: { kind: "choice", choices: ["pro", "max5x", "max20x"], label: "Claude plan", derive: () => null },
   // Voice (speech engine on this PC; nothing is auto-detected, so a fresh computer shows "needs setup")
   whisperExe: { kind: "file", exec: true, exts: [".exe", ".cmd", ".bat"], label: "Speech program (whisper-cli)", derive: () => null },

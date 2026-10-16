@@ -32,6 +32,15 @@ function fail(msg) {
   process.exit(1);
 }
 
+// v1.126.0 review fix: a reply to a linked person may leave without a click, so --file may only name the agent's OWN plain note
+// (inside its own folder, text/markdown, 4000 characters at most, no dot-files, nothing named like a secret or a config).
+function readOwn(file) {
+  const root = process.cwd().split(path.sep).join("/").replace(/\/\.claude-session$/, "");
+  const r = require("../src/iris/ownfile").readOwnFile(file, root);
+  if (!r.ok) fail(`--file refused: ${r.reason}. Use --text, or a short .txt/.md note inside your own folder.`);
+  return r.text;
+}
+
 let token;
 try { token = fs.readFileSync(path.join(dir, "local-token"), "utf8").trim(); } catch (e) {
   fail(`can't read the local token in ${dir} - is Agent Desktop running with IRIS installed?`);
@@ -45,6 +54,22 @@ try { pipeName = fs.readFileSync(path.join(dir, "pipe-name"), "utf8").trim(); } 
 let req;
 if (cmd === "peers" || cmd === "status") {
   req = { cmd };
+} else if (cmd === "agents") {
+  req = { cmd };
+} else if (cmd === "reply") {
+  // v1.126.0: answer a direct message. The thread id is in the message you were given.
+  let text = opt("text");
+  if (opt("file")) text = readOwn(opt("file"));
+  if (!opt("thread")) fail("--thread is required (it is in the message you received)");
+  if (!text) fail("--text or --file is required");
+  req = { cmd: "reply", thread: opt("thread"), text, fromAgent: opt("from") || path.basename(process.cwd().replace(/[\\/]\.claude-session$/, "")) };
+} else if (cmd === "send" && (opt("to-agent") || args.includes("--to-person"))) {
+  // v1.126.0: message a named agent of a linked Agent Desktop (or the person there with --to-person)
+  let text = opt("text");
+  if (opt("file")) text = readOwn(opt("file"));
+  if (!opt("to")) fail("--to is required (the linked person or Agent Desktop)");
+  if (!text) fail("--text or --file is required");
+  req = { cmd: "send", to: opt("to"), toAgent: opt("to-agent"), toPerson: args.includes("--to-person"), text, thread: opt("thread"), fromAgent: opt("from") || path.basename(process.cwd().replace(/[\\/]\.claude-session$/, "")) };
 } else if (cmd === "send") {
   let text = opt("text");
   if (opt("file")) text = fs.readFileSync(opt("file"), "utf8");

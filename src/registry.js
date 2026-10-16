@@ -201,7 +201,17 @@ function webCopyOf(workspaceRoot, host) {
 // file-existence checks can be (a linked file that appears or vanishes on its own).
 const EXISTS_MEMO_MS = 60 * 1000;
 const listCache = new Map(); // workspaceRoot -> { sig, at, value }
+// v1.128.4: ~450 stats on Dropbox per call (5.7 s of main-thread blocking per 40 s profiled 2026-10-16): reuse for 5 s.
+const SIG_TTL_MS = () => (process.env.AD_REGISTRY_SIG_TTL_MS !== undefined ? +process.env.AD_REGISTRY_SIG_TTL_MS : 5000);
+const sigMemo = new Map(); // workspaceRoot -> { at, sig }
 function registrySignature(workspaceRoot) {
+  const m = sigMemo.get(workspaceRoot);
+  if (m && Date.now() - m.at < SIG_TTL_MS()) return m.sig;
+  const sig = registrySignatureFresh(workspaceRoot);
+  sigMemo.set(workspaceRoot, { at: Date.now(), sig });
+  return sig;
+}
+function registrySignatureFresh(workspaceRoot) {
   const dir = registryDir(workspaceRoot);
   let files;
   try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json") && !f.startsWith(".")).sort(); } catch (e) { return "none"; }
@@ -220,7 +230,7 @@ function listRegistry(workspaceRoot) {
   listCache.set(workspaceRoot, { sig, at: now, value });
   return value;
 }
-function invalidateListCache() { listCache.clear(); }
+function invalidateListCache() { listCache.clear(); sigMemo.clear(); }
 
 function findEntry(workspaceRoot, id) {
   return loadEntries(workspaceRoot).find((e) => e.id === id) || null;

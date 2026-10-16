@@ -22,8 +22,17 @@ const os = require("os");
 const crypto = require("crypto");
 const ic = require("./crypto");
 const gw = require("./gateway");
+const { ChatStore } = require("./chats");
 
 const DEFAULT_PORT = 47321;
+// v1.126.0 direct agent messaging
+const CHAT_LIFETIME_MS = 12 * 3600 * 1000;      // a chat message waits this long for the other PC before "Not delivered"
+const DIRECTORY_EVERY_MS = 6 * 3600 * 1000;      // how often we re-tell a peer which agents they may message
+const DELIVERY_RETRY_MS = 3 * 60 * 1000;         // handing a message to an agent that was not running / busy
+const DELIVERY_MAX_TRIES = 6;
+const THREAD_KEEP_MS = 8 * 24 * 3600 * 1000;
+const AUTO_REPLY_MAX_CHARS = 4000;               // longer agent replies are held for the owner's click
+const RETRYABLE_RE = /^(never-wake-agent-not-running|could-not-start-session|no-session|no-window|agent-paused|rate-limited|no-inbox)/;
 const INVITE_TTL_MS = 10 * 60 * 1000;
 const INVITE_MAX_TRIES = 20;          // across all IPs, valid-looking hellos only
 const INVITE_MAX_BAD_PER_IP = 3;
@@ -128,7 +137,10 @@ function isPrivateHost(host) {
 const AUTO_SEND_PER_HOUR = 20;
 
 class IrisService {
-  // opts: { dir, name, port, bindHost, protect, unprotect, deliver(peer, env, framed, inboxFile), log(line), now() }
+  // opts: { dir, name, port, bindHost, protect, unprotect, deliver(peer, env, framed, inboxFile), log(line), now(),
+  //   v1.126.0 (direct agent messaging, all optional - without them direct messages are simply refused):
+  //   resolveAgent(name) -> canonical agent folder name | null, listAgents() -> [folder names],
+  //   deliverDirect({ peerId, agent, framed, envId }) -> Promise<{ ok, reason? }>, ownerName() -> string, toolCommand }
   constructor(opts) {
     this.dir = opts.dir;
     this.opts = opts;
@@ -148,10 +160,26 @@ class IrisService {
     this._loadIdentity();
     this.peers = nullProto(readJson(this._p("peers.json"), {}));
     for (const [id, p] of Object.entries(this.peers)) if (!ic.validKeys(p) || p.id !== id) delete this.peers[id];
-    this.state = Object.assign({ enabled: false, port: opts.port || DEFAULT_PORT, seen: {}, counts: {}, receivedHops: {} }, readJson(this._p("state.json"), {}));
+    // Direct access settings carry a seal made with a key only this install has. A peers.json edited by hand (or by a script)
+    // fails the check and direct access is switched OFF for that peer: the setting can only be widened through setDirect().
+    this._sealTampered = [];
+    // v1.126.0 review fix 6: the seal covers everything that decides what a peer may make our agents do: direct access, autoSend,
+    // paused and trust. A mismatch fails closed: direct off, autoSend off, peer paused (the owner resumes it with a click).
+    // A peer with no seal yet (paired before this version) is sealed as it is - nothing could be checked against.
+    for (const p of Object.values(this.peers)) {
+      if (typeof p.seal !== "string") { p.seal = this._seal(p); continue; }
+      if (!this._sealOk(p)) { this._sealTampered.push(p.id); p.direct = gw.normalizeDirect({}); p.autoSend = false; p.paused = true; p.seal = this._seal(p); }
+    }
+    this.state = Object.assign({ enabled: false, port: opts.port || DEFAULT_PORT, seen: {}, counts: {}, receivedHops: {}, threads: {}, directQueue: [] }, readJson(this._p("state.json"), {}));
     this.state.seen = nullProto(this.state.seen);
     this.state.counts = nullProto(this.state.counts);
     this.state.receivedHops = nullProto(this.state.receivedHops);
+    this.state.threads = nullProto(this.state.threads);
+    if (!Array.isArray(this.state.directQueue)) this.state.directQueue = [];
+    this.chats = new ChatStore({ dir: this.dir, now: this.now });
+    this._autoDirect = {};
+    this._deliverTimers = new Set();
+    for (const id of this._sealTampered) this._audit({ event: "direct-seal-mismatch", peer: id });
     if (opts.port) this.state.port = opts.port;
     this.outbox = readJson(this._p("outbox.json"), []);
     // Replies an agent composed on its own initiative, held for a human click
@@ -180,6 +208,7 @@ class IrisService {
   _changed(what) { for (const fn of this.listeners) { try { fn(what); } catch (e) {} } }
 
   _save() {
+    for (const p of Object.values(this.peers)) p.seal = this._seal(p); // memory is the truth; the seal is what a file edit cannot match
     atomicWrite(this._p("peers.json"), JSON.stringify(this.peers, null, 2));
     atomicWrite(this._p("state.json"), JSON.stringify(this.state));
     atomicWrite(this._p("outbox.json"), JSON.stringify(this.outbox, null, 2));
@@ -205,11 +234,71 @@ class IrisService {
   // Gateway state view: peers' pause/caps + enabled + seen/counts.
   _gwState() {
     const peers = Object.create(null);
-    for (const [id, p] of Object.entries(this.peers)) peers[id] = { paused: !!p.paused, dailyCap: p.dailyCap, dailyCharCap: p.dailyCharCap };
+    for (const [id, p] of Object.entries(this.peers)) peers[id] = { paused: !!p.paused, dailyCap: p.dailyCap, dailyCharCap: p.dailyCharCap, direct: p.direct };
     return { enabled: this.state.enabled, peers, seen: this.state.seen, counts: this.state.counts };
   }
 
   _peer(id) { return has(this.peers, id) ? this.peers[id] : null; }
+
+  // Peer by id, or by exact display name (case-insensitive) when that is unambiguous.
+  _findPeer(key) {
+    key = String(key || "");
+    const p = this._peer(key);
+    if (p) return { peer: p };
+    const byName = Object.values(this.peers).filter((x) => x.name.toLowerCase() === key.toLowerCase() || (x.direct && x.direct.person && x.direct.person.toLowerCase() === key.toLowerCase()));
+    if (byName.length > 1) return { error: "ambiguous-peer-name - use the peer id" };
+    return byName[0] ? { peer: byName[0] } : { error: "unknown-peer" };
+  }
+
+  // ---------- direct agent access: settings (v1.126.0) ----------
+  _sealKey() { return crypto.createHash("sha256").update("iris-direct-seal|" + this.me.signSk).digest(); }
+  _seal(p) {
+    const body = JSON.stringify({ direct: gw.normalizeDirect(p.direct), autoSend: !!p.autoSend, paused: !!p.paused, trust: String(p.trust || "") });
+    return crypto.createHmac("sha256", this._sealKey()).update(`${p.id}|${body}`).digest("base64");
+  }
+  _sealOk(p) {
+    if (typeof p.seal !== "string") return false;
+    const want = Buffer.from(this._seal(p)), got = Buffer.from(p.seal);
+    return want.length === got.length && crypto.timingSafeEqual(want, got);
+  }
+
+  directOf(peerId) { const p = this._peer(peerId); return p ? gw.normalizeDirect(p.direct) : null; }
+
+  // Change a peer's direct access. Anything that gives the peer MORE reach (switching on, un-denying or allowing an agent,
+  // "only" -> "all", a higher cap) is refused unless the caller says a person confirmed it at this PC: main-iris passes
+  // humanConfirmed:true only after its native dialog, and only for an IPC call from the app window. The agent pipe has no
+  // command that reaches this method.
+  setDirect(peerId, patch, o) {
+    o = o || {};
+    const p = this._peer(peerId);
+    if (!p) return { ok: false, reason: "unknown-peer" };
+    const before = gw.normalizeDirect(p.direct);
+    const next = gw.normalizeDirect(Object.assign({}, before, patch || {}));
+    const agents = typeof this.opts.listAgents === "function" ? this.opts.listAgents() : [];
+    const widening = gw.isWidening(before, next, agents);
+    // who the peer is called, and how they are described to the agents, is also part of the trust: changing it needs the same confirmation
+    const relabel = before.enabled && (before.person !== next.person || before.relation !== next.relation);
+    if ((widening || relabel) && o.humanConfirmed !== true) {
+      this._audit({ event: "direct-change-refused", peer: peerId, reason: "needs-human-confirmation" });
+      return { ok: false, reason: "needs-human-confirmation" };
+    }
+    // never-wake and personal-data agents cannot be put on an allow list: they are not reachable in any mode
+    if (typeof this.opts.isSensitive === "function") next.allow = next.allow.filter((n) => !this.opts.isSensitive(n));
+    p.direct = next;
+    this._save();
+    this._audit({ event: "direct-settings-changed", peer: peerId, by: widening || relabel ? "person-at-this-pc" : "narrowing", enabled: next.enabled, mode: next.mode, allow: next.allow, deny: next.deny, dailyCap: next.dailyCap });
+    this._changed("status");
+    if (next.enabled) { p.directorySentAt = 0; this._sendDirectory(p).catch(() => {}); }
+    return { ok: true, direct: next };
+  }
+
+  // Tell the peer which of our agents they may message (shown to them as a pick list; never as a chat).
+  async _sendDirectory(p) {
+    if (!p.direct || !p.direct.enabled || typeof this.opts.listAgents !== "function") return;
+    const names = (this.opts.listAgents() || []).filter((n) => gw.directAllows(p.direct, n, this.opts.isSensitive)).slice(0, 300);
+    const r = this.sendDirect({ peerId: p.id, toAgent: "@directory", text: JSON.stringify({ agents: names }), byHuman: true, lifetimeMs: 3600 * 1000, internal: true });
+    if (r.ok) { p.directorySentAt = this.now(); this._save(); }
+  }
 
   // ---------- status / settings ----------
   status() {
@@ -224,8 +313,9 @@ class IrisService {
       peers: Object.values(this.peers).map((p) => ({
         id: p.id, name: p.name, addr: p.addr, trust: p.trust, paused: !!p.paused, autoSend: !!p.autoSend,
         pairedAt: p.pairedAt, fingerprint: ic.fingerprint(this.me, p), lastSeen: p.lastSeen || null,
-      })),
-      outbox: this.outbox.map((o) => ({ id: o.env.id, peer: o.peerId, status: o.status, tries: o.tries, lastError: o.lastError || null })),
+        direct: gw.normalizeDirect(p.direct), remoteAgents: Array.isArray(p.remoteAgents) ? p.remoteAgents.slice() : [],
+        unreadChats: this.chats.unreadCount(p.id),
+      })),      outbox: this.outbox.map((o) => ({ id: o.env.id, peer: o.peerId, status: o.status, tries: o.tries, lastError: o.lastError || null })),
       pendingSends: this.pendingSends.map((p) => ({
         id: p.env.id, peer: p.peerId, peerName: (this._peer(p.peerId) || {}).name || p.peerId,
         type: p.env.type, text: p.env.text, replyTo: p.env.replyTo || null, queuedAt: p.queuedAt,
@@ -273,6 +363,11 @@ class IrisService {
     if (!p) return { ok: false, reason: "unknown-peer" };
     delete this.peers[peerId];
     this.outbox = this.outbox.filter((o) => o.peerId !== peerId);
+    this.pendingSends = this.pendingSends.filter((o) => o.peerId !== peerId);
+    this.state.directQueue = this.state.directQueue.filter((q) => q.peerId !== peerId);
+    for (const k of Object.keys(this.state.threads)) if (k.startsWith(peerId + ":")) delete this.state.threads[k];
+    // the conversation history stays readable (the page marks the person as unlinked); only the key and anything still moving are gone
+    for (const m of this.chats.forPeer(peerId)) if (m.status === "queued" || m.status === "needs-approval") this.chats.setStatus(m.id, "failed", "unpaired");
     this._save();
     this._audit({ event: "unpaired", peer: peerId, name: p.name });
     return { ok: true };
@@ -304,8 +399,10 @@ class IrisService {
     this.retryTimer = setInterval(() => {
       this.flushOutbox().catch(() => {});
       this._pruneConnLog();
+      this._pumpDirect();
     }, RETRY_MS);
     this.flushOutbox().catch(() => {});
+    this._pumpDirect();
     this._changed("status");
   }
 
@@ -538,12 +635,211 @@ class IrisService {
     return { ok: true, id: env.id, peer: peer.name };
   }
 
+  // ---------- direct agent messaging (v1.126.0, design v3) ----------
+  // Send a chat message to a peer's named agent (toAgent = their agent folder name) or to the person there ("@person").
+  // byHuman: the person at this PC typed it on the Chats page - it leaves at once. An agent's message waits for a click
+  // unless autoSend is on, or it is a reply to a direct message from a peer the owner allowed (directReply).
+  sendDirect({ peerId, toAgent, text, fromAgent = null, thread = null, replyTo = null, byHuman = false, directReply = false, lifetimeMs, internal = false }) {
+    const f = this._findPeer(peerId);
+    if (!f.peer) return { ok: false, reason: f.error };
+    const peer = f.peer;
+    if (!gw.isTarget(toAgent)) return { ok: false, reason: "bad-toAgent" };
+    if (thread != null && !/^[0-9A-Za-z_-]{8,64}$/.test(String(thread))) return { ok: false, reason: "bad-thread" };
+    const now = this.now();
+    let hop = 0;
+    if (!byHuman && replyTo) {
+      const rk = `${peer.id}:${replyTo}`;
+      if (has(this.state.receivedHops, rk)) hop = this.state.receivedHops[rk].hop + 1;
+      if (hop >= gw.LIMITS.maxHop) {
+        this._audit({ event: "send-blocked", peer: peer.id, reason: "hop-limit" });
+        return { ok: false, reason: "hop-limit (this conversation has gone back and forth enough - ask your user)" };
+      }
+    }
+    const chk = gw.checkOutbound(this._gwState(), peer.id, text, now, { direct: true });
+    if (!chk.ok) {
+      this._audit({ event: "send-blocked", peer: peer.id, reason: chk.reason });
+      this._save();
+      return chk;
+    }
+    let label = byHuman ? "@person" : String(fromAgent || "").replace(/[^\p{L}\p{N} ._()&'-]/gu, " ").trim().slice(0, 80);
+    if (!label) return { ok: false, reason: "no-sending-agent" };
+    // an agent speaks as itself: the name must be a real, non-sensitive agent of this PC (a reply uses the thread's own addressed agent)
+    if (!byHuman && !internal && !directReply && typeof this.opts.resolveAgent === "function") {
+      const real = this.opts.resolveAgent(label);
+      if (!real) return { ok: false, reason: "unknown-sending-agent" };
+      label = real;
+    }
+    const life = Math.min(Number(lifetimeMs) || CHAT_LIFETIME_MS, gw.LIMITS.maxLifetimeMs);
+    const env = {
+      id: crypto.randomBytes(12).toString("base64url"),
+      type: replyTo ? "reply" : "request", text, hop,
+      sent: new Date(now).toISOString(), expires: new Date(now + life).toISOString(),
+      toAgent, fromAgent: label,
+    };
+    if (!internal) env.thread = thread ? String(thread) : crypto.randomBytes(9).toString("base64url");
+    if (replyTo) env.replyTo = String(replyTo);
+    const bad = gw.validateEnvelope(env);
+    if (bad) return { ok: false, reason: bad };
+
+    let release = byHuman || internal;
+    // only plain, short text leaves without a click (review 2026-10-15, HIGH 2): a long reply waits for the owner
+    if (!release && directReply && text.length <= AUTO_REPLY_MAX_CHARS && gw.normalizeDirect(peer.direct).enabled) {
+      const recent = (this._autoDirect[peer.id] || []).filter((t) => t > now - 3600 * 1000);
+      if (recent.length < gw.LIMITS.directAutoPerHour) { recent.push(now); release = true; }
+      this._autoDirect[peer.id] = recent;
+    }
+    if (!release && peer.autoSend) {
+      this._autoTimes = this._autoTimes || {};
+      const recent = (this._autoTimes[peer.id] || []).filter((t) => t > now - 3600 * 1000);
+      if (recent.length < AUTO_SEND_PER_HOUR) { recent.push(now); release = true; }
+      this._autoTimes[peer.id] = recent;
+    }
+    const chatMsg = internal ? null : {
+      id: env.id, peerId: peer.id, thread: env.thread, dir: "out", at: env.sent, text,
+      localAgent: byHuman ? null : label, remoteAgent: toAgent === "@person" ? null : toAgent,
+      status: release ? "queued" : "needs-approval", replyTo: env.replyTo || null, byHuman, expires: env.expires, hop,
+    };
+    if (chatMsg) this.chats.add(chatMsg);
+    if (!release) {
+      this.pendingSends.push({ peerId: peer.id, env, queuedAt: new Date(now).toISOString() });
+      this._save();
+      this._audit({ event: "send-pending-approval", peer: peer.id, id: env.id, type: env.type, hop, text, to: toAgent });
+      this._changed("pending-sends");
+      return { ok: true, pending: true, id: env.id, thread: env.thread, peer: peer.name, reason: "awaiting-approval" };
+    }
+    this.outbox.push({ peerId: peer.id, env, status: "pending", tries: 0 });
+    this._save();
+    if (!internal) this._audit({ event: "direct-queued", dir: "out", peer: peer.id, id: env.id, to: toAgent, from: label, thread: env.thread, hop, text });
+    this._changed("chats");
+    this.flushOutbox().catch(() => {});
+    return { ok: true, id: env.id, thread: env.thread, peer: peer.name };
+  }
+
+  // An agent answers a thread it was addressed in. The thread record says which agent was addressed and who spoke.
+  // The token (given in the frame) is "<peer id>.<thread id>": threads are keyed by the peer AND the thread, so a second peer reusing a
+  // thread id cannot capture the answer. The answer is always sent AS the agent the thread was addressed to (review fixes 5 and 8):
+  // whoever calls this cannot choose a different speaking agent.
+  replyToThread({ token, thread, text }) {
+    let key = null;
+    const t = String(token || thread || "");
+    const dot = t.indexOf(".");
+    if (dot > 0) key = `${t.slice(0, dot)}:${t.slice(dot + 1)}`;
+    else {
+      const hits = Object.keys(this.state.threads).filter((k) => k.slice(k.indexOf(":") + 1) === t);
+      if (hits.length > 1) return { ok: false, reason: "ambiguous-thread - use the full thread token from the message" };
+      key = hits[0] || null;
+    }
+    if (!key || !has(this.state.threads, key)) return { ok: false, reason: "unknown-thread" };
+    const rec = this.state.threads[key];
+    if (!rec.agent) return { ok: false, reason: "this conversation was not addressed to an agent" };
+    const peerId = key.slice(0, key.indexOf(":"));
+    if (!this._peer(peerId)) return { ok: false, reason: "unknown-peer" };
+    return this.sendDirect({ peerId, toAgent: rec.replyTarget, text, fromAgent: rec.agent, thread: key.slice(key.indexOf(":") + 1), replyTo: rec.lastEnvId, directReply: true });
+  }
+
+  // "Not delivered" -> Retry: the same words go out again as a new message in the same thread.
+  retryMessage(id) {
+    const m = this.chats.get(id);
+    if (!m) return { ok: false, reason: "unknown-id" };
+    if (m.dir === "out") {
+      if (m.status !== "failed" || m.retried) return { ok: false, reason: "nothing-to-retry" };
+      this.chats.update(m.id, { retried: true });
+      return this.sendDirect({ peerId: m.peerId, toAgent: m.remoteAgent || "@person", text: m.text, fromAgent: m.localAgent, thread: m.thread, byHuman: !!m.byHuman });
+    }
+    if (m.status !== "not-delivered") return { ok: false, reason: "nothing-to-retry" };
+    const q = this.state.directQueue.find((x) => x.envId === id);
+    if (!q) return { ok: false, reason: "no-longer-available" };
+    q.tries = 0; q.nextAt = 0; q.failedKeep = false; q.expires = this.now() + 3600 * 1000;
+    this.chats.setStatus(id, "received");
+    this._save();
+    this._pumpDirect();
+    return { ok: true };
+  }
+
+  // A direct message passed every gateway check: file it in the conversation and hand it to the agent (or the person).
+  _acceptDirect(peer, env, res) {
+    const at = new Date(this.now()).toISOString();
+    if (res.kind === "directory") {
+      let names = [];
+      try { const j = JSON.parse(env.text); names = Array.isArray(j.agents) ? j.agents.filter(gw.isAgentName).slice(0, 300) : []; } catch (e) { /* a list nobody can use */ }
+      peer.remoteAgents = names;
+      this._audit({ event: "directory-received", peer: peer.id, count: names.length });
+      this._changed("status");
+      return;
+    }
+    const fromAgent = env.fromAgent && env.fromAgent !== "@person" ? env.fromAgent : null;
+    const msg = {
+      id: env.id, peerId: peer.id, thread: env.thread, dir: "in", at, text: gw.stripInvisible(env.text),
+      localAgent: res.kind === "agent" ? res.agent : null, remoteAgent: fromAgent,
+      status: res.kind === "agent" ? "received" : "for-you", replyTo: env.replyTo || null, hop: res.hop,
+    };
+    this.chats.add(msg);
+    // a thread stays bound to the agent it started with (the gateway refuses a message that names another one)
+    const tkey = `${peer.id}:${env.thread}`;
+    const ex = has(this.state.threads, tkey) ? this.state.threads[tkey] : null;
+    this.state.threads[tkey] = { agent: (ex && ex.agent) || res.agent || null, replyTarget: fromAgent || "@person", lastEnvId: env.id, at: this.now() };
+    this._audit({ event: res.kind === "agent" ? "direct-received" : "chat-received", dir: "in", peer: peer.id, id: env.id, to: env.toAgent, from: env.fromAgent || null, thread: env.thread, hop: env.hop, text: env.text });
+    this._changed("chats");
+    if (res.kind === "person") { try { if (typeof this.opts.notifyChat === "function") this.opts.notifyChat(peer, msg); } catch (e) { /* cosmetic */ } return; }
+    // to an agent: queue the hand-over (retried while the agent is not running); the ack to the sender does not wait for it
+    const framed = gw.frameForAgent(peer, env, { ownerName: typeof this.opts.ownerName === "function" ? this.opts.ownerName() : "", toolCommand: this.opts.toolCommand, agent: res.agent, threadToken: `${peer.id}.${env.thread}` });
+    const who = (peer.direct && peer.direct.person) || peer.name;
+    this.state.directQueue.push({ envId: env.id, peerId: peer.id, agent: res.agent, framed, who, tries: 0, nextAt: 0, expires: Date.parse(env.expires) });
+    setImmediate(() => this._pumpDirect());
+  }
+
+  // Hand queued direct messages to their agents, one at a time. One that cannot be handed over yet (agent not running, window busy)
+  // is retried every DELIVERY_RETRY_MS, up to DELIVERY_MAX_TRIES or its expiry, then it shows "Not delivered" + Retry.
+  async _pumpDirect() {
+    if (this._pumping) return;
+    this._pumping = true;
+    try {
+      const now = this.now();
+      for (const p of Object.values(this.peers)) {
+        if (p.direct && p.direct.enabled && now - (p.directorySentAt || 0) > DIRECTORY_EVERY_MS) await this._sendDirectory(p);
+      }
+      for (const k of Object.keys(this.state.threads)) if (now - this.state.threads[k].at > THREAD_KEEP_MS) delete this.state.threads[k];
+      if (typeof this.opts.deliverDirect !== "function") return;
+      for (const q of this.state.directQueue.slice()) {
+        if (q.done || q.failedKeep || q.nextAt > this.now()) continue;
+        if (q.expires <= this.now()) { this._deliveryFailed(q, "expired"); continue; }
+        q.tries += 1;
+        let r;
+        try { r = await this.opts.deliverDirect({ peerId: q.peerId, agent: q.agent, framed: q.framed, envId: q.envId, who: q.who || "", owner: typeof this.opts.ownerName === "function" ? this.opts.ownerName() : "" }); }
+        catch (e) { r = { ok: false, reason: "deliver-error: " + e.message }; }
+        if (r && r.ok) {
+          q.done = true;
+          this.chats.setStatus(q.envId, "with-agent");
+          this._audit({ event: "handed-to-agent", id: q.envId, peer: q.peerId, agent: q.agent, how: r.how || undefined });
+        } else {
+          const reason = String((r && r.reason) || "failed");
+          if (RETRYABLE_RE.test(reason) && q.tries < DELIVERY_MAX_TRIES) {
+            q.nextAt = this.now() + DELIVERY_RETRY_MS;
+            this.chats.update(q.envId, { waitingFor: reason.slice(0, 60) });
+            this._audit({ event: "direct-waiting", id: q.envId, peer: q.peerId, agent: q.agent, reason });
+          } else this._deliveryFailed(q, reason);
+        }
+        this._changed("chats");
+      }
+      this.state.directQueue = this.state.directQueue.filter((q) => !q.done && now - q.expires < THREAD_KEEP_MS);
+      this._save();
+    } finally { this._pumping = false; }
+  }
+
+  // The agent never got it. Kept (failedKeep) so Retry can hand it over again.
+  _deliveryFailed(q, reason) {
+    q.failedKeep = true;
+    this.chats.setStatus(q.envId, "not-delivered", reason);
+    this._audit({ event: "direct-not-delivered", id: q.envId, peer: q.peerId, agent: q.agent, reason });
+  }
+
   // A human in the Links tab reviewed a pending reply and let it go.
   approveSend(id) {
     const idx = this.pendingSends.findIndex((p) => p.env.id === id);
     if (idx < 0) return { ok: false, reason: "unknown-id" };
     const [item] = this.pendingSends.splice(idx, 1);
     this.outbox.push({ peerId: item.peerId, env: item.env, status: "pending", tries: 0 });
+    this.chats.setStatus(item.env.id, "queued");
     this._save();
     this._audit({ event: "send-approved", dir: "out", peer: item.peerId, id: item.env.id, type: item.env.type, hop: item.env.hop, text: item.env.text });
     this._changed("pending-sends");
@@ -556,6 +852,7 @@ class IrisService {
     const idx = this.pendingSends.findIndex((p) => p.env.id === id);
     if (idx < 0) return { ok: false, reason: "unknown-id" };
     const [item] = this.pendingSends.splice(idx, 1);
+    this.chats.setStatus(item.env.id, "failed", "discarded");
     this._save();
     this._audit({ event: "send-rejected", peer: item.peerId, id: item.env.id });
     this._changed("pending-sends");
@@ -584,6 +881,7 @@ class IrisService {
       if (!peer || peer.paused) continue;
       if (Date.parse(item.env.expires) <= this.now()) {
         item.status = "expired";
+        this.chats.setStatus(item.env.id, "failed", "expired");
         this._audit({ event: "expired", dir: "out", peer: item.peerId, id: item.env.id });
         continue;
       }
@@ -596,9 +894,12 @@ class IrisService {
         item.status = opened.payload.ok ? "delivered" : "rejected";
         item.lastError = opened.payload.ok ? null : String(opened.payload.reason || "").slice(0, 80);
         peer.lastSeen = new Date(this.now()).toISOString();
+        if (item.status === "delivered") this.chats.setStatus(item.env.id, "sent");
+        else this.chats.setStatus(item.env.id, "failed", item.lastError || "rejected");
         this._audit({ event: item.status, dir: "out", peer: item.peerId, id: item.env.id, reason: item.lastError || undefined });
       } catch (e) {
         item.lastError = e.message;
+        this.chats.update(item.env.id, { waitingFor: String(e.message).slice(0, 60) });
       }
     }
     // keep finished items for a day so the UI can show them, then drop
@@ -618,17 +919,35 @@ class IrisService {
     const { peer, payload } = opened;
     if (!payload || typeof payload !== "object" || payload.kind !== "msg" || !payload.env) return null;
     const env = payload.env;
-    const res = gw.checkInbound(this._gwState(), peer.id, env, this.now());
+    const res = gw.checkInbound(this._gwState(), peer.id, env, this.now(), {
+      resolveAgent: this.opts.resolveAgent,
+      isSensitive: this.opts.isSensitive,
+      isReplyToOurs: (e) => { const m = e.replyTo ? this.chats.get(e.replyTo) : null; return !!(m && m.peerId === peer.id && m.dir === "out" && m.thread === e.thread); },
+      threadAgent: (pid, th) => { const r = has(this.state.threads, `${pid}:${th}`) ? this.state.threads[`${pid}:${th}`] : null; return r ? r.agent : null; },
+      // a reply to something WE sent comes one hop further along our own chain, whatever hop the sender wrote (agent senders only:
+      // a sender that labels itself the person restarts the chain, as on our own side; the caps bound that case)
+      hopFloor: (e) => {
+        if (!e || !e.replyTo || e.fromAgent === "@person") return 0;
+        const mine = this.chats.get(e.replyTo);
+        return mine && mine.peerId === peer.id && mine.dir === "out" && Number.isInteger(mine.hop) ? mine.hop + 1 : 0;
+      },
+    });
     if (!res.ok) {
       // No state change on a reject (a replayed frame must not be able to move
       // the peer's address, and needn't cost three file writes either).
       this._auditLimited(`${peer.id}|${res.reason}`, { event: "rejected", dir: "in", peer: peer.id, id: env && typeof env.id === "string" ? env.id.slice(0, 64) : null, reason: res.reason });
-      return ic.seal({ kind: "ack", id: env && env.id, ok: false, reason: res.reason }, this.me, peer);
+      // the sender hears "not-available" for every reason that would tell them which agents exist here; our own audit keeps the real one
+      return ic.seal({ kind: "ack", id: env && env.id, ok: false, reason: gw.publicReason(res.reason) }, this.me, peer);
     }
     // Only a message that passed every check may teach us the peer's address.
     if (Number.isInteger(payload.port) && payload.port > 0 && payload.port < 65536 && ip) peer.addr = { host: ip, port: payload.port };
     peer.lastSeen = new Date(this.now()).toISOString();
-    this.state.receivedHops[`${peer.id}:${env.id}`] = { hop: env.hop, at: this.now() };
+    this.state.receivedHops[`${peer.id}:${env.id}`] = { hop: Number.isInteger(res.hop) ? res.hop : env.hop, at: this.now() };
+    if (res.kind !== "lead") {
+      this._acceptDirect(peer, env, res);
+      this._save();
+      return ic.seal({ kind: "ack", id: env.id, ok: true }, this.me, peer);
+    }
     const framed = gw.frameForCoo(peer, env);
     // File name from OUR clock and the (pattern-checked) id - never peer text.
     const stamp = new Date(this.now()).toISOString().replace(/[:.]/g, "-");

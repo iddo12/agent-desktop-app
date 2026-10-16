@@ -354,6 +354,7 @@
     // v1.74.3 (owner, 2026-10-05): the "keep working regardless" order overrides the usage throttle HOLD (it fires at 85% of the week);
     // the usage hard stop above (>= 95%) is the limit instead. The CPU guard hold ("CPUHOLD") protects the PC and wins in every mode.
     if (c.throttle === "CPUHOLD") return { verdict: "blocked", reason: "CPU guard hold: the PC is overloaded" };
+    if (c.throttle === "LOADSLOW") return { verdict: "blocked", reason: "load governor: the PC is under heavy load, nudges paused until it recovers" }; // v1.127.0
     if (c.throttle === "HOLD" && !rel) return { verdict: "blocked", reason: "fleet throttle is HOLD" };
     if (kind) return { verdict: "nudge", kind, reason: cls.reason, question, mission: missionOn };
     return { verdict: "nudge", reason: cls.reason, mission: missionOn };

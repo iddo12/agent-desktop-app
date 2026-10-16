@@ -190,7 +190,7 @@ function create(deps) {
       const c0 = C(p);
       if (!c0.nothingLeft) { c0.nothingLeft = { at: t, reason: d.reason.slice(0, 200) }; dirty = true; log("keepgoing: " + p + " is out of projects - " + d.reason); emit(p); }
     }
-    const isHold = d.verdict === "blocked" && /throttle is HOLD|usage hard stop|CPU guard hold/.test(d.reason);
+    const isHold = d.verdict === "blocked" && /throttle is HOLD|usage hard stop|CPU guard hold|load governor/.test(d.reason);
     if (d.verdict === "done" || d.verdict === "blocked") {
       if (!isHold && m && m.active) { m.active = false; dirty = true; }
       const hk = K.hashText(parsed.last && parsed.last.text) + d.reason;
@@ -209,6 +209,8 @@ function create(deps) {
     if (c.consecutive >= Lx.maxConsecutive) { markStopped(p, c.consecutive + " nudges in a row did not help"); record(p, "none", "stopped: " + c.consecutive + " nudges in a row did not help"); done(); save(); return; }
     if (c.recent.length >= Lx.maxPerWindow) { markStopped(p, c.recent.length + " nudges in " + Math.round(Lx.windowMs / 3600000) + " h"); record(p, "none", "stopped: " + c.recent.length + " nudges in " + Math.round(Lx.windowMs / 3600000) + " h"); done(); save(); return; }
     if (t < (r.retryAfter || 0) || t - (c.lastNudgeAt || 0) < Lx.minGapMs || t - lastGlobalNudgeAt < Lx.globalGapMs) { r.deferred = true; if (dirty) save(); return; }
+    // v1.127.0 load governor: too many agents are working (or the PC is slow): the nudge waits for a slot, re-judged on the next tick, never dropped
+    try { if (deps.loadWait && deps.loadWait(p)) { r.deferred = true; if (dirty) save(); return; } } catch (e) { /* fail-open: nudge */ }
 
     const prev = { consecutive: c.consecutive, lastNudgeAt: c.lastNudgeAt, hashes: c.hashes.slice() };
     c.consecutive++; c.lastNudgeAt = t; c.hashes.push(hash); c.hashes = c.hashes.slice(-10); c.recent.push(t);
@@ -219,6 +221,7 @@ function create(deps) {
       .then(() => deps.deliver(p, (() => { const T = K.texts(ctxNow()); return d.kind === "next-project" ? (d.question ? T.nextProjectQuestion : T.nextProject) : T.nudge; })()))
       .catch((e) => { log("keepgoing: nudge delivery to " + p + " failed: " + (e && e.message)); return { delivered: false, attempts: 0, error: true }; })
       .then((res) => {
+        if (!(res && res.delivered)) { try { deps.loadRelease && deps.loadRelease(p); } catch (e) { /* cosmetic */ } } // v1.127.0: nothing was sent: give the governor slot back
         if (res && res.delivered) { r.failures = 0; log("keepgoing: nudge to " + p + " delivered via " + res.via); return; }
         if (res && res.dry) { log("keepgoing: nudge to " + p + " not delivered (dry run)"); return; }
         // M1: a nudge that never landed does not count: undo it, retry later (twice), then tell the owner

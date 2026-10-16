@@ -381,20 +381,25 @@
           // cool-down over, agent idle and still over the line: drop the dead flow and try again
           // v1.111.2: check the fleet slot BEFORE dropping the dead flow; otherwise a blocked retry leaves autoHandedOff without a flow and the agent is never retried
           if (activeFlow && activeFlow !== a.path) { glog(nm, "fleet", nm + " " + k + ": skipped, another handoff is running (" + agentName(activeFlow) + ")"); continue; }
+          // v1.127.0 load governor: asked BEFORE the dead flow is dropped - a wait after clearFlow would leave autoHandedOff without a flow and the agent never retried
+          if (await governorWaits(nm, k, a.path)) continue;
           if (fl) clearFlow(a.path, "failed flow, retrying after cool-down");
           window.autoHandoffLog("retry #" + (prior.count + 1) + " for " + nm + " at " + k);
         }
         if (activeFlow && activeFlow !== a.path) { glog(nm, "fleet", nm + " " + k + ": skipped, another handoff is running (" + agentName(activeFlow) + ")"); continue; }
+        // v1.127.0 load governor: a flow makes an agent work; while the PC lags or too many agents work, wait (re-checked every sweep, never dropped)
+        if (!prior && await governorWaits(nm, k, a.path)) continue;   // (a retry was already admitted above, before clearFlow)
         // An agent whose tab was never opened this run has no pty attached (terminals only gets an
         // entry via showTerminalFor), and a prompt typed into it is silently dropped. Attach it in the
         // background (no tab switch, no focus, no the owner-activity gate).
         let session = terminals.get(a.path);
         if (!session || !session.started) {
-          if (Date.now() - (attachFailedAt.get(a.path) || 0) < ATTACH_RETRY_MS) { glog(nm, "attachwait", nm + " " + k + ": skipped, attach failed recently, waiting"); continue; }
+          if (Date.now() - (attachFailedAt.get(a.path) || 0) < ATTACH_RETRY_MS) { try { window.api.governorRelease(); } catch (e) { /* cosmetic */ } glog(nm, "attachwait", nm + " " + k + ": skipped, attach failed recently, waiting"); continue; }
           const ok = await autoAttachSession(a);
           session = terminals.get(a.path);
           if (!ok || !session || !session.started) {
             attachFailedAt.set(a.path, Date.now());
+            try { window.api.governorRelease(); } catch (e) { /* cosmetic */ }
             glog(nm, "attachfail", nm + " " + k + ": skipped, could not attach/start its session");
             continue;
           }
@@ -416,6 +421,14 @@
         window.autoHandoffLog("sweep error for " + nm + ": " + (e && e.message));
       }
     }
+  }
+  // true = the load governor says wait (nothing has been changed yet; the sweep asks again). Fail-open on any error.
+  async function governorWaits(nm, k, agentPath) {
+    try {
+      const gr = await window.api.governorAdmit("handoff", agentPath);
+      if (gr && gr.ok === false) { glog(nm, "governor", nm + " " + k + ": waiting for a slot (load governor: " + (gr.reason || "busy") + ")"); return true; }
+    } catch (e) { /* fail-open */ }
+    return false;
   }
   const REDISMISS_GROWTH_TOKENS = 25000;
   const HANDOFF_TIMEOUT_MS = 12 * 60 * 1000;

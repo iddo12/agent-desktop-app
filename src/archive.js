@@ -46,15 +46,26 @@ function projectDirFor(cwd) {
 // one stat per file per TTL window. A real change is therefore visible within STAT_TTL_MS (1.5 s) plus the caller's own
 // poll interval. Errors are never cached (a missing file throws exactly like fs.statSync). invalidateStatCache()
 // drops everything; archive.js calls it after its own writes to a transcript.
-let STAT_TTL_MS = 1500;
+// v1.128.1: 1.5 s -> 4 s for file stats and 8 s for folder listings. Profiling the live app (2026-10-16) showed the MAIN thread
+// frozen ~90% of the time (worst single freeze 11 s) inside these synchronous stat/readdir calls (~80 agents, busy disk), which
+// made typing, clicks and message confirmation lag. Callers poll every 4-30 s, so a longer window loses almost nothing.
+let STAT_TTL_MS = 4000;
+let DIR_TTL_MS = 8000;
 const dirCache = new Map();  // dir -> { at, names }
 const statCache = new Map(); // file -> { at, st: { size, mtimeMs, ino } }
-function setStatCacheTtl(ms) { STAT_TTL_MS = ms; dirCache.clear(); statCache.clear(); }
+function setStatCacheTtl(ms) { STAT_TTL_MS = ms; DIR_TTL_MS = ms; dirCache.clear(); statCache.clear(); }
 function invalidateStatCache() { dirCache.clear(); statCache.clear(); }
+// v1.128.1: drop only ONE agent's cached listing + stats (delivery checks must see a brand-new transcript file at once,
+// e.g. right after /clear or a restart, without throwing away the cache of ~80 other agents).
+function invalidateAgentCache(sessionCwd) {
+  const dir = projectDirFor(sessionCwd);
+  dirCache.delete(dir);
+  for (const k of statCache.keys()) if (k.startsWith(dir)) statCache.delete(k);
+}
 function pruneStatCaches(now) {
   if (statCache.size < 4000 && dirCache.size < 400) return;
   for (const [k, v] of statCache) if (now - v.at > STAT_TTL_MS) statCache.delete(k);
-  for (const [k, v] of dirCache) if (now - v.at > STAT_TTL_MS) dirCache.delete(k);
+  for (const [k, v] of dirCache) if (now - v.at > DIR_TTL_MS) dirCache.delete(k);
 }
 function cachedStat(file) {
   const now = Date.now();
@@ -69,7 +80,7 @@ function cachedStat(file) {
 function cachedJsonlNames(dir) {
   const now = Date.now();
   const hit = dirCache.get(dir);
-  if (hit && now - hit.at < STAT_TTL_MS) return hit.names;
+  if (hit && now - hit.at < DIR_TTL_MS) return hit.names;
   const names = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
   dirCache.set(dir, { at: now, names });
   return names;
@@ -91,7 +102,10 @@ function findJsonlFiles(sessionCwd) {
 // of MB across all projects), pinning the Electron MAIN thread at ~100% CPU
 // and making the whole UI sluggish (found 2026-09-19 by CPU-profiling it).
 const fileMemo = new Map();
-function memoByFiles(tag, files, compute) {
+// v1.128.2: minMs = reuse the last value without statting ANY file for that long (profiled 2026-10-16: ~6 s of main-thread
+// blocking per 45 s statting every transcript of ~80 agents for usage/activity figures that only need to be ~10-20 s fresh).
+function memoByFiles(tag, files, compute, minMs = 0) {
+  if (minMs > 0) { const h = fileMemo.get(tag); if (h && Date.now() - h.at < minMs) return h.value; }
   let sig;
   try {
     sig = files
@@ -104,9 +118,9 @@ function memoByFiles(tag, files, compute) {
     return compute();
   }
   const hit = fileMemo.get(tag);
-  if (hit && hit.sig === sig) return hit.value;
+  if (hit && hit.sig === sig) { hit.at = Date.now(); return hit.value; }
   const value = compute();
-  fileMemo.set(tag, { sig, value });
+  fileMemo.set(tag, { sig, value, at: Date.now() });
   return value;
 }
 
@@ -873,7 +887,7 @@ function computeHaltInfo(newestPath, cachedSize) {
 // throttle, not something a single conversation's own files can fully see -
 // see the comment there for the full story of that correction).
 function getLatestUsage(sessionCwd) {
-  return memoByFiles("usage:" + sessionCwd, findJsonlFiles(sessionCwd), () => computeLatestUsage(sessionCwd));
+  return memoByFiles("usage:" + sessionCwd, findJsonlFiles(sessionCwd), () => computeLatestUsage(sessionCwd), process.env.AD_USAGE_MEMO_MS !== undefined ? +process.env.AD_USAGE_MEMO_MS : 20000);
 }
 // Incremental like readActivityFile above: per-file running "latest usage" + consumed byte offset.
 const usageFileState = new Map(); // path -> { offset, carryBuf, st: { latest } }
@@ -1263,7 +1277,17 @@ function usageModelFallback(kind) {
   }
 }
 
+// v1.128.4: the per-session file is rewritten about once a second by ~70 status lines, so every read waits on locks/scanning:
+// profiled 2026-10-16 at 17.8 s of main-thread blocking per 40 s (worst freeze 18 s). Reuse one answer for 10 s.
+let confirmedRlMemo = { at: 0, v: null };
 function getConfirmedRateLimits() {
+  const n = Date.now();
+  if (confirmedRlMemo.v && n - confirmedRlMemo.at < 10000) return { ...confirmedRlMemo.v };
+  const v = getConfirmedRateLimitsUncached();
+  confirmedRlMemo = { at: n, v };
+  return { ...v };
+}
+function getConfirmedRateLimitsUncached() {
   const r = getConfirmedRateLimitsFromStatusLine();
   const old = (x) => !x || typeof x.ageSeconds !== "number" || x.ageSeconds > FRESH_FALLBACK_SECONDS;
   if (old(r.fiveHour)) r.fiveHour = usageModelFallback("5h") || r.fiveHour;
@@ -1460,6 +1484,40 @@ function foldUsageScanText(rec, text) {
   return rec;
 }
 
+// v1.124.0: reset time + last-reading age for the 5h / 7d bars. Source 1 is the usage model file (windows[kind].resetsAt as an ISO string
+// plus resetKnown, and the shared lastReading), source 2 the statusLine figures (resets_at in epoch seconds). Either may lack it:
+// then resetKnown is false and the header says "reset unknown" rather than guessing. Never throws.
+function buildResetInfo(confirmed) {
+  const out = { "5h": { resetsAt: null, resetKnown: false, lastReadingAt: null, ageMin: null }, "7d": { resetsAt: null, resetKnown: false, lastReadingAt: null, ageMin: null } };
+  const now = Date.now();
+  let model = null;
+  try {
+    const p = require("./testGuard").usageNowPath();
+    if (p) model = JSON.parse(fs.readFileSync(p, "utf-8").replace(/^﻿/, ""));
+  } catch (e) { model = null; }
+  const lr = model && model.lastReading && typeof model.lastReading === "object" ? model.lastReading : null;
+  const lrMs = lr && lr.at ? Date.parse(lr.at) : NaN;
+  for (const [kind, conf] of [["5h", confirmed && confirmed.fiveHour], ["7d", confirmed && confirmed.sevenDay]]) {
+    const o = out[kind];
+    const w = model && model.windows && model.windows[kind];
+    if (w && w.resetKnown === true && w.resetsAt && Number.isFinite(Date.parse(w.resetsAt))) {
+      o.resetsAt = new Date(Date.parse(w.resetsAt)).toISOString();
+      o.resetKnown = true;
+    } else if (conf && typeof conf.resetsAt === "number" && Number.isFinite(conf.resetsAt)) {
+      o.resetsAt = new Date(conf.resetsAt * 1000).toISOString();
+      o.resetKnown = true;
+    }
+    if (Number.isFinite(lrMs)) {
+      o.lastReadingAt = new Date(lrMs).toISOString();
+      o.ageMin = Math.max(0, Math.round((now - lrMs) / 60000));
+    } else if (conf && typeof conf.ageSeconds === "number") {
+      o.lastReadingAt = new Date(now - conf.ageSeconds * 1000).toISOString();
+      o.ageMin = Math.round(conf.ageSeconds / 60);
+    }
+  }
+  return out;
+}
+
 function getUsageWindows() {
   const now = Date.now();
   const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
@@ -1488,6 +1546,7 @@ function getUsageWindows() {
       fiveHourConfirmed: null,
       sevenDayConfirmed: null,
       monthly: buildMonthlyUsage(new Map(), null, Date.now()),
+      resetInfo: buildResetInfo(null),
     };
   }
 
@@ -1536,6 +1595,7 @@ function getUsageWindows() {
     fiveHourConfirmed: confirmed.fiveHour,
     sevenDayConfirmed: confirmed.sevenDay,
     monthly: buildMonthlyUsage(dailyMessageCounts, earliestTimestampMs, now, confirmed.sevenDay, messagesInLast7d),
+    resetInfo: buildResetInfo(confirmed),
   };
 }
 
@@ -1927,6 +1987,7 @@ module.exports = {
   encodeProjectPath,
   getLatestUsage,
   getUsageWindows,
+  buildResetInfo,
   getLiveTranscriptBlocks,
   getSessionActivity,
   getLatestTranscriptMtimeMs,
@@ -1960,4 +2021,5 @@ module.exports = {
   __parseJsonLineForTest: parseJsonLine,
   getCurrentConversation,
   invalidateStatCache,
+  invalidateAgentCache,
 };

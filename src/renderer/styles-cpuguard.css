@@ -9,13 +9,15 @@
   border-bottom: 1px solid var(--border, #ddd);
 }
 #cpuguard-banner.cpuguard-hold,
-#cpuguard-banner.cpuguard-overload {
+#cpuguard-banner.cpuguard-overload,
+#cpuguard-banner.cpuguard-governor-slow {
   background: #fdf3e2;
   border-bottom-color: #ecc98f;
   border-left: 4px solid var(--health-warning);
   font-weight: 600;
 }
-#cpuguard-banner.cpuguard-queue {
+#cpuguard-banner.cpuguard-queue,
+#cpuguard-banner.cpuguard-governor-wait { /* v1.127.0 load governor: calm note, no amber */
   background: var(--bg-secondary, #f4f1ec);
 }
 #cpuguard-banner.hidden {

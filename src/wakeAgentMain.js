@@ -168,7 +168,7 @@ function agentRecords(listAgents) {
 // deps: ipcMain, app, getMainWindow, listAgents (sync), listBgAgents (async, `claude agents --json`), workspace, log, testMode
 //       processChain (optional override, tests). In TEST MODE ONLY, AGENT_DESKTOP_WAKE_TEST_SESSIONS_FILE may name a JSON
 //       file of [{caller, id, pid, sessionId}] used instead of the real bg-agent list (the sandbox has no real sessions).
-function init({ ipcMain, app, getMainWindow, listAgents, listBgAgents, workspace, log, testMode, processChain: chainFn, cliPath: cliOverride }) {
+function init({ ipcMain, app, getMainWindow, listAgents, listBgAgents, workspace, log, testMode, processChain: chainFn, cliPath: cliOverride, governor }) {
   const say = typeof log === "function" ? log : () => {};
   const dir = path.join(app.getPath("userData"), "wake");
   fs.mkdirSync(dir, { recursive: true });
@@ -204,7 +204,14 @@ function init({ ipcMain, app, getMainWindow, listAgents, listBgAgents, workspace
     const p = waiting.get(msg.id);
     if (p) { waiting.delete(msg.id); clearTimeout(p.timer); p.resolve(msg.result); }
   });
-  const askRenderer = (kind, payload) => new Promise((resolve, reject) => {
+  // v1.127.0 load governor: a wake request waits (FIFO, at most the governor's wake bound, well under the CLI's 160 s) for a slot instead of
+  // being refused; after the bound it goes ahead. Other renderer questions are never held.
+  const askRenderer = (kind, payload) => {
+    if (kind !== "wake" || !governor || typeof governor.waitForSlot !== "function") return askRenderer0(kind, payload);
+    const label = "wake " + String((payload && payload.agentPath) || "").split(/[\\/]/).filter(Boolean).pop();
+    return governor.waitForSlot("wake", { label }).catch(() => null).then(() => askRenderer0(kind, payload));
+  };
+  const askRenderer0 = (kind, payload) => new Promise((resolve, reject) => {
     const w = getMainWindow();
     if (!w || w.isDestroyed()) return reject(new Error("no-window"));
     const id = ++seq;

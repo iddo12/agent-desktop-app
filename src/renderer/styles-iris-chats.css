@@ -1,0 +1,63 @@
+/* IRIS Chats page (v1.126.0) - same look as the Links page; works left-to-right and right-to-left (dir set on #ichat-view) */
+.ichat-nav.hidden { display: none; }
+body.irischat-open #chat-view,
+body.irischat-open #empty-state,
+body.irischat-open #library-view,
+body.irischat-open #argus-view,
+body.irischat-open #iris-view,
+body.irischat-open #xp-panel { display: none !important; }
+#ichat-view { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--bg-app); }
+#ichat-view.hidden { display: none; }
+.ichat-head { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.ichat-title { flex: 1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ichat-title-main { font-weight: 700; font-size: 16px; }
+.ichat-title-sub { color: var(--text-muted); font-size: 13px; }
+.ichat-close { border: none; background: transparent; font-size: 22px; cursor: pointer; color: var(--text-muted); }
+.ichat-body { flex: 1; overflow-y: auto; padding: 16px 20px 40px; }
+.ichat-h { margin: 0 0 10px; font-size: 15px; }
+.ichat-h3 { margin: 0 0 6px; font-size: 14px; }
+.ichat-note, .ichat-hint { color: var(--text-muted); font-size: 12.5px; line-height: 1.45; margin: 6px 0; }
+.ichat-error { color: #c0392b; font-size: 13px; margin: 0 0 10px; }
+.ichat-grid { display: grid; grid-template-columns: minmax(200px, 300px) 1fr; gap: 14px; margin-bottom: 16px; }
+@media (max-width: 760px) { .ichat-grid { grid-template-columns: 1fr; } }
+.ichat-list { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow-y: auto; }
+.ichat-row { text-align: start; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
+.ichat-row:hover { background: var(--bg-hover); }
+.ichat-row.sel { border-color: var(--accent); background: var(--bg-active); }
+.ichat-row-title { font-weight: 600; font-size: 13px; }
+.ichat-row-last { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ichat-row-meta { font-size: 11px; color: var(--text-muted); }
+.ichat-conv { display: flex; flex-direction: column; gap: 8px; min-width: 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.ichat-conv-title { font-weight: 700; font-size: 13.5px; }
+.ichat-msgs { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; padding: 4px; }
+.ichat-bubble { max-width: 82%; padding: 8px 11px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-app); }
+.ichat-bubble.mine { align-self: flex-end; background: var(--bg-active); }
+.ichat-bubble.theirs { align-self: flex-start; }
+.ichat-bubble.bad { border-color: #c0392b; }
+.ichat-bubble-head { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+.ichat-bubble-text { font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ichat-bubble-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 5px; }
+.ichat-chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted); }
+.ichat-chip.answered, .ichat-chip.with-agent { color: #1e8449; }
+.ichat-chip.not-delivered { color: #c0392b; }
+.ichat-chip.for-you { color: var(--accent); font-weight: 600; }
+.ichat-compose { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+.ichat-text { flex: 1 1 100%; font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-app); color: var(--text); resize: vertical; }
+.ichat-input, .ichat-select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-app); color: var(--text); }
+.ichat-input.narrow { width: 90px; }
+.ichat-label { font-size: 12px; color: var(--text-muted); display: block; margin: 6px 0 2px; }
+.ichat-btn { font: inherit; font-size: 12.5px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text); cursor: pointer; }
+.ichat-btn:hover { background: var(--bg-hover); }
+.ichat-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ichat-btn.danger { background: var(--bg-panel); border-color: #c0392b; color: #c0392b; }   /* v1.128.1: the global button.danger paints a red background; red text on it was unreadable */
+.ichat-btn.danger:hover { background: #fbeceb; }
+.ichat-new { align-self: flex-start; }
+.ichat-section { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.ichat-section.hidden { display: none; }
+.ichat-state.on { color: #1e8449; font-weight: 600; }
+.ichat-state.off { color: var(--text-muted); font-weight: 600; }
+.ichat-form { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 8px; }
+.ichat-check { font-size: 13px; }
+.ichat-pending { margin: 6px 0; }
+.ichat-pre { white-space: pre-wrap; font-size: 13px; background: var(--bg-app); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
+.ichat-activity { margin: 0; padding-inline-start: 18px; font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }

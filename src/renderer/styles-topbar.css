@@ -128,11 +128,27 @@ body.xp-header #chat-header-text { flex: 1 1 0; min-width: 0; }
 }
 .xp-meter .xp-m-l { color: var(--text-muted); }
 .xp-meter .xp-m-n { text-align: right; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.xp-meter .xp-m-bar { grid-column: 1 / -1; display: block; height: 5px; border-radius: 3px; background: var(--bg-active); overflow: hidden; }
+.xp-meter .xp-m-bar { grid-column: 1 / -1; display: block; position: relative; height: 5px; border-radius: 3px; background: var(--bg-active); overflow: visible; }
 .xp-meter .xp-m-bar > i { display: block; height: 100%; width: var(--pct, 0%); border-radius: inherit; background: var(--lvl, var(--health-healthy)); }
 .xp-meter[data-xp-level="ok"] { --lvl: var(--health-healthy); }
 .xp-meter[data-xp-level="warn"] { --lvl: var(--health-warning); }
 .xp-meter[data-xp-level="crit"] { --lvl: var(--health-critical); }
+/* v1.124.0 reset time: a tick where "now" sits in the window, a small label under the bar, one shared tooltip. */
+#five-hour-usage.xp-meter, #weekly-usage.xp-meter { width: max-content; min-width: 92px; }
+.xp-meter[tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.xp-meter .xp-m-tick { position: absolute; top: -2px; bottom: -2px; inset-inline-start: var(--tick, 0%); width: 2px; margin-inline-start: -1px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--bg-sidebar); pointer-events: none; }
+.xp-meter .xp-m-tick[hidden] { display: none; }
+/* unknown reset: the fill is hatched instead of solid (still the same colour band) */
+.xp-meter .xp-m-bar[data-xp-reset="unknown"] > i { background: repeating-linear-gradient(135deg, var(--lvl, var(--health-healthy)) 0 3px, transparent 3px 6px); }
+.xp-meter[data-xp-aged="1"] .xp-m-bar > i { opacity: 0.45; }
+.xp-meter .xp-m-rt { grid-column: 1 / -1; display: inline-flex; align-items: baseline; gap: 4px; font-size: 11px; line-height: 1.2; color: var(--text-muted); font-weight: 400; white-space: nowrap; }
+.xp-meter .xp-m-rt .xp-m-ic { font-size: 11px; opacity: 0.8; }
+.xp-meter .xp-m-rt.warn { color: var(--health-warning); font-weight: 600; }
+.xp-meter .xp-m-rt.unknown { font-style: italic; }
+#xp-reset-tip { position: fixed; z-index: 10000; max-width: min(380px, calc(100vw - 16px)); padding: 7px 10px; border-radius: 6px; background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); font-size: 0.74rem; line-height: 1.35; pointer-events: none; }
+#xp-reset-tip[hidden] { display: none; }
+#xp-reset-tip .xp-tip-more { margin-top: 5px; color: var(--text-muted); font-size: 0.68rem; max-height: 4.4em; overflow: hidden; }
+
 /* the older 70/90 warning/critical text colours would contradict the 50/80 bar colours; the bar and number carry it now */
 #five-hour-usage.warning, #five-hour-usage.critical,
 #weekly-usage.warning, #weekly-usage.critical,
@@ -205,6 +221,8 @@ body.xp-header #chat-header-text { flex: 1 1 0; min-width: 0; }
   .xp-lg-item:nth-child(4) { display: none; }
   .xp-status { gap: 6px 10px; }
   #five-hour-usage.xp-meter, #weekly-usage.xp-meter, #context-usage.xp-meter { width: 84px; }
+  #five-hour-usage.xp-meter, #weekly-usage.xp-meter { width: max-content; min-width: 84px; }
+  .xp-meter .xp-m-rt .xp-m-rin { display: none; }
 }
 @container topbar (max-width: 760px) {
   .xp-detail { display: none; }              /* the plain line goes first (UI rules 7); tooltips still carry the detail */

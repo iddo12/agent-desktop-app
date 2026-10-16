@@ -40,11 +40,17 @@ const CONSENT_TEXT =
   "It lowers the priority of the agents (they keep working, only slower) when the CPU stays overloaded, and tells Agent Desktop to hold back new starts until the load drops. It never closes anything, needs no administrator rights and sends nothing anywhere.\n\n" +
   "It installs as a hidden per-user scheduled task (AgentDesktop_CpuGuard) with files under %APPDATA%\\agent-desktop\\cpuguard. You can remove it at any time.";
 
-function init({ app, ipcMain, dialog, testMode, getMainWindow, readUiFlags, setUiFlag, log = () => {} }) {
+function init({ app, ipcMain, dialog, testMode, getMainWindow, readUiFlags, setUiFlag, log = () => {}, governor = null }) {
   const stateDir = guard.defaultStateDir();
   const srcDir = path.join(__dirname, "..", "tools", "cpuguard");
   const holdFile = path.join(stateDir, "state", "fleet_hold.json");
-  const flags = () => readUiFlags() || {};
+  // v1.128.1: the banner is recomputed often, and each pass did two synchronous disk reads (ui-flags.json, status.json) on the MAIN
+  // thread (measured 2026-10-16: ~8 s of blocking in 45 s). Answers are reused for 3 s; setUiFlag drops the flag copy at once.
+  const memo3 = (fn, ms = 3000) => { let at = 0, v; const f = () => { const n = Date.now(); if (n - at > ms) { v = fn(); at = n; } return v; }; f.reset = () => { at = 0; }; return f; };
+  const flagsMemo = memo3(() => readUiFlags() || {});
+  const statusMemo = memo3(() => guard.readStatusFile(stateDir));
+  const flags = () => flagsMemo();
+  const setFlagFresh = (k, v) => { const r = setUiFlag(k, v); flagsMemo.reset(); return r; };
 
   let lastSent = "";
   function push() {
@@ -64,12 +70,18 @@ function init({ app, ipcMain, dialog, testMode, getMainWindow, readUiFlags, setU
   function compute() {
     const f = flags();
     // a sandbox must never read the real machine's hold / status
-    return computeBannerState(limiter.snapshot(), testMode.TEST_MODE ? null : guard.readStatusFile(stateDir), f.cpuGuardEnabled !== false);
+    const b = computeBannerState(limiter.snapshot(), testMode.TEST_MODE ? null : statusMemo(), f.cpuGuardEnabled !== false);
+    // v1.127.0: the CPU guard's own messages win; when it has nothing to say the load governor may (one calm line, never both)
+    if (!b.show && governor) { try { const g = governor.banner(limiter.snapshot()); if (g && g.show) return Object.assign({}, g, { guardOn: b.guardOn }); } catch (e) { /* banner is cosmetic */ } }
+    return b;
   }
 
   const limiter = createStartLimiter({
-    readHold: () => (testMode.TEST_MODE ? null : readHoldFile(holdFile)),
+    readHold: memo3(() => (testMode.TEST_MODE ? null : readHoldFile(holdFile)), 3000), // v1.128.5: file calls cost 5-20 ms system-wide on this PC; 5.8 s of main-thread blocking per 40 s profiled
     enabled: () => !testMode.TEST_MODE && flags().limiterEnabled !== false,
+    // v1.127.0 load governor: starts one at a time, only when the PC is calm and fewer than the cap are working (fail-open inside the governor)
+    gate: governor ? (label) => { const r = governor.admit("start", { label }); return { ok: r.ok, reason: r.reason }; } : undefined,
+    getMaxConcurrent: governor ? () => governor.maxConcurrentStarts() || 3 : undefined,
     log,
     onChange: () => push(),
   });
@@ -106,7 +118,7 @@ function init({ app, ipcMain, dialog, testMode, getMainWindow, readUiFlags, setU
     startBannerPoll();
     if (testMode.TEST_MODE || process.platform !== "win32") return { action: "none" };
     try {
-      return await guard.ensureCpuGuard({ srcDir, stateDir, platform: process.platform, testMode: testMode.TEST_MODE, getFlags: flags, setFlag: setUiFlag, askConsent, log });
+      return await guard.ensureCpuGuard({ srcDir, stateDir, platform: process.platform, testMode: testMode.TEST_MODE, getFlags: flags, setFlag: setFlagFresh, askConsent, log });
     } catch (e) {
       log(`cpuguard: ensure failed: ${e.message}`);
       return { action: "none", error: e.message };
@@ -117,22 +129,22 @@ function init({ app, ipcMain, dialog, testMode, getMainWindow, readUiFlags, setU
   ipcMain.handle("cpuguard-action", async (event, { action } = {}) => {
     if (testMode.TEST_MODE || process.platform !== "win32") return { ok: false, error: "not available here" };
     if (action === "disable") {
-      setUiFlag("cpuGuardEnabled", false);
+      setFlagFresh("cpuGuardEnabled", false);
       await guard.stopGuard(guard.TASK_NAME, stateDir);
       await guard.setTaskEnabled(guard.TASK_NAME, false);
       return { ok: true };
     }
     if (action === "enable") {
-      setUiFlag("cpuGuardEnabled", true);
-      setUiFlag("cpuGuardConsent", "yes");
+      setFlagFresh("cpuGuardEnabled", true);
+      setFlagFresh("cpuGuardConsent", "yes");
       await guard.setTaskEnabled(guard.TASK_NAME, true);
       const r = await ensure();
       return { ok: true, result: r.action };
     }
     if (action === "uninstall") {
       await guard.uninstallGuard(guard.TASK_NAME, stateDir);
-      setUiFlag("cpuGuardEnabled", false);
-      setUiFlag("cpuGuardConsent", "no");
+      setFlagFresh("cpuGuardEnabled", false);
+      setFlagFresh("cpuGuardConsent", "no");
       return { ok: true };
     }
     return { ok: false, error: "unknown action" };

@@ -135,6 +135,7 @@ function loadAgentConfig(agentDir) {
 // agent's chat tab manually still works as normal either way, since
 // start-terminal doesn't consult this flag.
 function setAgentPaused(agentPath, paused) {
+  folderLookMemo.clear();
   if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
   const config = loadAgentConfig(agentPath);
   config.paused = !!paused;
@@ -171,13 +172,19 @@ function avatarDataUrl(agentDir, config) {
 // Any ONE of these four markers is what actually distinguishes a set-up
 // agent from an arbitrary folder - none of them being present is what a
 // stray folder (like the .docx one) actually looks like.
+// v1.128.2: each call is up to 4 stats on a synced drive (~13 ms each, measured 2026-10-16), and listAgents runs from ~15 callers;
+// profiled: ~11 s of main-thread blocking per 45 s. Positive answers are reused 60 s, negatives 5 s (a new agent shows up quickly).
+const folderLookMemo = new Map(); // agentDir -> { at, ok }
 function looksLikeAgentFolder(agentDir) {
-  return (
+  const now = Date.now(), hit = folderLookMemo.get(agentDir);
+  if (hit && now - hit.at < (hit.ok ? 60000 : 5000)) return hit.ok;
+  const ok =
     fs.existsSync(path.join(agentDir, CONFIG_FILENAME)) ||
     fs.existsSync(path.join(agentDir, STATE_FILENAME)) ||
     fs.existsSync(path.join(agentDir, SESSIONS_DIRNAME)) ||
-    fs.existsSync(path.join(agentDir, ".claude-session"))
-  );
+    fs.existsSync(path.join(agentDir, ".claude-session"));
+  folderLookMemo.set(agentDir, { at: now, ok });
+  return ok;
 }
 
 // v1.77.3: per-agent memo of (parsed master_state.md, agent_config.json) keyed on both files' size/mtime, so the 10 s poll
@@ -248,6 +255,7 @@ function hasAnyFile(dir) {
 }
 
 function createAgent({ name, role, avatarBuffer, avatarExt }) {
+  folderLookMemo.clear();
   const folderName = sanitizeFolderName(name);
   if (!folderName) throw new Error("Agent name is required");
 
@@ -293,6 +301,7 @@ function createAgent({ name, role, avatarBuffer, avatarExt }) {
 // renaming a folder with an active process's cwd inside it, mid-sync.
 // Editing only ever changes what's displayed, never the underlying path.
 function updateAgent(agentPath, { name, role, avatarBuffer }) {
+  folderLookMemo.clear();
   if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
   const config = loadAgentConfig(agentPath);
   if (name && name.trim()) config.display_name = name.trim();
@@ -314,6 +323,7 @@ function updateAgent(agentPath, { name, role, avatarBuffer }) {
 // the renderer gates this behind a type-the-name-to-confirm step before it
 // ever reaches here, precisely because there's no undo on this side.
 function deleteAgent(agentPath) {
+  folderLookMemo.clear();
   const resolved = path.resolve(agentPath);
   const ROOT = rootNow();
   if (!ROOT) throw agentsRoot.needsSetupError();

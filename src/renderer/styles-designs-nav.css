@@ -1,0 +1,18 @@
+/* My Designs sidebar entry (v1.125.0). Same look as the My Finance / Tools entries. The view's own styles are in styles-designs.css, loaded on first open. */
+.designs-nav {
+  margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+  color: var(--text); font: inherit; cursor: pointer; text-align: left;
+}
+.designs-nav:hover { background: var(--bg-hover); }
+.designs-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.designs-nav-name { flex: 1; min-width: 0; font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+body:not(.lp-on).argus-open .designs-nav, body:not(.lp-on).iris-open .designs-nav { display: none; }
+body.lp-f #systems-group .designs-nav-name { flex: 1; min-width: 0; font-size: 13px; }
+.designs-nav-short { display: none; }
+body.lp-c #systems-group .designs-nav-name { display: none; }
+body.lp-c #systems-group .designs-nav-short { display: block; flex: none; font-size: 12px; font-weight: 500; letter-spacing: .01em; line-height: 1.1; white-space: nowrap; max-width: 100%; }
+/* an opened My Designs hides the other views, exactly as My Finance does */
+body.designs-open #chat-view, body.designs-open #empty-state, body.designs-open #library-view, body.designs-open #argus-view,
+body.designs-open #iris-view, body.designs-open #memory-view, body.designs-open #daily-view, body.designs-open #health-view, body.designs-open #tools-view,
+body.designs-open #research-view, body.designs-open #finance-view, body.designs-open #xp-panel { display: none !important; }

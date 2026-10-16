@@ -20,6 +20,7 @@
     { id: "tools",   cls: "tools-open",   nav: ".tools-nav",   close: () => { if (window.toolsView) window.toolsView.close(); } },
     { id: "research", cls: "research-open", nav: ".research-nav", close: () => { if (window.researchView) window.researchView.close(); } },
     { id: "health",  cls: "health-open",  nav: ".health-nav",  close: () => { if (window.healthView) window.healthView.close(); } },
+    { id: "designs", cls: "designs-open", nav: ".designs-nav", close: () => { if (window.designsView) window.designsView.close(); } },
     { id: "setup",   cls: "setup-open",   nav: "#setup-nav",   close: () => { if (window.setupView) window.setupView.close(); } },
     { id: "finance", cls: "finance-open", nav: ".finance-nav", close: () => { if (window.financeView) window.financeView.close(); else if (window.demoFinance) window.demoFinance.close(); } },
   ];

@@ -395,13 +395,18 @@ ipcMain.handle("get-app-version", () => app.getVersion());
 // in userData (survives app updates, and unlike the renderer's localStorage it cannot be silently
 // lost - the groups note kept coming back after being dismissed, 2026-09-19/20).
 const UI_FLAGS_PATH = path.join(app.getPath("userData"), "ui-flags.json");
+// v1.128.2: reads are reused for 2 s (called from many places; measured ~11 s of main-thread blocking per 45 s); every write drops the copy.
+let uiFlagsCache = { at: 0, v: null };
 function readUiFlags() {
+  const now = Date.now();
+  if (uiFlagsCache.v && now - uiFlagsCache.at < 2000) return { ...uiFlagsCache.v };
+  let v = {};
   try {
-    const v = readJsonFile(UI_FLAGS_PATH);
-    return v && typeof v === "object" ? v : {};
-  } catch (e) {
-    return {};
-  }
+    const r = readJsonFile(UI_FLAGS_PATH);
+    v = r && typeof r === "object" ? r : {};
+  } catch (e) {}
+  uiFlagsCache = { at: now, v };
+  return { ...v };
 }
 ipcMain.handle("ui-flags-get", () => readUiFlags());
 ipcMain.handle("ui-flag-set", (event, { key, value }) => {
@@ -409,7 +414,7 @@ ipcMain.handle("ui-flag-set", (event, { key, value }) => {
     if (typeof key !== "string" || !key) return false;
     const flags = readUiFlags();
     flags[key] = value;
-    fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(flags, null, 2));
+    fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(flags, null, 2)); uiFlagsCache = { at: 0, v: null };
     return true;
   } catch (e) {
     return false;
@@ -479,8 +484,55 @@ try {
   });
 } catch (e) { console.error("[setup] onChange hook failed:", e && e.message); }
 
+// v1.127.0 load governor (src/loadGovernor.js): starts one at a time when the PC is calm, a cap on agents working at once (lower while Premiere
+// is in front), automatic slow-down of nudges and starts when the system lags. Settings come from app-config (Setup); fail-open on any problem.
+const loadGovernor = (() => {
+  if (testMode.TEST_MODE || demo.ON) return null; // a sandbox / demo never measures or throttles the real machine
+  try {
+    const LG = require("./loadGovernor");
+    const cfgm = require("./appConfig");
+    const gk = (k) => { try { return cfgm.get(k); } catch (e) { return null; } };
+    const fgProbe = require("./foregroundProbe").createPersistentProbe(); // one resident helper, compiled once (not a PowerShell + csc.exe per probe)
+    return LG.create({
+      log: (m) => logStuckWatchdog(m),
+      getSettings: () => {
+        let on = true;
+        try { on = cfgm.feature("loadGovernor").state !== "off"; } catch (e) { on = true; }
+        return { enabled: on, maxWorking: gk("governorMaxWorking"), maxWorkingHeavy: gk("governorMaxWorkingHeavy"), heavyApps: gk("governorHeavyApps"), calmCpuPct: gk("governorCalmCpuPct"), slowLagMs: gk("governorSlowLagMs") };
+      },
+      measure: LG.createSystemMeasure(),
+      countWorking: () => {
+        let n = 0;
+        for (const a of listAgents({ noAvatar: true })) {
+          if (a.paused) continue;
+          if (approvalBlockedSince.has(a.path)) continue; // sitting at a permission prompt / waiting for a human: not consuming the machine, must not fill the cap
+          try { const act = getSessionActivity(sessionCwdPath(a.path)); if (act && act.working) n++; } catch (e) { /* one agent's hiccup */ }
+        }
+        return n;
+      },
+      probeForeground: (names) => fgProbe.probe(names),
+      close: () => fgProbe.close(),
+      onChange: () => { try { cpuGuard.push(); } catch (e) { /* not wired yet */ } },
+    });
+  } catch (e) {
+    try { logStuckWatchdog(`governor: failed to load (${e.message}) - running without it`); } catch (e2) { /* ok */ }
+    return null;
+  }
+})();
+app.on("before-quit", () => { try { if (loadGovernor) loadGovernor.stop(); } catch (e) { /* quitting */ } });
+// the renderer's auto-handoff asks before it starts a flow (a flow makes an agent work); fail-open on any problem
+ipcMain.handle("governor-admit", (event, { kind, agentPath } = {}) => {
+  try {
+    if (!loadGovernor || kind !== "handoff") return { ok: true, reason: "" };
+    return loadGovernor.admit("handoff", { label: path.basename(String(agentPath || "")) || "handoff" });
+  } catch (e) { return { ok: true, reason: "" }; }
+});
+ipcMain.handle("governor-release", () => { try { if (loadGovernor) loadGovernor.unreserve(); } catch (e) { /* cosmetic */ } return true; });
+ipcMain.handle("governor-state", () => { try { return loadGovernor ? loadGovernor.snapshot() : { enabled: false, state: "off" }; } catch (e) { return { enabled: false, state: "off" }; } });
+
 // v1.66.0: start limiter + CPU guard install/consent + banner state (src/cpuGuardGlue.js).
 const cpuGuard = require("./cpuGuardGlue").init({
+  governor: loadGovernor,
   app,
   ipcMain,
   dialog,
@@ -491,7 +543,7 @@ const cpuGuard = require("./cpuGuardGlue").init({
     try {
       const f = readUiFlags();
       f[key] = value;
-      fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(f, null, 2));
+      fs.writeFileSync(UI_FLAGS_PATH, JSON.stringify(f, null, 2)); uiFlagsCache = { at: 0, v: null };
     } catch (e) {}
   },
   log: (m) => logStuckWatchdog(m),
@@ -1257,10 +1309,11 @@ if (!gotSingleInstanceLock) {
     // ~2 s and the reaper no longer blocks the main thread; the sweep itself
     // now takes seconds, not a minute, so the countdown is short.
     if (!testMode.liveAgentsPermitted()) markStartupSweepDone(false);
+    try { if (loadGovernor) loadGovernor.start(); } catch (e) { logStuckWatchdog(`governor: start failed: ${e.message}`); } // v1.127.0: sampling begins before the first sweep
     // v1.66.1: the startup overlay never waits longer than 90 s for the sweep (a CPU hold can queue starts for
     // up to 15 min; the sweep carries on in the background, the overlay is released with a log line).
     setTimeout(() => {
-      logStuckWatchdog("startup: overlay released after 90 s (sweep still queued, probably behind a CPU hold)");
+      logStuckWatchdog("startup: overlay released after 90 s (sweep still queued, probably behind a CPU hold or the load governor)");
       markStartupSweepDone(false);
     }, 100000).unref();
     setTimeout(() => {
@@ -3458,14 +3511,18 @@ function transcriptTailHasText(agentPath, text, sinceMs) {
     const runs = String(text || "").match(/[\p{L}\p{N} ]{14,}/gu) || [];
     const needle = runs.sort((x, y) => y.length - x.length)[0];
     if (!needle) return null;
+    require("./archive").invalidateAgentCache(sessionCwdPath(agentPath)); // v1.128.1: see a brand-new transcript file at once
     const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
     if (!nt) return null;
-    if (sinceMs && fs.statSync(nt.jsonlPath).mtimeMs < sinceMs - 1000) return false;
+    // v1.128.1: a FRESH stat of the file - nt.size comes from the shared cache and can be several seconds old, which made the
+    // read miss a message written in that window (found 2026-10-16: 23 of 26 "not confirmed" messages had in fact arrived)
+    const fst = fs.statSync(nt.jsonlPath);
+    if (sinceMs && fst.mtimeMs < sinceMs - 1000) return false;
     const fd = fs.openSync(nt.jsonlPath, "r");
     try {
-      const len = Math.min(1024 * 1024, nt.size);
+      const len = Math.min(1024 * 1024, fst.size);
       const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, nt.size - len);
+      fs.readSync(fd, buf, 0, len, fst.size - len);
       return buf.toString("utf-8").includes(needle.trim().slice(0, 60));
     } finally { fs.closeSync(fd); }
   } catch (e) { return null; }
@@ -3477,11 +3534,13 @@ function deliverToAgentVerified(agentPath, text, what, deliverOpts) {
     if (kgDry()) { logStuckWatchdog(`keepgoing: DRY RUN (test mode, live agents not permitted) - would deliver ${what} to ${agentPath}`); return Promise.resolve({ delivered: false, attempts: 0, dry: true }); }
     const HD = require("./handoffDelivery");
     const contains = (needle) => {
+      require("./archive").invalidateAgentCache(sessionCwdPath(agentPath)); // v1.128.1
       const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
       if (!nt) return false;
-      const len = Math.min(64 * 1024, nt.size); // M5: the marker is in the newest entries
+      const fsize = fs.statSync(nt.jsonlPath).size; // v1.128.1: fresh size, not the cached one
+      const len = Math.min(64 * 1024, fsize); // M5: the marker is in the newest entries
       const fd = fs.openSync(nt.jsonlPath, "r");
-      try { const buf = Buffer.alloc(len); fs.readSync(fd, buf, 0, len, nt.size - len); return buf.toString("utf-8").includes(needle); } finally { fs.closeSync(fd); }
+      try { const buf = Buffer.alloc(len); fs.readSync(fd, buf, 0, len, fsize - len); return buf.toString("utf-8").includes(needle); } finally { fs.closeSync(fd); }
     };
     return HD.deliver(text, {
       channelSend: (t, o) => require("./agentChannel").send(agentPath, t, undefined, o),
@@ -3562,8 +3621,11 @@ try {
         const info = SL.readHoldFile(hf);
         if (info && SL.holdIsActive(info, Date.now(), undefined, info.mtimeMs)) return "CPUHOLD";
       } catch (e) { /* guard files are optional */ }
+      try { const lb = loadGovernor && loadGovernor.nudgeBlock(); if (lb) return lb; } catch (e) { /* governor is optional */ } // v1.127.0: "LOADSLOW" while the PC lags
       try { const tf = throttleFile(); if (!tf) return null; const j = readJsonFile(tf); return j && j.fleetThrottle && j.fleetThrottle.state; } catch (e) { return null; }
     },
+    loadRelease: () => { try { if (loadGovernor) loadGovernor.unreserve(); } catch (e) { /* cosmetic */ } },
+    loadWait: (agentPath) => { if (!loadGovernor) return false; const r = loadGovernor.admit("nudge", { label: path.basename(String(agentPath || "")) }); return !r.ok; }, // v1.127.0: the nudge waits for a slot
     readFile: (f) => fs.readFileSync(f, "utf-8").slice(0, 200000),
     // v1.74.0: relentless mode still stops at the usage hard stop (7d or 5h >= 95%); fail-open (false) on any error
     usageHardStop: () => {
@@ -3649,6 +3711,7 @@ try {
     blocked: () => {
       if (!keepGoing) return true;
       if (testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled())) return true;
+      try { if (loadGovernor && loadGovernor.nudgeBlock()) return true; } catch (e) { /* governor is optional */ } // v1.127.0
       try { // the CPU guard's hold: no new work while the PC is overloaded
         const SL = require("./startLimiter");
         const info = SL.readHoldFile(path.join(require("./cpuGuardInstall").defaultStateDir(), "state", "fleet_hold.json"));
@@ -4795,6 +4858,20 @@ const pathOpener = require("./openPath").createOpener({
 ipcMain.handle("open-path", (event, { filePath } = {}) => pathOpener.open(filePath));
 ipcMain.handle("open-local-pdf", (event, { filePath } = {}) => pathOpener.open(filePath)); // old name, same pipeline
 ipcMain.handle("resolve-paths", (event, { guesses } = {}) => pathOpener.resolve(guesses));
+// v1.125.0 My Designs (read only): handlers only; the library is read on each open of the page. "Open source folder" goes through pathOpener above.
+try {
+  require("./designsMain").init({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    cfg: require("./appConfig"),
+    openFolder: (p) => pathOpener.open(p),
+    openExternal: (u) => (testMode.TEST_MODE ? Promise.resolve() : shell.openExternal(u)),
+    disabled: () => demo.ON,
+    log: (line) => console.log("[designs] " + line),
+  });
+} catch (e) {
+  console.error("my designs failed to load:", e && e.code);
+}
 ipcMain.handle("approve-telegram-tasks", (event, { ids }) => overview.approveTelegramTasks(ids)); // v1.121.0: bridge folder + python from Setup (feature "telegram")
 
 // v1.76.0: the account-wide usage scan runs in a worker thread (src/usageWorker.js) with its per-file
@@ -4983,6 +5060,9 @@ function startIrisIfAllowed() {
   try {
     require("./iris/main-iris").init({
       ipcMain,
+      dialog,
+      getLang: () => { try { const f = readUiFlags(); return f && f.setupLang ? f.setupLang : (/^he\b/i.test(app.getLocale() || "") ? "he" : "en"); } catch (e) { return "en"; } },
+      ownerName: () => { try { return require("./appConfig").get("ownerName") || ""; } catch (e) { return ""; } },
       app,
       safeStorage: require("electron").safeStorage,
       Notification,
@@ -5021,6 +5101,7 @@ app.whenReady().then(() => {
       listBgAgents: () => listBackgroundAgents(resolveClaudeExecutable(), { ...process.env, ...CLAUDE_AUTOUPDATER_DISABLE_ENV }, { fresh: true }),
       workspace: AGENTS_ROOT,
       log: (line) => logStuckWatchdog(line),
+      governor: loadGovernor,
       testMode: testMode.TEST_MODE,
     });
   } catch (e) {
@@ -5034,7 +5115,7 @@ app.whenReady().then(() => {
 app.whenReady().then(() => {
   if (demo.ON) return; // v1.86.0 demo mode: no dictation inbox
   try {
-    require("./voiceInbox").init({ app, ipcMain, getMainWindow: () => mainWindow, log: (line) => logStuckWatchdog(line) });
+    require("./voiceInbox").init({ app, ipcMain, getMainWindow: () => mainWindow, log: (line) => logStuckWatchdog(line), governor: loadGovernor });
   } catch (e) {
     console.error("voice inbox failed to load:", e);
     try { logStuckWatchdog(`voice inbox failed to load: ${e.message}`); } catch (e2) {}

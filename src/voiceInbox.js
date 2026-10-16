@@ -98,7 +98,10 @@ function createActiveWriter({ file, pid, startedAt, inboxDir, now, log, rename }
 }
 
 // dir: the voice-inbox folder. deliver(req) -> Promise<{ ok, reason?, agent?, how? }>  (renderer glue, see main wiring).
-function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, neverWake }) {
+// v1.127.0: `governorWait(req) -> Promise<{ ok, waitedMs, released }>` (the load governor's FIFO wait) and `rateWaitMs`: when the PC is
+// loaded, or more than maxPerMinute arrive, a dictation WAITS (in order, within the bound) instead of being refused. Without them the
+// behaviour is unchanged (refuse when rate-limited).
+function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, neverWake, governorWait, rateWaitMs, sleep }) {
   const say = log || (() => {});
   const clock = now || Date.now;
   const procDir = path.join(dir, "processing");
@@ -107,6 +110,7 @@ function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, n
   let timer = null, rescan = null, watcher = null, closed = false;
   const stamps = []; // when requests were accepted for delivery (rate cap)
   const cap = maxPerMinute == null ? MAX_PER_MINUTE : maxPerMinute;
+  const pre = new Map(); // v1.127.0: file name -> { p: governor wait started when the file was CLAIMED, at } - bounds run concurrently, not one after another
   const seen = new Set(); // file names claimed in this run (a duplicate fs event must not claim twice)
 
   function finish(id, req, result) {
@@ -146,8 +150,24 @@ function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, n
       return;
     }
     const req = parsed.req;
-    const tNow = clock();
+    const claimed = pre.get(name); pre.delete(name);
+    if (typeof governorWait === "function") {
+      try {
+        const g = await (claimed ? claimed.p : governorWait(req));
+        if (g && g.waitedMs > 1000) say("voice-inbox: " + req.id + " waited " + Math.round(g.waitedMs / 1000) + " s for a load-governor slot" + (g.released ? " (maximum wait reached, delivering anyway)" : ""));
+      } catch (e) { /* fail-open: deliver */ }
+    }
+    let tNow = clock();
     while (stamps.length && tNow - stamps[0] > 60000) stamps.shift();
+    // v1.127.0: a burst over the per-minute cap waits for the window to free up (bounded), the order of dictations is kept
+    const rateBound = Number(rateWaitMs) > 0 ? Number(rateWaitMs) : 0;
+    const rateStart = claimed ? Math.min(tNow, claimed.at) : tNow; // the rate wait counts from the claim too: the TOTAL stays within the bound
+    while (stamps.length >= cap && rateBound > 0 && tNow - rateStart < rateBound) {
+      const waitMs = Math.max(200, Math.min(rateBound - (tNow - rateStart), 60000 - (tNow - stamps[0]) + 50));
+      await (sleep || ((ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); })))(waitMs);
+      tNow = clock();
+      while (stamps.length && tNow - stamps[0] > 60000) stamps.shift();
+    }
     if (stamps.length >= cap) {
       say("voice-inbox: refused " + req.id + ": rate-limited (more than " + cap + " requests a minute)");
       finish(req.id, req, { ok: false, reason: "rate-limited (max " + cap + " per minute)" });
@@ -179,6 +199,14 @@ function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, n
     // oldest dictation first (names are time-ordered ids; createdAt decides when it can be read cheaply)
     const order = claimed.map((n) => { let c = 0; try { c = Number(JSON.parse(fs.readFileSync(path.join(procDir, n), "utf8").replace(/^﻿/, "")).createdAt) || 0; } catch (e) { /* parse error handled later */ } return { n, c }; })
       .sort((a, b) => a.c - b.c || (a.n < b.n ? -1 : 1));
+    if (typeof governorWait === "function") {
+      for (const x of order) { // oldest first: the governor's FIFO keeps the order; each request's bound starts now
+        try {
+          const parsed = parseRequest(fs.readFileSync(path.join(procDir, x.n), "utf8"), x.n, clock());
+          if (parsed.ok) { const pr = Promise.resolve().then(() => governorWait(parsed.req)); pr.catch(() => {}); pre.set(x.n, { p: pr, at: clock() }); }
+        } catch (e) { /* processOne will report it */ }
+      }
+    }
     for (const x of order) chain = chain.then(() => processOne(x.n)).catch((e) => say("voice-inbox: error " + ((e && e.message) || e)));
     return order.map((x) => x.n);
   }
@@ -220,7 +248,7 @@ function createInbox({ dir, deliver, log, now, watch, timeoutMs, maxPerMinute, n
 
 // ---- Electron wiring --------------------------------------------------------------------------------------------------
 // app.getPath("userData") is the sandbox's own folder in test mode, so the sandbox never touches the live inbox.
-function init({ app, ipcMain, getMainWindow, log, now }) {
+function init({ app, ipcMain, getMainWindow, log, now, governor }) {
   const say = typeof log === "function" ? log : () => {};
   const userData = app.getPath("userData");
   const dir = path.join(userData, "voice-inbox");
@@ -264,7 +292,10 @@ function init({ app, ipcMain, getMainWindow, log, now }) {
       return W.isNeverWake(extra, { displayName: folder, folderName: folder });
     } catch (e) { return null; }
   };
-  const inbox = createInbox({ dir, deliver, log: say, now: clock, neverWake });
+  const gv = governor && typeof governor.waitForSlot === "function" ? governor : null;
+  const inbox = createInbox({ dir, deliver, log: say, now: clock, neverWake,
+    governorWait: gv ? (req) => gv.waitForSlot("voice", { label: "dictation " + String(req.agentPath || "").split(/[\\/]/).filter(Boolean).pop() }) : null,
+    rateWaitMs: gv ? 90000 : 0 });
   const armed = inbox.start();
   active.setArmed(armed);
   app.on("before-quit", () => { try { inbox.close(); active.close(); } catch (e) { /* quitting */ } });

@@ -27,6 +27,7 @@ assert.strictEqual(a.length, 2);
 
 // unchanged folder: same object, and no per-entry existence checks
 let exists = 0;
+process.env.AD_REGISTRY_SIG_TTL_MS = "0"; // v1.128.4: the signature is otherwise reused for 5 s
 const realExists = fs.existsSync;
 fs.existsSync = function () { exists++; return realExists.apply(fs, arguments); };
 assert.strictEqual(registry.listRegistry(ws), a, "second call returns the memoized list");

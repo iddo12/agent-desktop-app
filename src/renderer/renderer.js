@@ -2859,6 +2859,9 @@ async function refreshUsageWindows() {
   }
 
   refreshMonthlyUsage(windows.monthly);
+  // v1.124.0: reset time + last-reading age for the 5h / 7d bars (header-tasks.js draws the tick, label and tooltip)
+  if (window.xpUsageReset) window.xpUsageReset.set(windows.resetInfo || null);
+  else window.__usageResetInfo = windows.resetInfo || null;
 }
 
 // "This month" badge - the owner asked for a short/medium/long-term view
@@ -3950,7 +3953,7 @@ try {
 // "Selected" means: an agent chat is showing (not My Daily / ARGUS / Links / Library / Memory, not the empty state) and its
 // session has started. The text then goes through the SAME path as the Send button (sendOrHold -> submitToAgent), including the
 // long-message file hand-off, the busy-agent queue and the pending bubble; main verifies it landed.
-const PHEME_OVERLAY_CLASSES = ["argus-open", "daily-open", "health-open", "iris-open", "library-open", "memory-open", "tools-open", "finance-open", "research-open"];
+const PHEME_OVERLAY_CLASSES = ["argus-open", "daily-open", "health-open", "iris-open", "irischat-open", "library-open", "memory-open", "tools-open", "finance-open", "designs-open", "research-open"];
 function phemeSelected() {
   if (!activeAgentPath) return { ok: false, reason: "no-agent-selected" };
   if (chatViewEl.classList.contains("hidden") || PHEME_OVERLAY_CLASSES.some((c) => document.body.classList.contains(c))) {

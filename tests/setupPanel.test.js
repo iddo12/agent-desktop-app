@@ -56,9 +56,9 @@ t("IPC: every handler refuses a sender that is not the main window", async () =>
     assert.strictEqual((await r.handlers[ch](r.other, { featureId: "argus", key: "workspaceRoot" })).error, "not-allowed", ch);
 });
 const CONVERTED = ["pcHealth", "claudeCode", "claudeIntegration", "telegram"]; // areas converted so far (see features.test.js)
-t("IPC: get-all lists the 17 features with states, suggestions and the workspace card; welcome only when nothing exists and not test mode", async () => {
+t("IPC: get-all lists the 19 features with states, suggestions and the workspace card; welcome only when nothing exists and not test mode", async () => {
   const r = rig(); const all = await r.handlers["config-get-all"](r.main);
-  assert.strictEqual(all.ok, true); assert.strictEqual(all.features.length, 17); assert.ok(all.workspace && all.workspace.id === "workspace");
+  assert.strictEqual(all.ok, true); assert.strictEqual(all.features.length, 19); assert.ok(all.workspace && all.workspace.id === "workspace");
   assert.strictEqual(all.welcome, true); assert.strictEqual(all.exists, false);
   assert.ok(all.features.every((f) => f.state && f.group && Array.isArray(f.suggestions) && typeof f.wired === "boolean"));
   const t2 = rig({}, true); assert.strictEqual((await t2.handlers["config-get-all"](t2.main)).welcome, false, "never in test mode");

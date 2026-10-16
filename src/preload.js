@@ -173,6 +173,10 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("untrusted-agents", (event, list) => callback(list));
   },
 
+  // load governor (v1.127.0) - see src/loadGovernor.js
+  governorAdmit: (kind, agentPath) => ipcRenderer.invoke("governor-admit", { kind, agentPath }),
+  governorRelease: () => ipcRenderer.invoke("governor-release"),
+  getGovernorState: () => ipcRenderer.invoke("governor-state"),
   // CPU guard + start limiter (v1.66.0) - see src/cpuGuardGlue.js.
   getCpuGuardState: () => ipcRenderer.invoke("cpuguard-state"),
   cpuGuardAction: (action) => ipcRenderer.invoke("cpuguard-action", { action }),
@@ -255,6 +259,12 @@ contextBridge.exposeInMainWorld("api", {
     setPrefs: (p) => ipcRenderer.invoke("finance-prefs-set", p),
     closed: () => ipcRenderer.invoke("finance-closed"),
   },
+  // v1.125.0 My Designs (read only). The renderer sends only a design id.
+  designs: {
+    load: () => ipcRenderer.invoke("designs-load"),
+    openSource: (id) => ipcRenderer.invoke("designs-open-source", { id }),
+    openReference: (id) => ipcRenderer.invoke("designs-open-reference", { id }),
+  },
   tools: {
     load: () => ipcRenderer.invoke("tools-load"),
     getPrefs: () => ipcRenderer.invoke("tools-prefs-get"),
@@ -321,6 +331,12 @@ contextBridge.exposeInMainWorld("api", {
     pending: () => ipcRenderer.invoke("iris-pending"),
     prepareDelivery: (id, agentPath) => ipcRenderer.invoke("iris-prepare-delivery", { id, agentPath }),
     delivered: (id, to) => ipcRenderer.invoke("iris-delivered", { id, to }),
+    // v1.126.0 Chats page (renderer/iris-chats.js): direct agent messaging
+    chats: () => ipcRenderer.invoke("iris-chats"),
+    chatSend: (peerId, toAgent, text, thread) => ipcRenderer.invoke("iris-chat-send", { peerId, toAgent, text, thread }),
+    chatRetry: (id) => ipcRenderer.invoke("iris-chat-retry", { id }),
+    chatViewed: (peerId) => ipcRenderer.invoke("iris-chat-viewed", { peerId }),
+    directSet: (peerId, patch) => ipcRenderer.invoke("iris-direct-set", { peerId, patch }),
     onChanged: (cb) => ipcRenderer.on("iris-changed", () => cb()),
     onIncoming: (cb) => ipcRenderer.on("iris-incoming", (e, p) => cb(p)),
   },

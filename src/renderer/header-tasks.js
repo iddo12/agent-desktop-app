@@ -117,16 +117,111 @@
     const fill = document.createElement("i"); bar.appendChild(fill);
     el.textContent = "";
     el.append(l, n, bar);
+    decorateReset(el);
     if (el.id === "context-usage") {
       const t = $("xp-tokens");
       if (t) { t.textContent = raw.split("(")[0].trim(); t.classList.toggle("hidden", !t.textContent); }
     }
   }
   let meterObs = null;
+
+  // --- v1.124.0: reset time on the 5h / 7d meters ------------------------------------------------------------
+  // renderer.js hands over getUsageWindows().resetInfo (see archive.js buildResetInfo) with setResetInfo(); the maths and the wording
+  // are in ../usageReset.js (pure, unit-tested). Here: a thin tick on the bar at the share of the window already gone, a small label
+  // under it, and one shared tooltip (a native title never shows on keyboard focus, and the status row would clip a local one).
+  const RESET_KINDS = { "five-hour-usage": "5h", "weekly-usage": "7d" };
+  const UR = window.UsageReset || null;
+  let resetInfo = window.__usageResetInfo || null;
+  let resetTip = null;
+  function ensureTip() {
+    if (resetTip) return resetTip;
+    resetTip = document.createElement("div");
+    resetTip.id = "xp-reset-tip";
+    resetTip.setAttribute("role", "tooltip");
+    resetTip.hidden = true;
+    document.body.appendChild(resetTip);
+    return resetTip;
+  }
+  function tipText(el) {
+    const first = document.createElement("div"); first.className = "xp-tip-main"; first.textContent = el.dataset.xpSentence || "";
+    const frag = document.createDocumentFragment(); frag.appendChild(first);
+    if (el.dataset.xpTitle) { const more = document.createElement("div"); more.className = "xp-tip-more"; more.textContent = el.dataset.xpTitle; frag.appendChild(more); }
+    return frag;
+  }
+  function showTip(el) {
+    if (!el.dataset.xpSentence) return;
+    const tip = ensureTip();
+    tip.textContent = "";
+    tip.appendChild(tipText(el));
+    tip.hidden = false;
+    const r = el.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    let left = document.dir === "rtl" || getComputedStyle(el).direction === "rtl" ? r.right - tw : r.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    tip.style.left = left + "px";
+    tip.style.top = Math.min(r.bottom + 6, window.innerHeight - tip.offsetHeight - 8) + "px";
+  }
+  function hideTip() { if (resetTip) resetTip.hidden = true; }
+  function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+  function decorateReset(el) {
+    const kind = RESET_KINDS[el.id];
+    if (!kind || !UR || !resetInfo || !el.classList.contains("xp-meter")) return;
+    const bar = el.querySelector(":scope > .xp-m-bar"), n = el.querySelector(":scope > .xp-m-n");
+    if (!bar || !n) return;
+    const now = Date.now();
+    const d = UR.describe(resetInfo[kind] || {}, kind, now);
+    const lab = UR.label(d, now);
+    const sentence = UR.sentence(d, now);
+    // native title is replaced by the shared tooltip (its text is kept and shown under the sentence)
+    if (el.hasAttribute("title") && el.title) { el.dataset.xpTitle = el.title; el.removeAttribute("title"); }
+    let tick = bar.querySelector(":scope > .xp-m-tick");
+    if (!tick) { tick = document.createElement("b"); tick.className = "xp-m-tick"; tick.setAttribute("aria-hidden", "true"); bar.appendChild(tick); }
+    if (d.known) { tick.hidden = false; bar.style.setProperty("--tick", (d.fraction * 100).toFixed(1) + "%"); }
+    else tick.hidden = true;
+    bar.dataset.xpReset = d.known ? "known" : "unknown";
+    let rt = el.querySelector(":scope > .xp-m-rt");
+    if (!rt) {
+      rt = document.createElement("span"); rt.className = "xp-m-rt";
+      const ic = document.createElement("span"); ic.className = "xp-m-ic"; ic.setAttribute("aria-hidden", "true"); ic.textContent = "\u21BB";
+      const tx = document.createElement("span"); tx.className = "xp-m-rtx";
+      const ex = document.createElement("span"); ex.className = "xp-m-rin";
+      rt.append(ic, tx, ex); el.appendChild(rt);
+    }
+    setText(rt.querySelector(".xp-m-rtx"), lab.text);
+    setText(rt.querySelector(".xp-m-rin"), lab.extra);
+    rt.classList.toggle("warn", lab.warn);
+    rt.classList.toggle("unknown", lab.unknown);
+    // a reading older than the window itself says nothing about it: "?" instead of a percentage
+    const aged = d.readingTooOld;
+    setText(n, aged ? "?" : (el.dataset.xpPct || "") + "%");
+    el.dataset.xpAged = aged ? "1" : "";
+    const name = (METERS.find((m) => m[0] === el.id) || [])[2] || kind;
+    el.setAttribute("aria-label", name + (aged ? " unknown. " : " " + el.dataset.xpPct + " percent. ") + sentence);
+    if (aged) el.removeAttribute("aria-valuenow"); else el.setAttribute("aria-valuenow", el.dataset.xpPct || "0");
+    el.dataset.xpSentence = sentence;
+    el.setAttribute("tabindex", "0");
+    if (!el.dataset.xpTipBound) {
+      el.dataset.xpTipBound = "1";
+      el.addEventListener("mouseenter", () => showTip(el));
+      el.addEventListener("mouseleave", hideTip);
+      el.addEventListener("focus", () => showTip(el));
+      el.addEventListener("blur", hideTip);
+      el.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip(); });
+    }
+  }
+  function refreshReset() {
+    Object.keys(RESET_KINDS).forEach((id) => { const el = $(id); if (el) decorateReset(el); });
+    if (resetTip && !resetTip.hidden) { const a = document.activeElement; if (a && a.dataset && a.dataset.xpSentence) showTip(a); }
+  }
+  function setResetInfo(info) { resetInfo = info || null; window.__usageResetInfo = resetInfo; refreshReset(); }
+  window.xpUsageReset = { set: setResetInfo, refresh: refreshReset };
+  // one timer for both labels (text only, no header re-render); stopped when the page goes away
+  const resetTimer = setInterval(() => { if (!document.hidden) refreshReset(); }, 30000);
+  window.addEventListener("pagehide", () => clearInterval(resetTimer));
   function watchMeters() {
     if (meterObs) return;
     const run = () => {
-      METERS.forEach(([id, label, name]) => { const el = $(id); if (el) wrapMeter(el, label, name); });
+      METERS.forEach(([id, label, name]) => { const el = $(id); if (el) { wrapMeter(el, label, name); decorateReset(el); } });
       const ctx = $("context-usage"), t = $("xp-tokens");
       if (ctx && t && ctx.classList.contains("hidden")) t.classList.add("hidden");
     };
