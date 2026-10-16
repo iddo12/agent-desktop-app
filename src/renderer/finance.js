@@ -15,6 +15,7 @@
   function auto(e) { e.setAttribute("dir", "auto"); return e; }                 // Hebrew merchants and names read right-to-left on their own
   function btn(label, cls, onClick) { const b = el("button", cls || "mf-btn", label); b.type = "button"; b.addEventListener("click", (ev) => { ev.preventDefault(); onClick(ev, b); }); return b; }
   const TAB_LIST = [
+    { id: "home", label: "Home", icon: "🏠" },
     { id: "overview", label: "Overview", icon: "📊" },
     { id: "accounts", label: "Accounts", icon: "🏦" },
     { id: "transactions", label: "Transactions", icon: "🧾" },
@@ -90,6 +91,185 @@
       bar.appendChild(b);
     });
     return bar;
+  }
+
+  // ---------------------------------------------------------------- HOME (v1.129.0, slice 1): drawn from the read-only feed (finance-feed), NOT the vault ledger.
+  // Approved layout: UI-UX "My Finance detail pages", A3 dense Home. Scope toggle, source status tiles, stale + needs-you strips, balances with NIS,
+  // income vs expenses, VAT + invoices, 6-period trend. Every figure sits beside its "as of" date. textContent only; links are https only and come
+  // from configuration (finance.login_links.<id>), empty = no link. Hebrew text is dir="auto".
+  const SYM = { ILS: "₪", USD: "$", EUR: "€" };
+  const orig = (cur, n) => (n < 0 ? "-" : "") + (SYM[cur] || cur + " ") + grp(n);
+  const shortDay = (d) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? +d.slice(8, 10) + " " + MON[+d.slice(5, 7) - 1] : "");
+  const periodWord = (id) => { if (!id || !/^\d{4}-\d{2}$/.test(id)) return ""; const m = +id.slice(5, 7); return MON[m - 1] + " " + id.slice(0, 4); };
+  const SCOPE_WORD = { business: "Business", personal: "Personal", all: "All" };
+  const sgn = (n) => (n > 0 ? "+" : n < 0 ? "-" : "") + grp(n);
+
+  function homeCard(title, asOf) {
+    const c = el("section", "mf-card mf-home-card");
+    const h = el("h3", "mf-home-h");
+    h.append(el("span", "", title));
+    if (asOf) h.append(el("small", "mf-asof", "as of " + shortDay(asOf)));
+    c.appendChild(h);
+    return c;
+  }
+  function freshMark(s) {
+    const f = el("span", "mf-fresh " + (s.fresh ? "mf-fresh-ok" : "mf-fresh-bad"));
+    f.append(el("span", "mf-fresh-i", s.fresh ? "✓" : "✗"), document.createTextNode(" " + (s.fresh ? "Updated " : "Not updated ") + shortDay(s.last_import_date)));
+    return f;
+  }
+  function loginLink(s) {
+    if (!s || !s.link || !/^https:\/\//i.test(s.link)) return null;
+    const a = el("a", "mf-link", "Get fresh data ↗");
+    a.href = s.link; a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.title = "Plain link to the official login page. Nothing about your login is kept here. Green tick = updated in the last 7 days, red cross = not.";
+    return a;
+  }
+
+  function renderHomeTiles(v) {
+    const grid = el("div", "mf-tiles4");
+    const kinds = [["Bank", ["bank", "paypal"]], ["Cards", ["card"]], ["Invoicing", ["invoicing"]]];
+    for (const [name, ks] of kinds) {
+      const list = v.sources.filter((s) => ks.includes(s.kind));
+      if (!list.length) continue;
+      const bad = list.filter((s) => !s.fresh);
+      const oldest = list.reduce((m, s) => (s.last_import_date < m ? s.last_import_date : m), list[0].last_import_date);
+      const newest = list.reduce((m, s) => (s.last_import_date > m ? s.last_import_date : m), list[0].last_import_date);
+      const t = el("div", "mf-tile2 " + (bad.length ? "mf-tile2-w" : "mf-tile2-ok"));
+      t.append(el("b", "", name), el("span", "mf-st", bad.length ? "▲ Stale: oldest import " + shortDay(oldest) + " (" + bad.length + " of " + list.length + ")" : "✓ Up to date as of " + shortDay(newest)));
+      grid.appendChild(t);
+    }
+    if (v.vat) {
+      const w = v.vat.current.to_check > 0;
+      const t = el("div", "mf-tile2 " + (w ? "mf-tile2-w" : "mf-tile2-ok"));
+      t.append(el("b", "", "VAT, " + v.vat.current.period), el("span", "mf-st", (w ? "! " + v.vat.current.to_check + " to check" : "✓ Nothing to check") + ", as of " + shortDay(v.vat.current.as_of)));
+      grid.appendChild(t);
+    }
+    return grid;
+  }
+
+  function renderHomeBalances(v) {
+    const c = homeCard("Balances now", v.total.as_of);
+    if (!v.balances.length) { c.appendChild(el("p", "mf-muted", "No accounts in this view.")); return c; }
+    const srcOf = new Map(v.sources.map((s) => [s.id, s]));
+    const wrap = el("div", "mf-tablewrap"), table = el("table", "mf-table mf-home-table");
+    const th = el("thead"), hr = el("tr");
+    for (const [h, cls] of [["Account", ""], ["In its currency", "mf-num"], ["In NIS", "mf-num"]]) hr.appendChild(el("th", cls, h));
+    th.appendChild(hr); table.appendChild(th);
+    const tb = el("tbody");
+    for (const b of v.balances) {
+      const s = srcOf.get(b.source), tr = el("tr");
+      const first = el("td"); const nm = el("span", "mf-acct"); const hasCur = b.label.indexOf(b.currency) >= 0 || (b.currency === "ILS" && /NIS|₪/.test(b.label)); nm.append(el("bdi", "", b.label), document.createTextNode(hasCur ? "" : ", " + b.currency)); first.appendChild(nm);
+      if (s) {
+        first.append(document.createTextNode(" "), el("small", s.fresh ? "mf-asof" : "mf-asof mf-stale", (s.fresh ? "" : "▲ ") + "as of " + shortDay(b.as_of)), document.createTextNode(" "));
+        const a = loginLink(s); if (a) first.append(a, document.createTextNode(" "));
+        first.appendChild(freshMark(s));
+      }
+      tr.appendChild(first);
+      tr.appendChild(el("td", "mf-num" + (b.amount < 0 ? " mf-neg" : ""), orig(b.currency, b.amount)));
+      tr.appendChild(el("td", "mf-num" + (b.nis < 0 ? " mf-neg" : ""), (b.nis < 0 ? "-" : "") + grp(b.nis)));
+      tb.appendChild(tr);
+    }
+    const tot = el("tr", "mf-total"); tot.append(el("td", "", "Total in NIS, as of " + shortDay(v.total.as_of)), el("td"), el("td", "mf-num" + (v.total.nis < 0 ? " mf-neg" : ""), (v.total.nis < 0 ? "-" : "") + grp(v.total.nis)));
+    tb.appendChild(tot); table.appendChild(tb); wrap.appendChild(table); c.appendChild(wrap);
+    if (v.rates.length) c.appendChild(el("p", "mf-note", "Rates used: " + v.rates.map((r) => (SYM[r.currency] || r.currency) + "1 = " + r.rate + " ₪").join(", ") + " (Bank of Israel, " + shortDay(v.rates[0].date) + ")."));
+    return c;
+  }
+
+  function renderHomePeriods(v) {
+    const c = homeCard("Income vs expenses" + (v.period.this ? ", " + periodWord(v.period.this.id) : ""), v.period.this && v.period.this.as_of);
+    const rowFor = (label, p, cls) => {
+      const d = el("div", "mf-home-per");
+      d.appendChild(el("div", "", label + (p ? " (" + periodWord(p.id) + ")" : "")));
+      if (!p) { d.appendChild(el("p", "mf-muted", "No data.")); return d; }
+      const top = Math.max(v.period.this ? v.period.this.income : 0, v.period.last ? v.period.last.income : 0, 1);
+      const bar = el("div", "mf-bar2"), i = el("i", cls); i.style.width = Math.max(2, Math.min(100, Math.round((p.income / top) * 100))) + "%"; bar.appendChild(i); d.appendChild(bar);
+      const t = el("table", "mf-table mf-home-table"), tb = el("tbody");
+      for (const [k, n, strong] of [["Income", p.income], ["Expenses", p.expenses], ["Left", p.net, true]]) {
+        const tr = el("tr"); tr.append(el("td", "", strong ? "Left" : k), el("td", "mf-num" + (n < 0 ? " mf-neg" : ""), strong ? sgn(n) : grp(n)));
+        if (strong) tr.classList.add("mf-total"); tb.appendChild(tr);
+      }
+      t.appendChild(tb); d.appendChild(t); return d;
+    };
+    c.append(rowFor("This period", v.period.this, "mf-bar-now"), rowFor("Last period", v.period.last, "mf-bar-prev"));
+    return c;
+  }
+
+  function renderHomeVat(v) {
+    const c = homeCard(v.vat ? "VAT position, " + v.vat.current.period : "VAT", v.vat && v.vat.current.as_of);
+    if (v.vat) {
+      const r = v.vat.current;
+      c.appendChild(el("div", "mf-big", grp(r.result) + (r.result >= 0 ? " refund" : " to pay")));
+      const p = el("p", "mf-note"); p.append(document.createTextNode("Charged " + grp(r.charged) + " · Input " + grp(r.input) + " · "));
+      p.appendChild(el("span", "mf-chip" + (r.to_check ? "" : " mf-chip-ok"), r.to_check ? r.to_check + " to check" : "✓ nothing to check"));
+      p.append(document.createTextNode(" · File by " + shortDay(r.file_by)));
+      c.appendChild(p);
+      if (v.vat.previous) c.appendChild(el("p", "mf-note", "Last period (" + v.vat.previous.period + "): charged " + grp(v.vat.previous.charged) + ", input " + grp(v.vat.previous.input) + ", " + (v.vat.previous.result >= 0 ? "refund " : "to pay ") + grp(v.vat.previous.result) + "."));
+    } else c.appendChild(el("p", "mf-muted", "No VAT figures in this view."));
+    if (v.invoices) {
+      const h = el("h3", "mf-home-h"); h.append(el("span", "", "Invoices")); if (v.invoices.as_of) h.append(el("small", "mf-asof", "as of " + shortDay(v.invoices.as_of))); c.appendChild(h);
+      const t = el("table", "mf-table mf-home-table"), tb = el("tbody");
+      const u = el("tr"); u.append(el("td", "", "Unpaid"), el("td", "mf-num", v.invoices.unpaid.count + " · " + grp(v.invoices.unpaid.nis))); tb.appendChild(u);
+      const od = el("tr"); od.append(el("td", "", "▲ Overdue"), el("td", "mf-num" + (v.invoices.overdue.count ? " mf-neg" : ""), v.invoices.overdue.count + " · " + grp(v.invoices.overdue.nis))); tb.appendChild(od);
+      t.appendChild(tb); c.appendChild(t);
+    }
+    return c;
+  }
+
+  function renderHomeTrend(v) {
+    const c = homeCard("Trend, last " + v.trend.length + " periods, in NIS", v.period.this && v.period.this.as_of);
+    if (!v.trend.length) { c.appendChild(el("p", "mf-muted", "No periods yet.")); return c; }
+    const NS = ["http:", "", "www.w3.org", "2000", "svg"].join("/"), W = 560, H = 160, base = 120, top = 34;
+    const svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.setAttribute("class", "mf-hchart"); svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Income (solid) and expenses (dashed outline) in NIS for the last " + v.trend.length + " periods, values labelled");
+    const max = Math.max(1, ...v.trend.map((p) => Math.max(p.income, p.expenses)));
+    const slot = W / v.trend.length;
+    const add = (tag, attrs, text) => { const n = document.createElementNS(NS, tag); for (const k of Object.keys(attrs)) n.setAttribute(k, attrs[k]); if (text != null) n.textContent = text; svg.appendChild(n); };
+    v.trend.forEach((p, i) => {
+      const x = i * slot + slot / 2 - 32;
+      const hi = Math.max(1, Math.round(((base - top) * p.income) / max)), he = Math.max(1, Math.round(((base - top) * p.expenses) / max));
+      add("rect", { x, y: base - hi, width: 30, height: hi, class: "mf-hchart-in" });
+      add("rect", { x: x + 34, y: base - he, width: 30, height: he, class: "mf-hchart-out" });
+      add("text", { x: x + 15, y: base - hi - 3, "text-anchor": "middle", class: "mf-hchart-t" }, (p.income / 1000).toFixed(1) + "k");
+      add("text", { x: x + 49, y: base - he - 3, "text-anchor": "middle", class: "mf-hchart-t" }, (p.expenses / 1000).toFixed(1) + "k");
+      add("text", { x: x + 32, y: 140, "text-anchor": "middle", class: "mf-hchart-t" }, p.id.slice(2));
+    });
+    c.appendChild(svg);
+    c.appendChild(el("p", "mf-note", "Solid bar = income, dashed outline = expenses; value on every bar (thousands of ₪)."));
+    return c;
+  }
+
+  function renderHome(S) {
+    const root = el("div", "mf-home");
+    const tg = el("div", "mf-scope"); tg.setAttribute("role", "group"); tg.setAttribute("aria-label", "Show");
+    for (const k of ["business", "personal", "all"]) {
+      const b = el("button", "mf-scope-b" + (S.scope === k ? " mf-on" : ""), SCOPE_WORD[k]); b.type = "button"; b.setAttribute("aria-pressed", S.scope === k ? "true" : "false");
+      b.addEventListener("click", () => S.onScope(k)); tg.appendChild(b);
+    }
+    root.appendChild(tg);
+    const f = S.feed;
+    if (!f) { root.appendChild(el("p", "mf-muted", "Reading the finance feed...")); return root; }
+    if (!f.ok) {
+      const st = el("div", "mf-banner mf-banner-bad"); st.setAttribute("role", "alert");
+      const bad = f.reason === "Feed invalid";
+      st.append(el("span", "mf-banner-i", "✗"), el("b", "", bad ? "Feed invalid." : "No finance feed."), el("span", "", " " + (bad ? (f.firstError || "") : (f.reason || "")) + (bad ? " Nothing is shown until the feed is fixed." : "")));
+      root.appendChild(st); return root;
+    }
+    const v = f.view;
+    if (v.synthetic) { const sb = el("div", "mf-synthetic", "SYNTHETIC DATA"); sb.setAttribute("role", "note"); sb.title = "Every figure in this feed is invented."; root.appendChild(sb); }
+    root.appendChild(renderHomeTiles(v));
+    if (v.stale.length) {
+      const n = el("div", "mf-need mf-need-w"); n.setAttribute("role", "note");
+      n.append(el("b", "", "▲ Stale data: "), document.createTextNode(v.stale.map((s) => s.label + " " + s.age_days + " days").join(", ")));
+      root.appendChild(n);
+    }
+    if (v.needs) {
+      const n = el("div", "mf-need"); n.setAttribute("role", "note");
+      n.append(el("b", "", v.needs.count ? "Needs you: " + v.needs.count + "." : "Nothing needs you ✓"), document.createTextNode(v.needs.count ? " " + v.needs.labels.join("; ") : ""));
+      root.appendChild(n);
+    }
+    const cols = el("div", "mf-home-cols"); cols.append(renderHomeBalances(v), renderHomePeriods(v), renderHomeVat(v), renderHomeTrend(v));
+    root.appendChild(cols);
+    return root;
   }
 
   // no ledger yet: what to do, in plain words
@@ -546,18 +726,27 @@
   view.append(headHost, bannerHost, tabsHost, bodyHost, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { snap: null, tab: "overview", txq: {}, txRes: null, txHost: null, imp: null, catMonth: null };
+  const S = { snap: null, feed: null, scope: "all", tab: "home", txq: {}, txRes: null, txHost: null, imp: null, catMonth: null };
   let open = false, navEl = null, toastTimer = null, searchTimer = null, seq = 0;
   const say = (t) => { toast.textContent = t; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 6000); };
   const catOf = (id) => (S.snap && S.snap.categories ? S.snap.categories.find((c) => c.id === id) : null) || null;
+  let feedSeq = 0;
+  function loadFeed() {
+    const my = ++feedSeq;
+    if (!api.feed) { S.feed = { ok: false, reason: "The finance feed is not available." }; return Promise.resolve(); }
+    return api.feed(S.scope).then((r) => { if (!open || my !== feedSeq) return; S.feed = r || { ok: false, reason: "No answer." }; if (S.tab === "home") render(); })
+      .catch(() => { if (open && my === feedSeq) { S.feed = { ok: false, reason: "The finance feed could not be read." }; if (S.tab === "home") render(); } });
+  }
+  S.onScope = (k) => { if (S.scope === k) return; S.scope = k; S.feed = null; render(); loadFeed(); };
   const DATA_TABS = { overview: 1, accounts: 1, transactions: 1, categories: 1, receipts: 1 };
 
   function render() {
     headHost.textContent = ""; bannerHost.textContent = ""; tabsHost.textContent = ""; bodyHost.textContent = ""; S.txHost = null;
     headHost.appendChild(renderHeader(S));
-    const b = renderBanner(S); if (b) bannerHost.appendChild(b);
+    const b = S.tab === "home" ? null : renderBanner(S); if (b) bannerHost.appendChild(b);
     tabsHost.appendChild(renderTabs(S));
     bodyHost.setAttribute("aria-labelledby", "mf-tab-" + S.tab);
+    if (S.tab === "home") { bodyHost.appendChild(renderHome(S)); return; }
     if (!S.snap) { bodyHost.appendChild(el("p", "mf-muted", "Reading the ledger...")); return; }
     if (!S.snap.ok) { bodyHost.appendChild(renderState("Couldn't open My Finance", S.snap.reason)); return; }
     if (S.snap.state === "blocked" && S.tab !== "accountant") { bodyHost.appendChild(renderState("No safe finance folder", S.snap.reason)); return; }
@@ -592,6 +781,7 @@
   S.onTab = (id) => {
     if (S.tab === id) return;
     S.tab = id; render();
+    if (id === "home") loadFeed();
     if (api.setPrefs) api.setPrefs({ tab: id }).catch(() => {});
     if (id === "transactions" && S.snap && S.snap.state === "ready") loadTx();
     if (id === "import") loadImport();
@@ -636,7 +826,7 @@
     document.addEventListener("click", onDocClick, true);
     document.addEventListener("keydown", onDocKey);
     S.snap = null; render();
-    const go = () => { if (open) { render(); refresh(); } };
+    const go = () => { if (open) { render(); refresh(); if (S.tab === "home") loadFeed(); } };
     if (api.getPrefs) api.getPrefs().then((r) => { if (r && r.ok && r.prefs && r.prefs.tab) S.tab = r.prefs.tab; go(); }).catch(go); else go();
   }
   function close() {
@@ -649,7 +839,7 @@
     if (navEl) navEl.classList.remove("active");
     clearTimeout(searchTimer); clearTimeout(toastTimer);
     if (api.closed) api.closed().catch(() => {});
-    S.snap = null; S.txRes = null; S.imp = null; S.txq = {}; S.txHost = null; S.catMonth = null;
+    S.snap = null; S.feed = null; feedSeq++; S.txRes = null; S.imp = null; S.txq = {}; S.txHost = null; S.catMonth = null;
     headHost.textContent = ""; bannerHost.textContent = ""; tabsHost.textContent = ""; bodyHost.textContent = ""; toast.textContent = ""; toast.classList.add("hidden");   // nothing from the ledger stays in the page
   }
   window.financeView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

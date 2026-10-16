@@ -43,6 +43,10 @@ const KEYS = {
   styleLibrary: { kind: "folder", label: "My Designs library folder (holds styles.json)", derive: (c) => c.sub("workspaceRoot", "shared_assets", "style_library") },
   toolsBasketLabel: { kind: "text", label: "Tools: heading of the first group of tools (the one your catalogue marks with basket \"acmeco\")", derive: () => null },
   financeVault: { kind: "folder", autoCreate: true, label: "Finance folder", derive: (c) => c.userSub("finance-vault") },
+  // My Finance feed (v1.129.0): the read-only JSON the Accounting feed tool writes. Default: <work folder>/finance/feed/finance_feed.json. Never inside a cloud-synced folder (refused at read time).
+  financeFeedPath: { kind: "file", label: "Finance feed file (finance_feed.json)", derive: (c) => c.sub("workDir", "finance", "feed", "finance_feed.json") },
+  // Plain login links for the Home view: "sourceId=https://...;sourceId=https://..." (https only; empty = no link, nothing stored but the address)
+  financeLoginLinks: { kind: "text", max: 1500, label: "Finance: login links per source (id=https://...;id=https://...)", derive: () => null },
   healthParent: { kind: "folder", autoCreate: true, label: "Health folder", derive: (c) => c.userSub("health") },
   telegramTasksDir: { kind: "folder", label: "Telegram task queue folder", derive: () => null },
   telegramBridgeDir: { kind: "folder", label: "Telegram bridge folder (holds tasks.py)", derive: () => null },
@@ -197,6 +201,7 @@ function createAppConfig(opts) {
       return out.filter((x) => { const k = platform === "win32" ? x.toLowerCase() : x; if (seen.has(k)) return false; seen.add(k); return true; });
     }
     if (def.kind === "choice") return def.choices.indexOf(v) >= 0 ? v : null;
+    if (def.kind === "text" && def.max) { const t = typeof v === "string" ? v.trim() : ""; return t && t.length <= def.max && !/[\0-\x1f]/.test(t) ? t : null; }
     return cleanText(v);
   }
   function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }

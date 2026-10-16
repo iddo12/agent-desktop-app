@@ -26,6 +26,8 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - styleLibrary (folder): My Designs library folder (holds styles.json)  [env AGENT_DESKTOP_STYLE_LIBRARY]
 - toolsBasketLabel (text): Tools: heading of the first group of tools (the one your catalogue marks with basket "acmeco")  [env AGENT_DESKTOP_TOOLS_BASKET_LABEL]
 - financeVault (folder): Finance folder  [env AGENT_DESKTOP_FINANCE_VAULT]
+- financeFeedPath (file): Finance feed file (finance_feed.json)  [env AGENT_DESKTOP_FINANCE_FEED_PATH]
+- financeLoginLinks (text): Finance: login links per source (id=https://...;id=https://...)  [env AGENT_DESKTOP_FINANCE_LOGIN_LINKS]
 - healthParent (folder): Health folder  [env AGENT_DESKTOP_HEALTH_PARENT]
 - telegramTasksDir (folder): Telegram task queue folder  [env AGENT_DESKTOP_TELEGRAM_TASKS_DIR]
 - telegramBridgeDir (folder): Telegram bridge folder (holds tasks.py)  [env AGENT_DESKTOP_TELEGRAM_BRIDGE_DIR]

@@ -398,7 +398,7 @@ function world(extra) {
 }
 t("ipc: the allow-list; only the main window's own frame (a null or other frame is refused); arrays, scalars and oversized arguments refused", async () => {
   const w = world();
-  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["finance-closed", "finance-demo-create", "finance-demo-remove", "finance-import-scan", "finance-load", "finance-open-folder", "finance-prefs-get", "finance-prefs-set", "finance-transactions"]);
+  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["finance-closed", "finance-demo-create", "finance-demo-remove", "finance-feed", "finance-import-scan", "finance-load", "finance-open-folder", "finance-prefs-get", "finance-prefs-set", "finance-transactions"]);
   assert.strictEqual((await w.handlers["finance-load"](w.good)).ok, true);
   assert.strictEqual((await w.handlers["finance-load"]({ sender: {}, senderFrame: {} })).ok, false);
   assert.strictEqual((await w.handlers["finance-load"]({ sender: w.wc, senderFrame: {} })).ok, false, "a sub-frame is refused");
@@ -445,7 +445,7 @@ t("ipc: open-folder takes only 'drop' or 'vault'; prefs keep only a known tab, a
   assert.strictEqual((await w.handlers["finance-prefs-set"](w.good, { tab: "overview" })).ok, false);
   assert.ok(fs.readFileSync(pf, "utf8").includes("vaultDir"), "corrupt file left untouched");
   assert.strictEqual((await w.handlers["finance-prefs-set"](w.good, { tab: "../evil" })).ok, false);
-  assert.deepStrictEqual(MF.TABS, ["overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"]);
+  assert.deepStrictEqual(MF.TABS, ["home", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"]);
 });
 
 // ------------------------------------------------------------------ static guards

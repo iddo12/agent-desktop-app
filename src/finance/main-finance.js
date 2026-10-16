@@ -6,12 +6,17 @@
 const path = require("path");
 const fs = require("fs");
 const MAX_ARG_CHARS = 1024;
-const TABS = ["overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"];
+const TABS = ["home", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"];
 
-function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, env, openPath }) {
+function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, env, openPath, feedConfig, today }) {
   const say = typeof log === "function" ? log : () => {};
   let svc = null;
   const service = () => (svc || (svc = require("./service").createService({ userData, appDir, testMode: !!testMode, env: env || process.env, defaultDir: () => require("../appConfig").get("financeVault"), log: say })));
+  // v1.129.0 feed (read-only JSON from the Accounting feed tool): the path and the login links come from the configuration layer, never from the renderer.
+  const cfgGet = (k) => { try { return require("../appConfig").get(k); } catch (e) { return null; } };
+  const fc = feedConfig || { path: () => cfgGet("financeFeedPath"), links: () => cfgGet("financeLoginLinks") };
+  let reader = null;
+  const feedReader = () => (reader || (reader = require("./feedReader").createFeedReader({ getPath: () => fc.path(), appDir, log: say })));
   const handle = (channel, fn) => raw.handle(channel, async (event, arg) => {
     try {
       const w = typeof getMainWindow === "function" ? getMainWindow() : null;
@@ -31,7 +36,7 @@ function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, en
     try { text = fs.readFileSync(prefsFile(), "utf8"); } catch (x) { return x && x.code === "ENOENT" ? { ok: true, value: {} } : { ok: false }; }
     try { const j = JSON.parse(text.replace(/^﻿/, "")); return j && typeof j === "object" && !Array.isArray(j) ? { ok: true, value: j } : { ok: false }; } catch (x) { return { ok: false }; }
   };
-  handle("finance-prefs-get", () => { const r = readPrefs(); const tab = r.ok ? r.value.tab : null; return { ok: true, prefs: { tab: TABS.includes(tab) ? tab : "overview" } }; });
+  handle("finance-prefs-get", () => { const r = readPrefs(); const tab = r.ok ? r.value.tab : null; return { ok: true, prefs: { tab: TABS.includes(tab) ? tab : "home" } }; });
   handle("finance-prefs-set", (a) => {
     if (!a || !TABS.includes(a.tab)) return { ok: false, reason: "Bad request." };
     const r = readPrefs();
@@ -42,6 +47,17 @@ function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, en
     return { ok: true };
   });
   handle("finance-load", () => service().load());
+  handle("finance-feed", (a) => {
+    const FR = require("./feedReader");
+    const scope = a && typeof a.scope === "string" && FR.SCOPES.includes(a.scope) ? a.scope : "all";
+    const r = feedReader().readFeed();
+    if (!r.ok) return { ok: false, code: r.code, reason: r.reason, firstError: r.firstError || null };
+    const t = typeof today === "function" ? today() : null;
+    const d = new Date();
+    const local = t || d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    let links = null; try { links = FR.parseLoginLinks(fc.links()); } catch (e) { links = null; }
+    return { ok: true, view: FR.homeView(r.feed, scope, { today: local, loginLinks: links || undefined }) };
+  });
   handle("finance-transactions", (a) => service().transactions(a));
   handle("finance-import-scan", () => service().importScan());
   handle("finance-demo-create", () => service().createDemo());

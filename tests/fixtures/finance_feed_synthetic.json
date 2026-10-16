@@ -1,0 +1,629 @@
+{
+ "feed_version": "0.2",
+ "generated_at": "2026-10-16T07:20:00",
+ "synthetic": true,
+ "future_field": {
+  "x": 1
+ },
+ "sources": [
+  {
+   "id": "bank_a_ils",
+   "label": "Bank A, NIS",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-15",
+   "as_of": "2026-10-15",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "bank_a_usd",
+   "label": "Bank A, USD",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "USD"
+   ],
+   "last_import_date": "2026-10-03",
+   "as_of": "2026-10-03",
+   "fresh": false,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "bank_b_ils",
+   "label": "Bank B, NIS",
+   "kind": "bank",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-07",
+   "as_of": "2026-10-07",
+   "fresh": false,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "paypal",
+   "label": "PayPal, USD",
+   "kind": "paypal",
+   "scope": "business",
+   "currencies": [
+    "USD"
+   ],
+   "last_import_date": "2026-10-15",
+   "as_of": "2026-10-15",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "card_p",
+   "label": "Card P (personal)",
+   "kind": "card",
+   "scope": "personal",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-12",
+   "as_of": "2026-10-12",
+   "fresh": true,
+   "manual": true,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "card_b",
+   "label": "Card B (business)",
+   "kind": "card",
+   "scope": "business",
+   "currencies": [
+    "ILS"
+   ],
+   "last_import_date": "2026-10-12",
+   "as_of": "2026-10-12",
+   "fresh": true,
+   "manual": true,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  },
+  {
+   "id": "invoicing",
+   "label": "Invoicing",
+   "kind": "invoicing",
+   "scope": "business",
+   "currencies": [
+    "ILS",
+    "USD",
+    "EUR"
+   ],
+   "last_import_date": "2026-10-16",
+   "as_of": "2026-10-16",
+   "fresh": true,
+   "manual": false,
+   "last_full_refresh": "2026-10-07",
+   "next_due": "2026-10-14"
+  }
+ ],
+ "balances": [
+  {
+   "source": "bank_a_ils",
+   "currency": "ILS",
+   "amount": 48200,
+   "nis": 48200,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  {
+   "source": "bank_a_usd",
+   "currency": "USD",
+   "amount": 6400,
+   "nis": 23296,
+   "rate": 3.64,
+   "rate_date": "2026-10-15",
+   "as_of": "2026-10-03"
+  },
+  {
+   "source": "bank_b_ils",
+   "currency": "ILS",
+   "amount": 12750,
+   "nis": 12750,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-07"
+  },
+  {
+   "source": "paypal",
+   "currency": "USD",
+   "amount": 860,
+   "nis": 3130,
+   "rate": 3.64,
+   "rate_date": "2026-10-15",
+   "as_of": "2026-10-15"
+  },
+  {
+   "source": "card_p",
+   "currency": "ILS",
+   "amount": -4980,
+   "nis": -4980,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-12"
+  },
+  {
+   "source": "card_b",
+   "currency": "ILS",
+   "amount": -2310,
+   "nis": -2310,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-12"
+  }
+ ],
+ "periods": [
+  {
+   "id": "2026-02",
+   "scope": "business",
+   "income": {
+    "amount": 26400,
+    "currency": "ILS",
+    "nis": 26400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 20300,
+    "currency": "ILS",
+    "nis": 20300,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6100,
+    "currency": "ILS",
+    "nis": 6100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-04",
+   "scope": "business",
+   "income": {
+    "amount": 28100,
+    "currency": "ILS",
+    "nis": 28100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 21500,
+    "currency": "ILS",
+    "nis": 21500,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6600,
+    "currency": "ILS",
+    "nis": 6600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-06",
+   "scope": "business",
+   "income": {
+    "amount": 27300,
+    "currency": "ILS",
+    "nis": 27300,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 20700,
+    "currency": "ILS",
+    "nis": 20700,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 6600,
+    "currency": "ILS",
+    "nis": 6600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-08",
+   "scope": "business",
+   "income": {
+    "amount": 30200,
+    "currency": "ILS",
+    "nis": 30200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 22600,
+    "currency": "ILS",
+    "nis": 22600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 7600,
+    "currency": "ILS",
+    "nis": 7600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-09",
+   "scope": "business",
+   "income": {
+    "amount": 28900,
+    "currency": "ILS",
+    "nis": 28900,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 21100,
+    "currency": "ILS",
+    "nis": 21100,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 7800,
+    "currency": "ILS",
+    "nis": 7800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-10",
+   "scope": "business",
+   "income": {
+    "amount": 31200,
+    "currency": "ILS",
+    "nis": 31200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 22400,
+    "currency": "ILS",
+    "nis": 22400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 8800,
+    "currency": "ILS",
+    "nis": 8800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 0,
+   "as_of": "2026-10-12",
+   "rate_date": "2026-10-12"
+  },
+  {
+   "id": "2026-10",
+   "scope": "personal",
+   "income": {
+    "amount": 5000,
+    "currency": "ILS",
+    "nis": 5000,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "expenses": {
+    "amount": 4200,
+    "currency": "ILS",
+    "nis": 4200,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "net": {
+    "amount": 800,
+    "currency": "ILS",
+    "nis": 800,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "to_check": 1,
+   "as_of": "2026-10-12",
+   "rate_date": null
+  }
+ ],
+ "nis_total": {
+  "business": {
+   "amount": 85066,
+   "currency": "ILS",
+   "nis": 85066,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  "personal": {
+   "amount": -4980,
+   "currency": "ILS",
+   "nis": -4980,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  },
+  "all": {
+   "amount": 80086,
+   "currency": "ILS",
+   "nis": 80086,
+   "rate": null,
+   "rate_date": null,
+   "as_of": "2026-10-15"
+  }
+ },
+ "rates": [
+  {
+   "currency": "USD",
+   "rate": 3.64,
+   "date": "2026-10-15",
+   "source": "BoI"
+  },
+  {
+   "currency": "EUR",
+   "rate": 3.94,
+   "date": "2026-10-15",
+   "source": "BoI"
+  }
+ ],
+ "vat": {
+  "scope": "business",
+  "periods": [
+   {
+    "period": "2026-10",
+    "charged": {
+     "amount": 5300,
+     "currency": "ILS",
+     "nis": 5300,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "input": {
+     "amount": 7160,
+     "currency": "ILS",
+     "nis": 7160,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "refund_or_due": {
+     "amount": 1860,
+     "currency": "ILS",
+     "nis": 1860,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "to_check": 3,
+    "file_by": "2026-11-15",
+    "as_of": "2026-10-12"
+   },
+   {
+    "period": "2026-08",
+    "charged": {
+     "amount": 4900,
+     "currency": "ILS",
+     "nis": 4900,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "input": {
+     "amount": 6440,
+     "currency": "ILS",
+     "nis": 6440,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "refund_or_due": {
+     "amount": 1540,
+     "currency": "ILS",
+     "nis": 1540,
+     "rate": null,
+     "rate_date": null,
+     "as_of": "2026-10-15"
+    },
+    "to_check": 0,
+    "file_by": "2026-09-15",
+    "as_of": "2026-09-14"
+   }
+  ]
+ },
+ "invoices": {
+  "unpaid": {
+   "count": 4,
+   "amount": {
+    "amount": 9600,
+    "currency": "ILS",
+    "nis": 9600,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-16"
+   }
+  },
+  "overdue": {
+   "count": 1,
+   "amount": {
+    "amount": 2400,
+    "currency": "ILS",
+    "nis": 2400,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-16"
+   }
+  },
+  "rows": [
+   {
+    "id": "2026-0141",
+    "direction": "out",
+    "party_masked": "Client A",
+    "date": "2026-10-02",
+    "due": "2026-10-16",
+    "status": "unpaid",
+    "scope": "business",
+    "money": {
+     "amount": 1200,
+     "currency": "USD",
+     "nis": 4368,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "2026-0131",
+    "direction": "out",
+    "party_masked": "Client C",
+    "date": "2026-09-05",
+    "due": "2026-10-05",
+    "status": "overdue",
+    "scope": "business",
+    "money": {
+     "amount": 800,
+     "currency": "EUR",
+     "nis": 3152,
+     "rate": 3.94,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   },
+   {
+    "id": "2026-0127",
+    "direction": "out",
+    "party_masked": "Client A",
+    "date": "2026-08-28",
+    "due": "2026-09-27",
+    "status": "paid",
+    "scope": "business",
+    "money": {
+     "amount": 2000,
+     "currency": "USD",
+     "nis": 7280,
+     "rate": 3.64,
+     "rate_date": "2026-10-15",
+     "as_of": "2026-10-16"
+    }
+   }
+  ]
+ },
+ "needs_you": {
+  "by_type": [
+   {
+    "type": "unclear_scope",
+    "count": 2
+   },
+   {
+    "type": "no_rate",
+    "count": 1
+   }
+  ],
+  "items": [
+   {
+    "type": "unclear_scope",
+    "label": "Card payment, business or personal?",
+    "scope": "business",
+    "source": "card_b",
+    "age_days": 3,
+    "due": null
+   },
+   {
+    "type": "unclear_scope",
+    "label": "Transfer, business or personal?",
+    "scope": "personal",
+    "source": "bank_a_ils",
+    "age_days": 7,
+    "due": null
+   },
+   {
+    "type": "no_rate",
+    "label": "Receipt without a rate",
+    "scope": "business",
+    "source": "card_b",
+    "age_days": 14,
+    "due": "2026-10-31"
+   }
+  ]
+ },
+ "transactions": [
+  {
+   "source": "card_b",
+   "date": "2026-10-11",
+   "category": "Equipment",
+   "tag": "business",
+   "money": {
+    "amount": -1450,
+    "currency": "ILS",
+    "nis": -1450,
+    "rate": null,
+    "rate_date": null,
+    "as_of": "2026-10-12"
+   },
+   "match_status": "matched"
+  }
+ ]
+}
