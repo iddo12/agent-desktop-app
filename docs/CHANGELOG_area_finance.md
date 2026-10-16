@@ -8,3 +8,7 @@
 ## My Finance Home from the finance feed (v1.129.0, slice 1)
 
 - Read-only feed (`financeFeedPath`, `financeLoginLinks` configuration keys), validator, reader, `finance-feed` IPC channel and a Home tab. Details: `docs/CHANGELOG_v1.129.0.md`. Feed schema: Software Engineering `my_finance_feed_schema_v0.2.md`.
+
+## My Finance pages from the feed (v1.130.0, slice 2)
+
+- Eleven feed pages, paged and scope-filtered through `finance-feed`, plus reader hardening (single handle, size check). Details: `docs/CHANGELOG_v1.130.0.md`.

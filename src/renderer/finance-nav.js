@@ -33,11 +33,10 @@
         link.rel = "stylesheet"; link.href = "styles-finance.css";
         document.head.appendChild(link);
       }
-      const s = document.createElement("script");
-      s.src = "finance.js";
-      s.onload = () => (window.financeView ? resolve(window.financeView) : reject(new Error("no view")));
-      s.onerror = () => reject(new Error("load failed"));
-      document.body.appendChild(s);
+      const load = (src, ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = bad; document.body.appendChild(s); };
+      // the feed pages (slice 2) first: finance.js picks them up when it starts; if they fail to load the other tabs still work
+      const view = () => load("finance.js", () => (window.financeView ? resolve(window.financeView) : reject(new Error("no view"))), () => reject(new Error("load failed")));
+      load("finance-pages.js", view, view);
     }).catch((e) => { loading = null; throw e; });
     return loading;
   }

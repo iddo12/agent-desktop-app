@@ -163,6 +163,8 @@ function validateFeed(feed) {
     if (a.handover_date !== undefined) date(a.handover_date, "accountant_package.handover_date");
     for (const k of ["parts_ready", "parts_total", "items_to_check"]) if (a[k] !== undefined) int(a[k], "accountant_package." + k);
     if (a.parts !== undefined) rows(a.parts, "accountant_package.parts", (r, p) => { str(r.name, p + ".name"); bool(r.ready, p + ".ready"); });
+    if (a.prev_month !== undefined && obj(a.prev_month, "accountant_package.prev_month")) { int(a.prev_month.parts_ready, "accountant_package.prev_month.parts_ready"); int(a.prev_month.items_to_check, "accountant_package.prev_month.items_to_check"); }
+    if (a.status !== undefined && obj(a.status, "accountant_package.status")) { bool(a.status.send_blocked, "accountant_package.status.send_blocked"); if (a.status.reason !== undefined && !isStr(a.status.reason)) err("accountant_package.status.reason", "must be text"); }
   }
 
   if (feed.rates !== undefined) rows(feed.rates, "rates", (r, p) => { oneOf(r.currency, CURRENCIES, p + ".currency"); num(r.rate, p + ".rate"); date(r.date, p + ".date"); });
@@ -172,7 +174,7 @@ function validateFeed(feed) {
   if (feed.cash_flow_60d !== undefined && obj(feed.cash_flow_60d, "cash_flow_60d")) {
     const c = feed.cash_flow_60d;
     if (c.days !== undefined) rows(c.days, "cash_flow_60d.days", (r, p) => { date(r.date, p + ".date"); num(r.balance_nis_projected, p + ".balance_nis_projected"); num(r.in, p + ".in"); num(r.out, p + ".out"); });
-    if (c.expected !== undefined) rows(c.expected, "cash_flow_60d.expected", (r, p) => { date(r.date, p + ".date"); str(r.kind, p + ".kind"); money(r.money, p + ".money"); });
+    if (c.expected !== undefined) rows(c.expected, "cash_flow_60d.expected", (r, p) => { date(r.date, p + ".date"); str(r.kind, p + ".kind"); if (r.direction !== undefined) oneOf(r.direction, ["in", "out"], p + ".direction"); money(r.money, p + ".money"); });
   }
 
   if (full) errors.push("(more problems not listed)");

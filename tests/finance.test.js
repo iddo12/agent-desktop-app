@@ -445,7 +445,7 @@ t("ipc: open-folder takes only 'drop' or 'vault'; prefs keep only a known tab, a
   assert.strictEqual((await w.handlers["finance-prefs-set"](w.good, { tab: "overview" })).ok, false);
   assert.ok(fs.readFileSync(pf, "utf8").includes("vaultDir"), "corrupt file left untouched");
   assert.strictEqual((await w.handlers["finance-prefs-set"](w.good, { tab: "../evil" })).ok, false);
-  assert.deepStrictEqual(MF.TABS, ["home", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"]);
+  assert.deepStrictEqual(MF.TABS, ["home", "fcards", "finvoices", "fincome", "fexpenses", "fvat", "faccounts", "fqueue", "fpackage", "frates", "fsources", "fcash", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"]);
 });
 
 // ------------------------------------------------------------------ static guards

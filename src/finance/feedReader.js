@@ -28,12 +28,26 @@ function createFeedReader(opts) {
     if (typeof p !== "string" || !p.trim()) return { ok: false, code: "NOPATH", reason: "No finance feed file is set up. Set it in Setup (Finance feed file)." };
     const bad = unsafeReason(path.dirname(p), o.appDir);
     if (bad) { say("finance-feed refused: code=UNSAFE_FOLDER"); return { ok: false, code: "UNSAFE_FOLDER", reason: "The finance feed must sit in a private folder on this PC, not " + bad + "." }; }
-    let st;
-    try { st = fsx.lstatSync(p); } catch (e) { return { ok: false, code: e && e.code === "ENOENT" ? "MISSING" : "STAT", reason: "The finance feed file was not found." }; }
-    if (st.isSymbolicLink() || !st.isFile()) { say("finance-feed refused: code=NOT_PLAIN_FILE"); return { ok: false, code: "NOT_PLAIN_FILE", reason: "The finance feed must be a plain file (not a link)." }; }
-    if (st.size > MAX_BYTES) return { ok: false, code: "TOO_BIG", reason: "The finance feed file is too large." };
-    let text;
-    try { text = fsx.readFileSync(p, "utf8"); } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "READ")); return { ok: false, code: "READ", reason: "The finance feed file could not be read." }; }
+    // One open, then everything on the same descriptor (no check-then-use gap): the path is looked at once for a link, the descriptor is
+    // checked with fstat (regular file, same file as the path, size within the cap), read once, and fstat'ed again to catch a file that grew.
+    let fd = null, text;
+    try {
+      let lst;
+      try { lst = fsx.lstatSync(p); } catch (e) { return { ok: false, code: e && e.code === "ENOENT" ? "MISSING" : "STAT", reason: "The finance feed file was not found." }; }
+      if (lst.isSymbolicLink()) { say("finance-feed refused: code=NOT_PLAIN_FILE"); return { ok: false, code: "NOT_PLAIN_FILE", reason: "The finance feed must be a plain file (not a link)." }; }
+      try { fd = fsx.openSync(p, "r"); } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "OPEN")); return { ok: false, code: "READ", reason: "The finance feed file could not be read." }; }
+      const st = fsx.fstatSync(fd);
+      if (!st.isFile()) { say("finance-feed refused: code=NOT_PLAIN_FILE"); return { ok: false, code: "NOT_PLAIN_FILE", reason: "The finance feed must be a plain file (not a link)." }; }
+      if (lst.ino && st.ino && (lst.ino !== st.ino || lst.dev !== st.dev)) { say("finance-feed refused: code=CHANGED"); return { ok: false, code: "CHANGED", reason: "The finance feed file changed while it was being opened." }; }
+      if (st.size > MAX_BYTES) return { ok: false, code: "TOO_BIG", reason: "The finance feed file is too large." };
+      const buf = Buffer.alloc(st.size);
+      let got = 0;
+      while (got < st.size) { const k = fsx.readSync(fd, buf, got, st.size - got, got); if (!k) break; got += k; }
+      const st2 = fsx.fstatSync(fd);
+      if (got !== st.size || st2.size !== st.size || st2.size > MAX_BYTES) { say("finance-feed refused: code=CHANGED"); return { ok: false, code: "CHANGED", reason: "The finance feed file changed while it was being read. Try again." }; }
+      text = buf.toString("utf8");
+    } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "READ")); return { ok: false, code: "READ", reason: "The finance feed file could not be read." }; }
+    finally { if (fd !== null) { try { fsx.closeSync(fd); } catch (e) { /* nothing to do */ } } }
     let feed;
     try { feed = JSON.parse(text.replace(/^﻿/, "")); } catch (e) { return { ok: false, code: "PARSE", reason: "Feed invalid", firstError: "the file is not valid JSON" }; }
     const v = validateFeed(feed);

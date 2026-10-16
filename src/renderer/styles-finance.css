@@ -330,3 +330,23 @@ body.dark, html[data-theme="dark"] body {
 .mf-hchart-in { fill: var(--fin-head); }
 .mf-hchart-out { fill: none; stroke: var(--fin-head); stroke-width: 1.5; stroke-dasharray: 3 2; }
 .mf-hchart-t { font-size: 12px; fill: var(--fin-prose); }
+
+/* ---- Feed pages (v1.130.0 slice 2) ---- */
+.mf-tabs { flex-wrap: wrap; }
+.mf-page { display: flex; flex-direction: column; gap: 10px; }
+.mf-page-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+.mf-asof-line { font-size: 13px; font-weight: 600; color: var(--fin-muted); }
+.mf-linkbtn { background: none; border: 0; padding: 0; font: inherit; color: var(--fin-accent); text-decoration: underline; cursor: pointer; text-align: start; }
+.mf-linkbtn:hover, .mf-linkbtn:focus-visible { background: var(--fin-home-warn-bg); outline: none; }
+.mf-title-link { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.mf-tile-name { display: block; font-size: 13px; font-weight: 600; }
+.mf-tile-val { display: block; font-size: 22px; font-weight: 700; color: var(--fin-head); text-decoration: none; }
+button.mf-tile-val { text-decoration: underline; }
+.mf-chip-bad { background: var(--fin-out-bg); color: var(--fin-out); }
+.mf-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.mf-filter { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--fin-muted); }
+.mf-filter select { font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--fin-head); background: var(--fin-surface); color: var(--fin-head); min-width: 130px; }
+.mf-pager { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.mf-cash-line { stroke: var(--fin-head); stroke-width: 2; }
+.mf-cash-dot { fill: var(--fin-head); }
+.mf-cash-tick { stroke: var(--fin-accent); stroke-width: 2; }

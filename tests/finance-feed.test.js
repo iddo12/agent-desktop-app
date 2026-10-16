@@ -1,4 +1,4 @@
-// node tests/finance-feed.test.js - MY FINANCE feed (v1.129.0, slice 1): validator (schema v0.2), reader refusals, scope filter / Home view,
+// node tests/finance-feed.test.js - MY FINANCE feed (v1.129.0 slice 1, v1.130.0 slice 2: feed pages): validator (schema v0.2), reader refusals, scope filter / Home view,
 // the finance-feed IPC channel, the config keys, and static guards (nothing hard-coded, read-only, no figures in logs). Synthetic data only
 // (tests/fixtures/finance_feed_synthetic.json). Writes only into temp folders.
 "use strict";
@@ -122,8 +122,44 @@ t("reader: refuses a symlinked file and an oversized file", () => {
   const dir = path.join(tmp(), "feed"), p = writeFeed(dir, good()), link = path.join(dir, "link.json");
   let made = true; try { fs.symlinkSync(p, link); } catch (e) { made = false; }
   if (made) assert.strictEqual(R.createFeedReader({ getPath: () => link }).readFeed().code, "NOT_PLAIN_FILE");
-  const big = { lstatSync: () => ({ isSymbolicLink: () => false, isFile: () => true, size: R.MAX_BYTES + 1 }), readFileSync: () => { throw new Error("must not read"); } };
-  assert.strictEqual(R.createFeedReader({ getPath: () => p, fs: big }).readFeed().code, "TOO_BIG");
+  const fake = (over) => Object.assign({
+    lstatSync: () => ({ isSymbolicLink: () => false, ino: 5, dev: 1 }), openSync: () => 99, closeSync: () => { fake.closed = (fake.closed || 0) + 1; },
+    fstatSync: () => ({ isFile: () => true, size: 10, ino: 5, dev: 1 }), readSync: (fd, buf, off, len) => { buf.fill(32, off, off + len); return len; } }, over);
+  const rd = (over) => R.createFeedReader({ getPath: () => p, fs: fake(over) }).readFeed();
+  assert.strictEqual(rd({ fstatSync: () => ({ isFile: () => true, size: R.MAX_BYTES + 1, ino: 5, dev: 1 }), readSync: () => { throw new Error("must not read"); } }).code, "TOO_BIG");
+  assert.strictEqual(rd({ fstatSync: () => ({ isFile: () => false, size: 1, ino: 5, dev: 1 }) }).code, "NOT_PLAIN_FILE", "the descriptor is not a regular file (device, pipe, folder)");
+  assert.strictEqual(rd({ fstatSync: () => ({ isFile: () => true, size: 10, ino: 6, dev: 1 }) }).code, "CHANGED", "the path now points at another file than the one opened");
+  let calls = 0;
+  assert.strictEqual(rd({ fstatSync: () => ({ isFile: () => true, size: ++calls === 1 ? 10 : 11, ino: 5, dev: 1 }) }).code, "CHANGED", "the file grew while it was read");
+  assert.strictEqual(rd({ readSync: () => 0 }).code, "CHANGED", "a short read (file truncated) is refused");
+  fake.closed = 0; rd({}); rd({ fstatSync: () => ({ isFile: () => false, size: 1, ino: 5, dev: 1 }) });
+  assert.strictEqual(fake.closed, 2, "the descriptor is always closed");
+  assert.strictEqual(rd({ openSync: () => { const e = new Error("x"); e.code = "EACCES"; throw e; } }).code, "READ");
+  // a real file is read through one descriptor and still works
+  const real = R.createFeedReader({ getPath: () => p }).readFeed(); assert.strictEqual(real.ok, true);
+});
+
+t("validator: a malicious string in a numeric/text field never reaches the first error (path + rule only)", () => {
+  const evil = "<img src=x onerror=alert(1)>";
+  for (const mut of [(f) => { f.balances[0].amount = evil; }, (f) => { f.nis_total.all.nis = evil; }, (f) => { f.balances[0].currency = evil; }, (f) => { f.generated_at = evil; }, (f) => { f.periods[0].id = evil; }, (f) => { f.sources[0].kind = evil; }, (f) => { f.feed_version = evil; }, (f) => { f.invoices.rows[0].status = evil; }]) {
+    const f = good(); mut(f); const r = V.validateFeed(f); assert.strictEqual(r.ok, false);
+    for (const e of r.errors) assert.ok(!/img|onerror|alert|<|>/.test(e), "value leaked: " + e);
+  }
+  const dir = path.join(tmp(), "feed"); const f = good(); f.balances[0].amount = evil;
+  const r = R.createFeedReader({ getPath: () => writeFeed(dir, f), appDir: path.join(tmp(), "app") }).readFeed();
+  assert.strictEqual(r.code, "SCHEMA"); assert.ok(/^balances\[0\]\.amount: must be a finite number$/.test(r.firstError), r.firstError);
+  const w = world(writeFeed(path.join(tmp(), "e"), f)); return w.handlers["finance-feed"](w.good, { scope: "all" }).then((x) => { assert.ok(!JSON.stringify(x).match(/img|onerror/), "nothing from the value in the IPC answer"); });
+});
+t("main window: https links open in the OS browser, every window.open is denied, navigation away from the app page is cancelled (src/main.js)", () => {
+  const m = fs.readFileSync(path.join(SRC, "main.js"), "utf8");
+  const i = m.indexOf("setWindowOpenHandler(");
+  assert.ok(i > 0, "a window-open handler exists");
+  const blk = m.slice(i, i + 260);
+  assert.ok(blk.includes("https?:") && /shell\.openExternal\(url\)/.test(blk) && /action: "deny"/.test(blk), "https opens externally, the new window is always denied");
+  assert.ok(/on\("will-navigate", \(event, url\) => \{ if \(url !== ownUrl\(\)\) event\.preventDefault\(\); \}\)/.test(m), "will-navigate cancels anything but the app page");
+  assert.ok(/on\("will-redirect", \(event, url\) => \{ if \(url !== ownUrl\(\)\) event\.preventDefault\(\); \}\)/.test(m), "will-redirect too");
+  const js = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8");
+  assert.ok(/a\.target = "_blank"/.test(js), "the Home link relies on that handler");
 });
 
 // ------------------------------------------------------------------ scope filter and Home view
@@ -208,6 +244,104 @@ t("ipc: logs carry channel names and codes only - no figures, names or paths", a
   for (const l of all) { assert.ok(/^finance-feed (refused: (not the main window|code=[A-Z_]+)|invalid: code=[A-Z]+|read failed: code=[A-Za-z0-9_]+)$/.test(l), "log format: " + l); assert.ok(!/12345|Secret|secret|Dropbox|\\/.test(l), "no data in: " + l); }
 });
 
+// ------------------------------------------------------------------ slice 2: feed pages (v1.130.0)
+const FP = require("../src/finance/feedPages");
+const PG = (page, scope, o) => FP.pageView(good(), page, scope, Object.assign({ today: "2026-10-16" }, o || {}));
+t("pages: every page exists, carries scope/synthetic/as_of, and unknown pages are null", () => {
+  assert.deepStrictEqual(FP.PAGES.slice().sort(), ["accounts", "cards", "cash", "expenses", "income", "invoices", "package", "queue", "rates", "sources", "vat"]);
+  for (const p of FP.PAGES) for (const s of ["business", "personal", "all"]) {
+    const v = PG(p, s); assert.ok(v, p); assert.strictEqual(v.page, p); assert.strictEqual(v.scope, s); assert.strictEqual(v.synthetic, true);
+    if (!v.empty && !(p === "vat" && !v.periods.length)) assert.ok(typeof v.as_of === "string" || v.as_of === null, p + " has an as_of");
+    JSON.stringify(v);   // plain data only
+  }
+  assert.strictEqual(FP.pageView(good(), "nope", "all", {}), null);
+  assert.strictEqual(PG("cards", "evil").scope, "all");
+});
+t("pages: credit cards - cycle, due date, receipt matched/missing, original + NIS, instalments, scope", () => {
+  const b = PG("cards", "business"), p = PG("cards", "personal"), a = PG("cards", "all");
+  assert.strictEqual(b.cards.length, 1); assert.strictEqual(p.cards.length, 1); assert.strictEqual(a.cards.length, 2);
+  const c = b.cards[0]; assert.deepStrictEqual(c.cycle, { start: "2026-10-03", end: "2026-11-02" }); assert.strictEqual(c.due_date, "2026-11-02"); assert.strictEqual(c.due.nis, 2310); assert.strictEqual(c.due.as_of, "2026-10-12");
+  assert.strictEqual(c.missing, 1); assert.strictEqual(c.charges.length, 4); assert.strictEqual(c.charges_total, 4);
+  const usd = c.charges.find((x) => x.cur === "USD"); assert.deepStrictEqual([usd.amt, usd.nis], [29, 106]); assert.ok(["matched", "missing"].includes(usd.receipt));
+  assert.deepStrictEqual(c.instalments, [{ category: "Equipment", n: 5, of: 12, left: 7, nis: 560 }]);
+  assert.strictEqual(c.charges[0].date >= c.charges[1].date, true, "newest first");
+  assert.strictEqual(p.cards[0].instalments[0].left, 4);
+});
+t("pages: invoices - summary, status filter, paging, scope", () => {
+  const a = PG("invoices", "all");
+  assert.deepStrictEqual([a.summary.unpaid.count, a.summary.unpaid.nis, a.summary.overdue.count, a.summary.overdue.nis, a.summary.paid.count], [4, 9600, 1, 2400, 2]);
+  assert.strictEqual(a.total, 7); assert.strictEqual(a.rows.length, 7);
+  const od = PG("invoices", "all", { filter: "overdue" }); assert.deepStrictEqual(od.rows.map((r) => r.id), ["2026-0131"]); assert.strictEqual(od.filter, "overdue");
+  assert.strictEqual(PG("invoices", "all", { filter: "weird" }).filter, null, "unknown filter ignored");
+  assert.strictEqual(PG("invoices", "personal").total, 0); assert.strictEqual(PG("invoices", "personal").summary.unpaid.count, 0);
+  const pg = PG("invoices", "all", { offset: 5 }); assert.strictEqual(pg.rows.length, 2); assert.strictEqual(pg.offset, 5);
+  assert.ok(a.rows.every((r) => r.cur && typeof r.nis === "number"));
+});
+t("pages: income / expenses / vat", () => {
+  const i = PG("income", "business");
+  assert.strictEqual(i.total, 3640 + 6000 + 7280 + 5319); assert.strictEqual(i.by_client[0].month, "2026-10"); assert.ok(i.by_client.every((r) => r.share >= 0 && r.share <= 100));
+  assert.deepStrictEqual(i.by_currency.map((r) => r.currency).sort(), ["EUR", "ILS", "USD"]);
+  assert.deepStrictEqual(i.expected_vs_received.map((r) => [r.period, r.expected, r.received]), [["2026-10", 31200, 24100], ["2026-09", 28900, 28900]]);
+  assert.strictEqual(PG("income", "personal").total, 900);
+  const e = PG("expenses", "business"); assert.strictEqual(e.period, "2026-10"); assert.strictEqual(e.previous, "2026-09");
+  const eq = e.categories.find((c) => c.category === "Equipment"); assert.deepStrictEqual([eq.this, eq.last, eq.change], [7900, 5200, 52]);
+  assert.strictEqual(e.total.this, 7900 + 3400 + 4100 + 2700 + 1200); assert.strictEqual(PG("expenses", "personal").categories[0].change, null, "no previous period: no percentage");
+  const v = PG("vat", "business"); assert.strictEqual(v.periods.length, 2); assert.strictEqual(v.periods[0].period, "2026-10"); assert.strictEqual(v.periods[0].to_check, 3);
+  assert.deepStrictEqual(PG("vat", "personal").periods, []);
+});
+t("pages: accounts and transactions - match filter, paging (50), masked rows, scope", () => {
+  const a = PG("accounts", "all");
+  assert.strictEqual(a.transactions.length, 50); assert.strictEqual(a.total, 120); assert.strictEqual(a.limit, 50);
+  assert.strictEqual(a.counts.matched + a.counts.unmatched + a.counts.needs_check, 120);
+  const u = PG("accounts", "all", { filter: "unmatched" }); assert.strictEqual(u.total, a.counts.unmatched); assert.ok(u.transactions.every((x) => x.match === "unmatched"));
+  const last = PG("accounts", "all", { offset: 100 }); assert.strictEqual(last.transactions.length, 20);
+  assert.ok(Object.keys(a.transactions[0]).sort().join() === "amt,category,cur,date,match,nis,source,tag", "only masked fields: " + Object.keys(a.transactions[0]));
+  const pe = PG("accounts", "personal"); assert.strictEqual(pe.balances.length, 1); assert.strictEqual(pe.total_nis, -4980); assert.strictEqual(pe.total, 30);
+  assert.strictEqual(PG("accounts", "business").balances.length, 5);
+  const bad = PG("accounts", "all", { offset: -4 }); assert.strictEqual(bad.offset, 0);
+});
+t("pages: needs you, accountant package (blocked, no send), rates, sources, cash flow", () => {
+  const q = PG("queue", "all"); assert.strictEqual(q.count, 3); assert.strictEqual(q.items[0].age_days, 14, "oldest first"); assert.strictEqual(q.items[0].source, "Card B (business)"); assert.strictEqual(PG("queue", "personal").count, 1);
+  const k = PG("package", "personal"); assert.deepStrictEqual([k.parts_ready, k.parts_total, k.items_to_check, k.send_blocked, k.reason, k.days_left, k.all_scopes], [4, 5, 3, true, "3 items to check", 15, true]);
+  assert.deepStrictEqual(k.prev_month, { parts_ready: 3, items_to_check: 5 }); assert.strictEqual(k.parts.filter((p) => !p.ready).length, 1);
+  const noStatus = good(); delete noStatus.accountant_package.status; assert.strictEqual(FP.pageView(noStatus, "package", "all", { today: "2026-10-16" }).send_blocked, true, "no status = blocked");
+  const r = PG("rates", "business"); assert.deepStrictEqual(r.rates.map((x) => x.currency), ["USD", "EUR"]); assert.strictEqual(r.period_end.find((x) => x.currency === "USD").period, "2026-09"); assert.strictEqual(r.source_name, "Bank of Israel");
+  assert.deepStrictEqual(r.holdings.map((h) => h.currency), ["ILS", "USD"]); assert.ok(PG("rates", "all").holdings.length >= 2);
+  const s = PG("sources", "all"); assert.strictEqual(s.sources.length, 7); assert.strictEqual(s.sources.find((x) => x.id === "bank_a_usd").fresh, false); assert.strictEqual(s.sources.find((x) => x.id === "card_b").manual, true);
+  assert.strictEqual(s.last_full_refresh, "2026-10-07"); assert.strictEqual(s.next_due, "2026-10-14"); assert.strictEqual(s.next_due_overdue, true);
+  const c = PG("cash", "all"); assert.strictEqual(c.days.length, 60); assert.strictEqual(c.expected.length, 4); assert.ok(c.min <= c.now && c.min <= c.end); assert.strictEqual(c.expected[2].direction, "in");
+  assert.strictEqual(PG("cash", "personal").days.length, 60, "the projection covers all accounts");
+  const none = good(); delete none.cash_flow_60d; assert.strictEqual(FP.pageView(none, "cash", "all", {}).empty, true);
+});
+t("pages: payloads stay small and scope-filtered", () => {
+  for (const p of FP.PAGES) assert.ok(JSON.stringify(PG(p, "all")).length < 30000, p + " payload " + JSON.stringify(PG(p, "all")).length);
+  const f = good(); f.transactions = Array.from({ length: 5000 }, () => good().transactions[0]);
+  assert.ok(JSON.stringify(FP.pageView(f, "accounts", "all", { today: "2026-10-16" })).length < 30000, "5000 transactions still give one page");
+  const personal = JSON.stringify(PG("cards", "personal")) + JSON.stringify(PG("invoices", "personal")) + JSON.stringify(PG("income", "personal")) + JSON.stringify(PG("expenses", "personal"));
+  assert.ok(!/Card B|Client A|Client B|Equipment/.test(personal), "a personal view carries no business rows");
+});
+t("ipc: finance-feed page argument - allow-listed page, integer offset, filter; bad page refused", async () => {
+  const w = world(writeFeed(path.join(tmp(), "pg"), good()));
+  const r = await w.handlers["finance-feed"](w.good, { scope: "business", page: "invoices", offset: 0, filter: "overdue" });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.page.page, "invoices"); assert.strictEqual(r.page.total, 1); assert.ok(!("view" in r));
+  assert.strictEqual((await w.handlers["finance-feed"](w.good, { scope: "all", page: "accounts", offset: 50 })).page.offset, 50);
+  assert.strictEqual((await w.handlers["finance-feed"](w.good, { scope: "all", page: "accounts", offset: "50" })).page.offset, 0, "a non-integer offset is ignored");
+  for (const bad of ["../x", "home2", 5, {}, "__proto__"]) assert.strictEqual((await w.handlers["finance-feed"](w.good, { scope: "all", page: bad })).ok, false, String(bad));
+  assert.strictEqual((await w.handlers["finance-feed"](w.good, { scope: "all", page: null })).view.scope, "all", "no page = Home");
+  assert.strictEqual((await w.handlers["finance-feed"](w.good, { scope: "all", page: "cards", filter: "x".repeat(3000) })).ok, false);
+});
+t("guards: finance-pages.js - read-only (no send/pay/save button), text only, no network or storage, every page and the home links exist", () => {
+  const js = fs.readFileSync(path.join(SRC, "renderer", "finance-pages.js"), "utf8"), fin = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8"), nav = fs.readFileSync(path.join(SRC, "renderer", "finance-nav.js"), "utf8");
+  const code = strip(js);
+  for (const re of [/innerHTML|insertAdjacentHTML/, /\bfetch\s*\(|XMLHttpRequest|WebSocket/, /localStorage|sessionStorage|indexedDB|clipboard/i, /\beval\s*\(|new Function/, /console\./, /password|passwd|token|apikey|credential/i, /https?:\/\//, /btn\("(Send|Pay|Approve|Submit|Save|Delete)/i]) assert.ok(!re.test(code), "finance-pages.js matches " + re);
+  assert.ok(!/ipcRenderer|window\.api/.test(code), "the pages module never calls the app itself");
+  for (const id of ["fcards", "finvoices", "fincome", "fexpenses", "fvat", "faccounts", "fqueue", "fpackage", "frates", "fsources", "fcash"]) { assert.ok(new RegExp(id + ": ").test(js), "page " + id); assert.ok(fin.includes('id: "' + id + '"'), "tab " + id); }
+  for (const link of ['"faccounts"', '"fincome"', '"fvat"', '"finvoices"', '"fqueue"', '"fsources"', '"fcards"']) assert.ok(fin.includes("goLink(") && fin.includes(link), "home links to " + link);
+  assert.ok(/blocked|Sending is blocked/.test(js) && /nothing can be sent from here/.test(js));
+  assert.ok(/finance-pages\.js/.test(nav) && /load\("finance-pages\.js", view, view\)/.test(nav), "the pages module loads before finance.js");
+  assert.ok(/Data as of/.test(js) && /\.mf-linkbtn/.test(fs.readFileSync(path.join(SRC, "renderer", "styles-finance.css"), "utf8")));
+});
+
 // ------------------------------------------------------------------ config keys
 t("config: financeFeedPath resolves env > file > default under the work folder; nothing is hard-coded to a PC", () => {
   const ud = tmp(), env = {};
@@ -234,7 +368,8 @@ t("guards: no hard-coded path/drive/name in the feed code; read-only (no write/d
     const s = strip(fs.readFileSync(path.join(SRC, "finance", f), "utf8"));
     assert.ok(!/[A-Za-z]:\\\\|[A-Za-z]:\//.test(s.replace(/https?:\/\/[^"'\s]*/g, "")), f + " has a drive path");
     assert.ok(!/E:\\|D:\\|Dropbox\\|Claude work|C:\\Users|Iddo|Merav|Accounting|lensvid/i.test(s.replace(/CLOUD_SEGMENTS[\s\S]*$/, "")), f + " names this PC or a person");
-    assert.ok(!/writeFile|appendFile|unlink|rename|rmSync|mkdirSync|copyFile|createWriteStream|openSync|chmod/.test(s), f + " is not read-only");
+    assert.ok(!/writeFile|appendFile|unlink|rename|rmSync|mkdirSync|copyFile|createWriteStream|chmod/.test(s), f + " is not read-only");
+    assert.ok((s.match(/openSync\(/g) || []).every(() => true) && !/openSync\([^)]*["'](w|a|r\+|wx|ax)["']/.test(s), f + " opens for writing");
     assert.ok(!/require\(["'](https?|net|tls|dgram|dns|child_process)["']\)|\bfetch\s*\(|XMLHttpRequest|console\./.test(s), f + " touches the network / console");
   }
   const main = fs.readFileSync(path.join(SRC, "finance", "main-finance.js"), "utf8");
@@ -245,7 +380,7 @@ t("guards: no hard-coded path/drive/name in the feed code; read-only (no write/d
 t("guards: renderer - textContent only, no path sent, https-only links, scope toggle, SYNTHETIC badge, Feed invalid, 7-day marks, stylesheet tokens", () => {
   const js = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8"), css = fs.readFileSync(path.join(SRC, "renderer", "styles-finance.css"), "utf8");
   const pre = fs.readFileSync(path.join(SRC, "preload.js"), "utf8");
-  assert.ok(/feed: \(scope\) => ipcRenderer\.invoke\("finance-feed", \{ scope \}\)/.test(pre), "the renderer sends the scope string only");
+  assert.ok(/feed: \(scope, page, offset, filter\) => ipcRenderer\.invoke\("finance-feed", \{ scope, page, offset, filter \}\)/.test(pre), "the renderer sends the scope string only");
   assert.ok(!/innerHTML|insertAdjacentHTML/.test(js));
   for (const w of ["SYNTHETIC DATA", "Feed invalid.", "Get fresh data", "Business", "Personal", "Needs you", "Balances now", "Total in NIS", "Updated ", "Not updated "]) assert.ok(js.includes(w), "Home shows: " + w);
   assert.ok(/\/\^https:\\\/\\\//.test(js), "the login link is shown only when it is https");

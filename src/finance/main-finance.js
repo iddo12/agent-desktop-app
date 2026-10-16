@@ -6,7 +6,7 @@
 const path = require("path");
 const fs = require("fs");
 const MAX_ARG_CHARS = 1024;
-const TABS = ["home", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"];
+const TABS = ["home", "fcards", "finvoices", "fincome", "fexpenses", "fvat", "faccounts", "fqueue", "fpackage", "frates", "fsources", "fcash", "overview", "accounts", "transactions", "categories", "receipts", "import", "accountant"];
 
 function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, env, openPath, feedConfig, today }) {
   const say = typeof log === "function" ? log : () => {};
@@ -50,12 +50,18 @@ function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, en
   handle("finance-feed", (a) => {
     const FR = require("./feedReader");
     const scope = a && typeof a.scope === "string" && FR.SCOPES.includes(a.scope) ? a.scope : "all";
+    const FP = require("./feedPages");
+    const page = a && typeof a.page === "string" && FP.PAGES.includes(a.page) ? a.page : null;
+    if (a && a.page !== undefined && a.page !== null && !page) return { ok: false, reason: "Bad request." };
+    const offset = a && Number.isInteger(a.offset) && a.offset >= 0 && a.offset <= 100000 ? a.offset : 0;
+    const filter = a && typeof a.filter === "string" ? a.filter : null;
     const r = feedReader().readFeed();
     if (!r.ok) return { ok: false, code: r.code, reason: r.reason, firstError: r.firstError || null };
     const t = typeof today === "function" ? today() : null;
     const d = new Date();
     const local = t || d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     let links = null; try { links = FR.parseLoginLinks(fc.links()); } catch (e) { links = null; }
+    if (page) return { ok: true, page: FP.pageView(r.feed, page, scope, { today: local, loginLinks: links || undefined, offset, filter }) };
     return { ok: true, view: FR.homeView(r.feed, scope, { today: local, loginLinks: links || undefined }) };
   });
   handle("finance-transactions", (a) => service().transactions(a));
