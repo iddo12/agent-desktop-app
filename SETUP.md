@@ -108,7 +108,7 @@ OFF by default and cannot be turned on by an agent: it edits the person's own Cl
 Needs: telegramTasksDir, telegramBridgeDir, pythonExe
 telegramTasksDir = folder of the bridge's task .json files; telegramBridgeDir = folder with its tasks.py; pythonExe auto-detected.
 
-### tools - Tools
+### tools - My Tools
 Needs: toolsCatalogue
 toolsCatalogue = tools.json (default <sharedTools>/tools/tools.json); toolsAllowedRoots lists folders launchers may live in; toolsBasketLabel (optional text) = heading of the first group (basket "acmeco" in tools.json), default "Tools".
 

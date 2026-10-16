@@ -10,10 +10,10 @@
   nav.type = "button";
   nav.className = "tools-nav";
   nav.dataset.systemNav = "tools";             // the left pane turns an entry with this attribute into the Tools tile
-  nav.title = "Tools - the things we built: start them, see their state and releases.";
+  nav.title = "My Tools - the things we built: start them, see their state and releases.";
   const name = document.createElement("span");
   name.className = "tools-nav-name";
-  name.textContent = "Tools";
+  name.textContent = "My Tools";
   nav.appendChild(name);
   agentList.parentNode.insertBefore(nav, document.getElementById("library-nav") || agentList);
 

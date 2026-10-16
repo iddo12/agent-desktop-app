@@ -17,7 +17,7 @@
   // ================================================================ NAMED RENDER FUNCTIONS (restyle here / in the css)
   function renderHeader(S) {
     const head = el("div", "tl-head");
-    head.append(el("b", "tl-title", "Tools"), el("span", "tl-sub", S.snap && S.snap.ok ? S.snap.count + " tools" : ""), el("span", "tl-sp"));
+    head.append(el("b", "tl-title", "My Tools"), el("span", "tl-sub", S.snap && S.snap.ok ? S.snap.count + " tools" : ""), el("span", "tl-sp"));
     const st = S.snap && S.snap.stats;
     if (st) {
       const asOf = st.asOf ? "GitHub stats as of " + when(st.asOf) : "GitHub stats not fetched yet";
