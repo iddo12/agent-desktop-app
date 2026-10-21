@@ -100,7 +100,7 @@ const FEATURES = [
     agentHelp: "telegramTasksDir = folder of the bridge's task .json files; telegramBridgeDir = folder with its tasks.py; pythonExe auto-detected.",
   },
   {
-    id: "tools", group: "daily", title: "Tools", tileId: "tools", wired: true, requires: ["toolsCatalogue"],
+    id: "tools", group: "daily", title: "My Tools", tileId: "tools", wired: true, requires: ["toolsCatalogue"],
     steps: [step("toolsCatalogue", "file", "Tools catalogue (tools.json)", "The list of tools to show.")],
     help: "A catalogue of the tools you built or use, with launch buttons.",
     agentHelp: "toolsCatalogue = tools.json (default <sharedTools>/tools/tools.json); toolsAllowedRoots lists folders launchers may live in; toolsBasketLabel (optional text) = heading of the first group (basket \"acmeco\" in tools.json), default \"Tools\".",

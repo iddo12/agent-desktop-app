@@ -34,7 +34,7 @@
     { id: "health", label: "Health" },
     { id: "tasks", label: "Tasks" },
     { id: "reviews", label: "Reviews" },
-    { id: "tools", label: "Tools" },
+    { id: "tools", label: "My Tools" },
   ];
 
   // The run-state legend shown as a hover tip on the state square. Same wording as the legend header-tasks.js draws under
