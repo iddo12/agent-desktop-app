@@ -249,6 +249,7 @@
     var ta = el("textarea", "wq-ta"); ta.dataset.key = it.key; wantPrediction(it);
     var sc = suggChip(it.key, ta); if (sc && predictions[it.key].status === it.status) box.appendChild(sc); ta.rows = 2; ta.placeholder = th.length ? "Reply, or press Send & done if it is settled..." : "Type an answer, or ask the agent a question back..."; ta.setAttribute("aria-label", "Answer to " + it.name);
     ta.addEventListener("keydown", function (e) { if (e.key === "Tab" && !e.shiftKey && !ta.value && predictions[it.key] && predictions[it.key].status === it.status) { e.preventDefault(); ta.value = predictions[it.key].text; var sg = box.querySelector(".wq-sugg"); if (sg) sg.remove(); return; } if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(it, ta.value, false); } });
+    if (failedText[it.key]) { ta.value = failedText[it.key]; delete failedText[it.key]; var sg0 = box.querySelector(".wq-sugg"); if (sg0) sg0.remove(); }
     box.appendChild(ta);
     var row = el("div", "wq-actions");
     var skip = el("button", "wq-btn", "Skip"); skip.type = "button"; skip.addEventListener("click", function () { cur = (cur + 1) % Math.max(1, list.length); refresh(); });
@@ -283,10 +284,14 @@
     var b = el("button", "wq-sugg", "Suggested: " + p.text); b.type = "button"; b.title = "Click, or press Tab in the empty box, to put this in the answer box (it is not sent)";
     b.addEventListener("click", function () { ta.value = p.text; ta.focus(); b.remove(); }); return b;
   }
+  var failedText = {};   // key -> text of a Send & done that failed, put back into the answer box when the card returns
   function doneQ(it) {   // the registered question is answered: move its file to answered\ and drop it from the list now
     if (!it.qid) return;
     registered = registered.filter(function (q) { return q.id !== it.qid; });
-    try { window.api.resolveOpenQuestion(it.qid); } catch (e) { /* the file stays; it will show again */ }
+    // v1.134.x: the result used to be ignored, so a rename that failed left the question to reappear with no explanation
+    Promise.resolve().then(function () { return window.api.resolveOpenQuestion(it.qid); }).then(function (ok) {
+      if (ok === false) toast("Sent, but could not mark the question answered (it may come back): " + it.qid);
+    }).catch(function () { toast("Sent, but could not mark the question answered (it may come back): " + it.qid); });
   }
   function send(it, text, keep) {
     text = String(text || "").trim();
@@ -295,7 +300,7 @@
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });
       document.querySelectorAll(".wq-ta").forEach(function (t) { if (t.dataset.key === it.key) t.value = ""; });   // sent: do not restore it as a draft
       if (keep) { watch(it); toast("Sent to " + firstName(it.name) + ". Its reply will appear here."); refresh(); }
-      else { dismissed[it.key] = it.status; doneQ(it); toast("Sent. " + firstName(it.name) + " leaves the queue."); if (cur > 0) cur--; refresh(); }
+      else { dismissed[it.key] = it.status; doneQ(it); toast("Sent. " + firstName(it.name) + " leaves the queue."); refresh(); }   // the card already closed in send()
     };
     if (demoMode || !it.path || !window.queueSendToAgent) {            // sandbox / sample items: nothing is delivered
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });
@@ -303,9 +308,17 @@
       else { dismissed[it.key] = it.status; toast("Demo: this is NOT sent in the sandbox. " + firstName(it.name) + " leaves the queue."); if (cur > 0) cur--; refresh(); }
       return;
     }
+    // Send & done closes the card at once (v1.134.x): delivery to a busy or hung agent can take a long time and the card used to
+    // wait for it, so the button looked dead. On failure the card comes back with the typed text restored.
+    var instant = !keep;
+    if (instant) { dismissed[it.key] = it.status; if (cur > 0) cur--; toast("Sending to " + firstName(it.name) + "..."); refresh(); }
+    var failed = function (msg) {
+      if (instant) { delete dismissed[it.key]; failedText[it.key] = text; refresh(); }
+      toast("Could not send to " + firstName(it.name) + ": " + msg + ". Nothing was sent.");
+    };
     window.queueSendToAgent(it.path, text).then(function (r) {
-      if (r && r.ok) finish(); else toast("Could not send to " + firstName(it.name) + ": " + ((r && r.error) || "unknown error") + ". Nothing was sent.");
-    }).catch(function (e) { toast("Could not send: " + (e && e.message || e)); });
+      if (r && r.ok) finish(); else failed((r && r.error) || "unknown error");
+    }).catch(function (e) { failed(e && e.message || e); });
   }
 
   // ---- the panel (style D; A, B, C only in the sandbox demo) ----
