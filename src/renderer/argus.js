@@ -752,7 +752,7 @@
     return f.use ? "skill/plugin: " + String(f.use).replace(/_/g, " ") : "skill/plugin";
   }
 
-  // Skill/plugin items: how it helps, where it plugs in, score; Iddo's three choices (Install it / Park / Don't install) plus Ask a question (the Discuss button).
+  // Skill/plugin items: how it helps, where it plugs in, score; the owner's three choices (Install it / Park / Don't install) plus Ask a question (the Discuss button).
   function skillPluginExtras(host, f, week) {
     if (!skillPluginTag(f)) return;
     if (f.how_it_helps) host.appendChild(el("div", "argus-item-detail", "How it helps: " + f.how_it_helps));
