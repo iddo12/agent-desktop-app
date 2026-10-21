@@ -5,3 +5,20 @@
 #agent-list .agent-item.xp-stuck { box-shadow: inset 4px 0 0 0 var(--needs-blocked, #b6342f); background: var(--needs-blocked-bg, #f8ece8); }
 #chat-thinking-indicator.stuck-failing { color: #fff; background: var(--needs-blocked, #b6342f); font-weight: 700; padding: 4px 10px; border-radius: 6px; animation: none; }
 #chat-thinking-indicator.dup-copies { color: var(--health-warning, #b45309); font-weight: 700; animation: none; }
+/* v1.135.0 "Close a copy" button + dialog */
+.dup-close-btn { display: block; margin-top: 3px; padding: 2px 8px; font-size: 0.7rem; font-weight: 700; border: 1px solid var(--health-warning, #b45309); background: transparent; color: var(--health-warning, #b45309); border-radius: 4px; cursor: pointer; }
+.dup-close-btn:hover { background: var(--health-warning, #b45309); color: #fff; }
+#chat-thinking-indicator.dup-copies { cursor: pointer; text-decoration: underline dotted; }
+.dup-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100000; display: flex; align-items: center; justify-content: center; }
+.dup-dialog { background: var(--bg-panel, #fff); color: var(--text, #222); border: 1px solid var(--border, #999); border-radius: 8px; padding: 16px 18px; width: min(760px, 92vw); max-height: 86vh; overflow: auto; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.dup-title { margin: 0 0 6px; }
+.dup-intro { margin: 0 0 10px; font-size: .85rem; opacity: .85; }
+.dup-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+.dup-row.keep { border-color: #2e7d32; background: rgba(46,125,50,.10); }
+.dup-row-head { font-weight: 700; font-size: .85rem; }
+.dup-row-prev { font-size: .8rem; opacity: .8; margin-top: 2px; word-break: break-word; }
+.dup-msg { min-height: 1.3em; margin: 8px 0; font-size: .85rem; font-weight: 600; }
+.dup-btns { display: flex; gap: 8px; justify-content: flex-end; }
+.dup-btns button { padding: 5px 12px; border-radius: 5px; border: 1px solid #888; cursor: pointer; }
+.dup-btns .dup-go { background: #b6342f; color: #fff; border-color: #b6342f; font-weight: 700; }
+.dup-btns .dup-go:disabled { opacity: .45; cursor: default; }

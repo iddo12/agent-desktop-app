@@ -196,6 +196,9 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("stuck-state", (event, payload) => callback(payload));
   },
   getStuckStates: () => ipcRenderer.invoke("get-stuck-states"),
+  // v1.135.0 close a duplicate live copy (src/duplicateCopies.js)
+  getDuplicateCopies: (agentPath) => ipcRenderer.invoke("get-duplicate-copies", agentPath),
+  closeDuplicateCopies: (agentPath, keepId, closeIds, confirmBusy) => ipcRenderer.invoke("close-duplicate-copies", { agentPath, keepId, closeIds, confirmBusy }),
   // v1.69.0 Keep going (see src/keepGoing.js)
   keepGoingGet: () => ipcRenderer.invoke("keepgoing-get"),
   keepGoingSet: (agentPath, enabled) => ipcRenderer.invoke("keepgoing-set", { agentPath, enabled }),

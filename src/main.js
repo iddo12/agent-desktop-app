@@ -2550,13 +2550,40 @@ ipcMain.handle("trust-agent-folders", async (event, { agentPaths } = {}) => {
 // never touched - two real conversations are logged for a human instead.
 // Skips a folder dispatched within the grace window (its new copy may not
 // have written its first line yet).
+// v1.135.0: duplicates WITH conversations can now be closed from the banner ("Close this copy", see the duplicate-copies IPC handlers below)
+// and the OLD idle copy left behind by a planned handoff reset is closed automatically (src/duplicateCopies.js has the rules). Both paths stop
+// a copy through stopClaudeAgent() - the same stop path the empty-duplicate cleanup uses - never by killing a process.
+const dupCopies = require("./duplicateCopies");
+// Sandbox only: with userDataake-agent-copies.json present, the live-copy list and the stop come from that file, so duplicate-copy handling
+// can be exercised without spending quota or touching any real session. Never active outside TEST_MODE.
+function fakeCopiesFile() { return testMode.TEST_MODE ? path.join(app.getPath("userData"), "fake-agent-copies.json") : null; }
+function readFakeCopies() {
+  const f = fakeCopiesFile();
+  if (!f || !fs.existsSync(f)) return null;
+  try { const j = JSON.parse(fs.readFileSync(f, "utf-8").replace(/^﻿/, "")); return Array.isArray(j) ? j : []; } catch (e) { return []; }
+}
+async function listLiveCopies(shell, spawnEnv, sessionCwd, opts = {}) {
+  const fake = readFakeCopies();
+  const all = fake || (await listBackgroundAgents(shell, spawnEnv, opts));
+  const target = path.resolve(sessionCwd);
+  return all.filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
+}
+async function stopCopy(shell, id, spawnEnv) {
+  const fake = readFakeCopies();
+  if (fake) { fs.writeFileSync(fakeCopiesFile(), JSON.stringify(fake.filter((a) => a.id !== id), null, 1)); return; }
+  return stopClaudeAgent(shell, id, spawnEnv);
+}
+function copyRows(live, sessionCwd) {
+  const projDir = path.join(app.getPath("home"), ".claude", "projects", encodeProjectPath(sessionCwd));
+  return dupCopies.describeCopies(live, (a) => dupCopies.inspectTranscript(path.join(projDir, (a.sessionId || a.id) + ".jsonl")), Date.now());
+}
+function dupConfig() { return dupCopies.readConfig(path.join(app.getPath("userData"), "duplicate-copies.json")); }
+
 async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
-  const all = await listBackgroundAgents(shell, spawnEnv);
   for (const agent of agentsToCheck) {
     const sessionCwd = sessionCwdFor(agent.path);
     if (dispatchedRecently(sessionCwd)) continue;
-    const target = path.resolve(sessionCwd);
-    const live = all.filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
+    const live = await listLiveCopies(shell, spawnEnv, sessionCwd);
     if (live.length < 2) { try { stuckEsc.setDuplicates(agent.path, agent.folderName, []); } catch (e) {} continue; }
     const projDir = path.join(app.getPath("home"), ".claude", "projects", encodeProjectPath(sessionCwd));
     const hasTranscript = (a) => {
@@ -2566,19 +2593,35 @@ async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
         return false;
       }
     };
-    const real = live.filter(hasTranscript);
+    let real = live.filter(hasTranscript);
     const empty = live.filter((a) => !hasTranscript(a));
     // Keep at least one: if none has a transcript yet, keep the newest.
     if (!real.length) empty.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0)).shift();
     for (const dup of empty) {
       try {
-        await stopClaudeAgent(shell, dup.id, spawnEnv);
+        await stopCopy(shell, dup.id, spawnEnv);
         logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} had ${live.length} live copies - stopped empty duplicate ${dup.id}`);
       } catch (e) {
         logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} stop ${dup.id} failed: ${e.message}`);
       }
     }
-    try { stuckEsc.setDuplicates(agent.path, agent.folderName, real.length > 1 ? real.map((a) => a.id) : []); } catch (e) { /* surfacing only */ }
+    // v1.135.0 auto rule: an idle OLD copy next to a NEWER copy that a planned handoff resume started.
+    let copies = real.length > 1 ? copyRows(real, sessionCwd) : [];
+    const cfg = dupConfig();
+    if (cfg.autoClose && copies.length > 1) {
+      const plan = dupCopies.planAutoClose(copies, { idleMinutes: cfg.idleMinutes, now: Date.now() });
+      for (const id of plan.close) {
+        try {
+          await stopCopy(shell, id, spawnEnv);
+          logStuckWatchdog(`stopEmptyDuplicateAgents: AUTO-CLOSED old idle copy ${id} of ${agent.folderName} (${plan.reason}; kept ${plan.keep}; idle >= ${cfg.idleMinutes} min)`);
+          real = real.filter((a) => a.id !== id);
+        } catch (e) {
+          logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} auto-close ${id} failed: ${e.message}`);
+        }
+      }
+      if (plan.close.length) copies = real.length > 1 ? copyRows(real, sessionCwd) : [];
+    }
+    try { stuckEsc.setDuplicates(agent.path, agent.folderName, real.length > 1 ? real.map((a) => a.id) : [], copies); } catch (e) { /* surfacing only */ }
     if (real.length > 1) {
       logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} has ${real.length} live copies WITH conversations (${real.map((a) => a.id).join(", ")}) - left alone, needs a human`);
     }
@@ -3798,6 +3841,73 @@ const stuckEsc = stuckEscalation.create({
   },
 });
 ipcMain.handle("get-stuck-states", () => stuckEsc.getAll());
+
+// v1.135.0 "Close this copy". get-duplicate-copies = a FRESH look at every live copy of one agent (the dialog's rows);
+// close-duplicate-copies = keep one, close the others, through stopClaudeAgent() (the app's own stop path). Rules in duplicateCopies.validateClose:
+// the kept copy must be running, the last copy is never closed, a busy copy needs confirmBusy:true.
+function dupAgentRec(agentPath) {
+  const rec = listAgents().find((a) => a.path === agentPath);
+  if (!rec) throw new Error("not a listed agent");
+  return rec;
+}
+function dupSpawn() {
+  return {
+    shell: process.platform === "win32" ? resolveClaudeExecutable() : "claude",
+    spawnEnv: { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV },
+  };
+}
+ipcMain.handle("get-duplicate-copies", async (_e, agentPath) => {
+  try {
+    const rec = dupAgentRec(agentPath);
+    const { shell, spawnEnv } = dupSpawn();
+    const sessionCwd = sessionCwdFor(agentPath);
+    const live = await listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true });
+    return { ok: true, name: rec.displayName || rec.folderName, copies: copyRows(live, sessionCwd), autoClose: dupConfig() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("close-duplicate-copies", async (_e, req) => {
+  try {
+    const { agentPath, keepId, closeIds, confirmBusy } = req || {};
+    const rec = dupAgentRec(agentPath);
+    const { shell, spawnEnv } = dupSpawn();
+    const sessionCwd = sessionCwdFor(agentPath);
+    const live = await listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true });
+    const copies = copyRows(live, sessionCwd);
+    const v = dupCopies.validateClose(copies, keepId, closeIds, { confirmBusy: !!confirmBusy });
+    if (!v.ok) {
+      logStuckWatchdog(`close-duplicate-copies: ${rec.folderName} REFUSED (${v.error})`);
+      return { ok: false, needsConfirm: !!v.needsConfirm, busy: v.busy || [], error: v.error };
+    }
+    const closed = [], failed = [];
+    for (const id of v.toClose) {
+      try {
+        await stopCopy(shell, id, spawnEnv);
+        closed.push(id);
+        logStuckWatchdog(`close-duplicate-copies: ${rec.folderName} closed copy ${id} by hand (kept ${keepId}${confirmBusy ? ", busy close confirmed" : ""})`);
+      } catch (e) {
+        failed.push({ id, error: e.message });
+        logStuckWatchdog(`close-duplicate-copies: ${rec.folderName} stop ${id} FAILED: ${e.message}`);
+      }
+    }
+    const after = await listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true }).catch(() => []);
+    const rows = after.length > 1 ? copyRows(after, sessionCwd) : [];
+    try { stuckEsc.setDuplicates(agentPath, rec.folderName, after.length > 1 ? after.map((a) => a.id) : [], rows); } catch (e) { /* surfacing only */ }
+    return { ok: !failed.length, closed, failed, remaining: after.length, error: failed.length ? failed.map((f) => f.error).join("; ") : undefined };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+// Sandbox only: with fake-agent-copies.json present, run the duplicate sweep itself (the real sweep is off in test mode) so the banner and the auto rule can be seen.
+if (testMode.TEST_MODE) {
+  setInterval(() => {
+    if (!readFakeCopies()) return;
+    const { shell, spawnEnv } = dupSpawn();
+    let agents = []; try { agents = listAgents().filter((a) => !a.paused); } catch (e) { return; }
+    stopEmptyDuplicateAgents(shell, spawnEnv, agents).catch((e) => logStuckWatchdog(`fake-copies sweep failed: ${e.message}`));
+  }, 20 * 1000).unref();
+}
 
 // Closes the doomed session and starts a FRESH one (no --resume) whose first prompt points at handoff_latest.md. Same teardown order as
 // switchConversationImpl(): drop the entry first so the pty exit does not trigger an auto-reattach to the conversation being left.

@@ -131,7 +131,7 @@ function create(deps) {
     return {
       agentPath,
       stuck: st ? { since: st.since, label: stuckLabel(st.since, t), detail: st.detail(), escalatedAt: st.escalatedAt || null, freshFailed: !!st.freshFailed } : null,
-      dup: d ? { count: d.ids.length, label: d.name + " has " + d.ids.length + " live copies - needs a person", ids: d.ids } : null,
+      dup: d ? { count: d.ids.length, label: d.name + " has " + d.ids.length + " live copies - needs a person", ids: d.ids, copies: d.copies || [] } : null,
     };
   }
   const emit = (agentPath) => call(deps.emit, agentPath, snapshot(agentPath));
@@ -258,18 +258,19 @@ function create(deps) {
   }
 
   // ids = the live copies WITH conversations (empty when fine). Called by the duplicate sweep for every agent it checks.
-  function setDuplicates(agentPath, name, ids) {
+  // copies (optional, v1.135.0) = describeCopies() rows, shown by the "Close this copy" dialog.
+  function setDuplicates(agentPath, name, ids, copies) {
     const d = dups.get(agentPath);
     if (!ids || ids.length < 2) {
       dupSeen.delete(agentPath);
       if (d) { dups.delete(agentPath); log(`duplicate copies cleared for ${agentPath}`); call(deps.resolveQuestion, d.name, dupQuestion(d.name, d.ids.length)); emit(agentPath); }
       return;
     }
-    if (d) { d.ids = ids.slice(); return; }
+    if (d) { d.ids = ids.slice(); d.copies = copies || d.copies || []; return; }
     const seen = (dupSeen.get(agentPath) || 0) + 1;
     dupSeen.set(agentPath, seen);
     if (seen < 2) return; // debounce: only a second sweep in a row raises it
-    const nd = { name, ids: ids.slice(), since: now(), lastNotifyAt: now() };
+    const nd = { name, ids: ids.slice(), copies: copies || [], since: now(), lastNotifyAt: now() };
     dups.set(agentPath, nd);
     call(deps.notify, name + ": duplicate sessions", dupQuestion(name, ids.length));
     call(deps.addQuestion, name, dupQuestion(name, ids.length), "Live sessions with conversations: " + ids.join(", ") + ". Agent Desktop never stops a copy that holds a conversation.");
