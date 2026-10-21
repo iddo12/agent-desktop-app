@@ -154,7 +154,7 @@ function world() {
 }
 t("ipc: the allow-list of channels; only the main window's own frame may call; an oversized argument is refused", async () => {
   const w = world();
-  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["research-badge", "research-export", "research-idea", "research-image", "research-image-cancel", "research-load", "research-mark", "research-open", "research-prefs-get", "research-prefs-set", "research-seen", "research-seen-all", "research-thread", "research-write"]);
+  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["recs-load", "recs-write", "research-badge", "research-export", "research-idea", "research-image", "research-image-cancel", "research-load", "research-mark", "research-open", "research-prefs-get", "research-prefs-set", "research-seen", "research-seen-all", "research-thread", "research-write"]);
   assert.strictEqual((await w.handlers["research-load"](w.good, {})).ok, true);
   assert.strictEqual((await w.handlers["research-load"]({ sender: {}, senderFrame: {} })).ok, false);
   assert.strictEqual((await w.handlers["research-load"]({ sender: w.wc, senderFrame: {} })).ok, false, "a sub-frame is refused");

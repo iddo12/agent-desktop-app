@@ -109,12 +109,15 @@ function parseMasterState(text) {
   };
 }
 
-function loadAgentConfig(agentDir) {
+// strict: the caller writes the result back (updateAgent, setAgentPaused) or acts on it (isAgentPaused fails closed). A read that TIMED OUT (src/syncGuard.js, slow sync client) is not a missing
+// file: rethrow it, or a default built without the real content would overwrite agent_config.json (found in review 18 Oct 2026).
+function loadAgentConfig(agentDir, opts) {
   const cfgPath = path.join(agentDir, CONFIG_FILENAME);
   if (fs.existsSync(cfgPath)) {
     try {
       return readJsonFile(cfgPath);
     } catch (e) {
+      if (opts && opts.strict && e && e.code === "ETIMEDOUT") throw e;
       /* fall through to default */
     }
   }
@@ -137,7 +140,7 @@ function loadAgentConfig(agentDir) {
 function setAgentPaused(agentPath, paused) {
   folderLookMemo.clear();
   if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
-  const config = loadAgentConfig(agentPath);
+  const config = loadAgentConfig(agentPath, { strict: true });
   config.paused = !!paused;
   withFsRetry(() => fs.writeFileSync(path.join(agentPath, CONFIG_FILENAME), JSON.stringify(config, null, 2), "utf-8"));
   return config.paused;
@@ -303,7 +306,7 @@ function createAgent({ name, role, avatarBuffer, avatarExt }) {
 function updateAgent(agentPath, { name, role, avatarBuffer }) {
   folderLookMemo.clear();
   if (!fs.existsSync(agentPath)) throw new Error("Agent folder not found");
-  const config = loadAgentConfig(agentPath);
+  const config = loadAgentConfig(agentPath, { strict: true });
   if (name && name.trim()) config.display_name = name.trim();
   config.role = role || "";
 
@@ -338,7 +341,7 @@ function deleteAgent(agentPath) {
 function isAgentPaused(agentPath) {
   try {
     if (!fs.existsSync(agentPath)) return null;
-    return loadAgentConfig(agentPath).paused === true;
+    return loadAgentConfig(agentPath, { strict: true }).paused === true;
   } catch (e) { return null; }
 }
 

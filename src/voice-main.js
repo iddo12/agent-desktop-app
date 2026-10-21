@@ -41,7 +41,7 @@ function readEnv(name) {
 function readEnvReal(name) {
   if (process.env[name]) return process.env[name];
   try {
-    const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", name], { encoding: "utf-8", windowsHide: true });
+    const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", name], { encoding: "utf-8", windowsHide: true, timeout: 5000 });
     const m = new RegExp(name + "\\s+REG_\\w+\\s+(.+)").exec(out);
     return m ? m[1].trim() : "";
   } catch (e) {

@@ -203,13 +203,32 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
   let writer = null;
   const getWriter = () => (writer || (writer = require("./write").createWriter({
     researchDir: researchDir(), root: workspaceRoot, owner: () => cfg.get("ownerName"), log: say, now,
-    findRef: (week, agent, fid) => service().findRef(week, agent, fid),
+    findRef: (week, agent, fid) => (typeof fid === "string" && fid.startsWith("rec:") ? recsSvc().findRef(week, agent, fid) : service().findRef(week, agent, fid)),   // v1.133.0: one writer (one rate limit + duplicate check) for findings and recommendations
     resolveAgent, isRunning: isAgentRunning,
     // no delivery function (should not happen in the app): report a dry result, which classifies as "failed" with a plain reason
     deliver: typeof deliverToAgent === "function" ? deliverToAgent : () => Promise.resolve({ delivered: false, dry: true }),
     classify: typeof classifyDelivery === "function" ? classifyDelivery : null,
   })));
   handle("research-write", (a) => getWriter().write(a), MAX_WRITE_ARG_CHARS);
+  // v1.133.0 MY RECOMMENDATIONS (inside My Research): read-only async load of shared_reports recommendations + coo weekly; replies go through the one shared writer
+  let recs = null;
+  const recsSvc = () => (recs || (recs = require("../recommendations/service").createService({
+    recDir: path.join(reportsDir(), "recommendations"), cooDir: path.join(reportsDir(), "coo"), log: say })));
+  handle("recs-load", async (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    const r = await recsSvc().load({ all: !!(a && a.all) });
+    const raw = await recsSvc().replied(path.join(researchDir(), "_writes.jsonl"));
+    // the writer logs the agent FOLDER name; the digests are keyed by their file name: map folder -> file name so the Replied chip matches
+    const byFolder = new Map();
+    r.weeks.forEach((w) => w.agents.forEach((ag) => { const f = folderOf(ag.agent); if (f) byFolder.set(f, ag.agent.toLowerCase()); }));
+    r.replied = {};
+    Object.keys(raw).forEach((k) => { const p = k.split("|"); p[1] = byFolder.get(p[1]) || p[1]; r.replied[p.join("|")] = raw[k]; });
+    return r;
+  });
+  handle("recs-write", (a) => {
+    const x = a && typeof a === "object" ? a : {};
+    return getWriter().write({ week: x.week, agent: x.agent, findingId: typeof x.itemId === "string" ? "rec:" + x.itemId.slice(0, 116) : "", text: x.text });
+  }, MAX_WRITE_ARG_CHARS);
   // flushImages: called from main.js on before-quit so a fetch just before quitting keeps its index entry
   return { service, writer: getWriter, images: getImages, flushImages: () => { if (images) images.close(); } };   // sweep + write at quit
 }

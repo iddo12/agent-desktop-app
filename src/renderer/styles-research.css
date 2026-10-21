@@ -349,3 +349,8 @@ body.dark, html[data-theme="dark"] body {
 /* v1.107.0 unread: a blue "New" chip and a blue edge on cards not read yet */
 .rs-newchip { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; line-height: 18px; padding: 0 8px; border-radius: 9px; background: var(--daily-blue); color: white; }
 .rs-unread { box-shadow: inset 4px 0 0 var(--daily-blue); }
+/* v1.133.0 Findings | My Recommendations tab bar (in this sheet so it is styled before recs.js loads) */
+.rc-tabs { display: flex; gap: 8px; padding: 10px 16px 0; }
+.rc-tabs button { font: inherit; font-size: 15px; font-weight: 600; padding: 7px 16px; border-radius: 999px; border: 1.5px solid var(--rs-line); background: var(--rs-surface); color: var(--rs-text); cursor: pointer; }
+.rc-tabs button[aria-selected="true"] { background: var(--rs-accent); border-color: var(--rs-accent); color: var(--rs-on-accent); }
+.rc-tabs button:focus-visible { outline: 3px solid var(--rs-accent); outline-offset: 2px; }

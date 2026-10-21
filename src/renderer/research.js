@@ -1026,10 +1026,35 @@
     view.querySelectorAll(".rs-unread[data-fid]:not([data-dw])").forEach((n) => { n.dataset.dw = "1"; dwellIO.observe(n); });
   }
 
+  // v1.133.0 MY RECOMMENDATIONS: a second tab. recs.js and styles-recs.css load the first time the tab is opened; closing the view drops it.
+  function renderTabs() {
+    const bar = el("div", "rc-tabs"); bar.setAttribute("role", "tablist");
+    [["findings", "Findings"], ["recs", "My Recommendations"]].forEach(([id, word]) => {
+      const b = el("button", "", word); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", (S.tab || "findings") === id ? "true" : "false");
+      b.addEventListener("click", () => { if ((S.tab || "findings") === id) return; if (window.recsView && S.tab === "recs") window.recsView.unmount(); S.tab = id; render(); });
+      bar.appendChild(b);
+    });
+    return bar;
+  }
+  let recsLoading = false;
+  function mountRecs() {
+    const go = () => { if (window.recsView) window.recsView.mount(bodyHost); };
+    if (window.recsView) return go();
+    bodyHost.appendChild(el("div", "rs-muted rs-pad", "Opening the recommendations..."));
+    if (recsLoading) return;                                  // already loading: its onload mounts into whatever the current bodyHost is
+    recsLoading = true;
+    const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "styles-recs.css"; document.head.appendChild(link);
+    const sc = document.createElement("script"); sc.src = "recs.js";
+    sc.onload = () => { recsLoading = false; if (S.tab === "recs") { bodyHost.textContent = ""; go(); } };
+    sc.onerror = () => { recsLoading = false; sc.remove(); link.remove(); bodyHost.textContent = ""; bodyHost.appendChild(el("p", "rs-note", "The recommendations tab could not load. Switch tabs and back to try again.")); };
+    document.body.appendChild(sc);
+  }
   function render() {
     headHost.textContent = ""; bodyHost.textContent = ""; listHost = topHost = moreHost = leadHost = findBar = null;
     if (S.io) { S.io.disconnect(); S.io = null; }
     headHost.appendChild(renderHeader(S));
+    headHost.appendChild(renderTabs());                       // v1.133.0: Findings | Recommendations
+    if (S.tab === "recs") { mountRecs(); return; }
     if (!S.snap) { bodyHost.appendChild(el("div", "rs-muted rs-pad", "Reading this week's digests...")); return; }
     const main = el("div", "rs-main");
     if (S.snap.needsSetup && window.NeedsSetup) { bodyHost.appendChild(main); main.appendChild(window.NeedsSetup.card("research")); return; } // v1.121.0: the calm card with a Set up button
@@ -1113,6 +1138,7 @@
     S.imgs = new Map(); S.threads = new Map(); S.magLimit = MAG_PAGE; moreHost = null;   // v1.91.0: no images or threads stay in the page
     if (pendingSeen.size) flushSeen(); if (dwellIO) { dwellIO.disconnect(); dwellIO = null; }
     S.snap = null; S.marked = new Set(); S.ideas = new Set(); S.openA = new Set(); S.openF = new Set(); S.f = noFilters();
+    if (window.recsView) window.recsView.unmount(); S.tab = "findings";
     headHost.textContent = ""; bodyHost.textContent = ""; toast.textContent = ""; toast.classList.add("hidden"); listHost = topHost = null;   // nothing from the digests stays in the page
   }
   window.researchView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

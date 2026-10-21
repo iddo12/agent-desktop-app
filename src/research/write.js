@@ -56,7 +56,7 @@ function messageFor(ref, text, owner) {
   const who = oneLine(owner).slice(0, 60) || "the user";
   const head = ref.findingId === WEEK_ID
     ? "From " + who + ", via the My Research tab: about your research digest for " + ref.week + "."
-    : "From " + who + ", via the My Research tab: about your research finding (" + ref.week + ", id " + ref.findingId + "): \"" + oneLine(ref.title).slice(0, 300) + "\"";
+    : "From " + who + ", via the My Research tab: about your " + (String(ref.findingId).startsWith("rec:") ? "recommendation" : "research finding") + " (" + ref.week + ", id " + ref.findingId + "): \"" + oneLine(ref.title).slice(0, 300) + "\"";
   return head + "\nThis has real consequences for him: answer him in your own chat, and if it changes the finding, correct your next digest.\n\n" + String(text).trim();
 }
 
@@ -99,7 +99,7 @@ function createWriter(o) {
     if (BAD_NAME_RE.test(agent)) return { ok: false, reason: "That agent name is not allowed, so nothing was sent." };
     if (!text.trim()) return { ok: false, reason: "Write your message first." };
     if (text.length > MAX_TEXT) return { ok: false, reason: "That is " + text.length + " characters; the limit is " + MAX_TEXT + ". Shorten it (nothing was sent)." };
-    const ref = typeof o.findRef === "function" ? o.findRef(week, agent, fid) : null;
+    const ref = typeof o.findRef === "function" ? await o.findRef(week, agent, fid) : null;
     if (!ref) return { ok: false, reason: "That finding is no longer in " + agent + "'s digest for " + week + ". Refresh the tab (nothing was sent)." };
     const agentPath = typeof o.resolveAgent === "function" ? o.resolveAgent(agent) : null;
     if (!agentPath || path.resolve(path.dirname(agentPath)).toLowerCase() !== path.resolve(root).toLowerCase()) return { ok: false, reason: "\"" + agent + "\" is not a known agent folder, so nothing was sent." };

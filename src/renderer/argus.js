@@ -576,10 +576,11 @@
   // agent's own recommendations file, because an agent told to keep only the
   // sources that keep being useful needs to know which of its ideas landed
   // (2026-09-23). Without this the research programme has no feedback at all.
-  function verdictBar(item, week, agentFolder, onChange) {
+  function verdictBar(item, week, agentFolder, onChange, labels) {
     const bar = el("div", "argus-verdict");
     const current = (item.decision || {}).verdict || "none";
-    const choices = [["approved", "Approve"], ["parked", "Park"], ["rejected", "Reject"]];
+    const L = labels || {};
+    const choices = [["approved", L.approved || "Approve"], ["parked", L.parked || "Park"], ["rejected", L.rejected || "Reject"]];
     const status = el("span", "argus-verdict-state");
     const paint = () => {
       const v = (item.decision || {}).verdict;
@@ -726,7 +727,7 @@
       const shown = R.worthKnowing || R.flagged || [];
       if (shown.length) {
         dSection(host, `Worth knowing · ${shown.length}`);
-        shown.forEach((f) => host.appendChild(findingRow(f)));
+        shown.forEach((f) => host.appendChild(findingRow(f, R.week)));
       }
       R.digests.forEach((d) => {
         const rest = (d.findings || []).filter((f) => !shown.some((w) => w.id === f.id && w.agent === d.agent));
@@ -738,22 +739,43 @@
         if ((d.sourcesRetired || []).length) bits.push(d.sourcesRetired.length + " retired");
         if (d.spentUsd != null) bits.push("$" + Number(d.spentUsd).toFixed(2) + " spent");
         if (bits.length) dText(host, bits.join(" · "));
-        rest.forEach((f) => host.appendChild(findingRow(Object.assign({ agent: d.agent }, f))));
+        rest.forEach((f) => host.appendChild(findingRow(Object.assign({ agent: d.agent }, f), R.week)));
       });
       if (!R.digests.length) dText(host, "No agent has written a research digest for this week yet. Research runs on Saturdays, before the Sunday ideas run.");
     };
   }
 
-  function findingRow(f) {
+  // Weekly Skills & Plugins Watch: items of class skill_plugin carry a tag in the meta line.
+  function skillPluginTag(f) {
+    const c = f && (f.class || f.itemClass || f.kind);
+    if (c !== "skill_plugin") return null;
+    return f.use ? "skill/plugin: " + String(f.use).replace(/_/g, " ") : "skill/plugin";
+  }
+
+  // Skill/plugin items: how it helps, where it plugs in, score; Iddo's three choices (Install it / Park / Don't install) plus Ask a question (the Discuss button).
+  function skillPluginExtras(host, f, week) {
+    if (!skillPluginTag(f)) return;
+    if (f.how_it_helps) host.appendChild(el("div", "argus-item-detail", "How it helps: " + f.how_it_helps));
+    if (f.integration) host.appendChild(el("div", "argus-item-detail", "Where it plugs in: " + f.integration));
+    if (f.score != null) host.appendChild(el("div", "argus-item-detail", "Score: " + f.score + "/10"));
+    if (f.id && week && f.agent) {
+      host.appendChild(verdictBar(f, week, f.agent, null, { approved: "Install it", parked: "Park", rejected: "Don't install" }));
+    }
+  }
+
+  function findingRow(f, week) {
     const r = el("div", "argus-item" + (f.tier === "high" ? " alert advisory" : ""));
     r.appendChild(el("div", "argus-item-title", f.title));
     const meta = [shortAgent(f.agent)];
     if (f.tier === "high") meta.push("high stakes - cross-checked");
     if (f.confidence) meta.push(f.confidence);
+    const spTag = skillPluginTag(f);
+    if (spTag) meta.push(spTag);
     if (f.couldBecomeIdea) meta.push("could become an idea");
     r.appendChild(el("div", "argus-item-meta", meta.filter(Boolean).join(" · ")));
     if (f.whatChanged) r.appendChild(el("div", "argus-detail-text", f.whatChanged));
     if (f.soWhat) r.appendChild(el("div", "argus-detail-text", "Why it matters: " + f.soWhat));
+    skillPluginExtras(r, f, week);
     sourceLinks(r, f.sources);
     addDiscuss(r, f.agent, `About what you found - "${f.title}": `);
     return r;
@@ -1302,11 +1324,14 @@
         r.appendChild(el("div", "argus-item-title", f.title));
         const meta = [shortAgent(f.agent)];
         if (f.tier === "high") meta.push("checked closely");
+        const spTag = skillPluginTag(f);
+        if (spTag) meta.push(spTag);
         if (f.confidence && f.confidence !== "confirmed") meta.push(f.confidence);
         r.appendChild(el("div", "argus-item-meta", meta.filter(Boolean).join(" · ")));
         const more = el("div", "argus-item-more");
         if (f.whatChanged) more.appendChild(el("div", "argus-item-detail", f.whatChanged));
         if (f.soWhat) more.appendChild(el("div", "argus-item-detail", "Why it matters: " + f.soWhat));
+        skillPluginExtras(more, f, R.week);
         sourceLinks(more, f.sources);
         const go = discussBtn(f.agent, `About what you found - "${f.title}": `);
         if (go) more.appendChild(go);

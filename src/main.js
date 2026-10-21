@@ -3,6 +3,10 @@
 const demo = require("./demo");
 const testGuard = require("./testGuard");
 testGuard.install();
+// v1.132.0 sync guard (src/syncGuard.js): traces blocking sync calls from a worker thread, reads agent files through a thread pool with a timeout + cache,
+// gives execSync/spawnSync a default timeout. Needs a slow sync client (a 2 s open per Dropbox file froze the main thread for minutes, 18 Oct 2026).
+const syncGuard = require("./syncGuard");
+syncGuard.install();
 // v1.123.0: keeps the last ~400 console lines in memory only, for "Report a problem" (src/appLogRing.js)
 require("./appLogRing").install();
 // v1.121.0: where ARGUS, Memory, Keep working and the usage code find their files comes from the configuration layer (src/featureCtx.js)
@@ -456,6 +460,15 @@ try {
 // Setup shows its agents at once, while the few modules below that were handed this value at start-up pick it up on the next start.
 // No folder chosen yet = a path that does not exist inside the app's own data folder (nothing is read or written elsewhere).
 const AGENTS_ROOT = require("./agentsRoot").getRoot() || path.join(app.getPath("userData"), "agents-folder-not-set");
+// v1.132.0: sync guard second half - the stall log lives in userData, agent files under the agents folder are read through the pool/cache, and the
+// slowest blocking call of the last 10 s is logged next to the governor lines (only when it took >= 500 ms).
+if (!demo.ON) {
+  try {
+    syncGuard.start({ logPath: path.join(app.getPath("userData"), "sync-stalls.log"), cacheRoots: [AGENTS_ROOT] });
+    syncGuard.warmRoot(AGENTS_ROOT);
+    setInterval(() => { try { const sl = syncGuard.takeSlowest(); if (sl.ms >= 500) logStuckWatchdog(`syncGuard: slowest blocking call in the last 10 s: ${sl.ms} ms - ${sl.label}`); } catch (e) { /* diagnostics only */ } }, 10000).unref();
+  } catch (e) { /* the guard is an aid; AD runs without it */ }
+}
 
 // v1.121.0: the two edits of ~/.claude/settings.json (usage status line, remote control at startup) used to run on every start without
 // asking. Now they run only when the person turned on "Claude Code integration" in Setup (appConfig consent record, written by the UI only;
@@ -3551,6 +3564,9 @@ function deliverToAgentVerified(agentPath, text, what, deliverOpts) {
         if (!(dialogTails.get(agentPath) || "").trim()) throw Object.assign(new Error("nothing known about the screen - not typing the nudge blind"), { refused: true }); // v1.69.3 (L4)
         if (require("./handoffLogic").draftInInputBox((dialogTails.get(agentPath) || "").slice(-600))) throw Object.assign(new Error("the input box holds text - not typing the nudge over it"), { refused: true });
         if (promptLikelyOpen(agentPath)) throw Object.assign(new Error("a prompt is waiting for an answer - not typing the nudge"), { refused: true });
+        // 2026-10-20 (Security): never type while a person is mid-keystroke/mouse anywhere on the PC (task: keep-going nudge typed over what Iddo was writing).
+        let idleS = 999; try { idleS = require("electron").powerMonitor.getSystemIdleTime(); } catch (e) { /* not available: do not block */ }
+        if (idleS < 8) throw Object.assign(new Error(`the person used the keyboard/mouse ${idleS}s ago - not typing the nudge now`), { refused: true });
         typeIntoPty(agentPath, t);
       },
       ptyQueued: () => false,
