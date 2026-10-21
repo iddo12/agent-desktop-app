@@ -147,6 +147,58 @@ t("auto: a single copy is never closed; three copies close both old idle ones an
   assert.ok(!p.close.includes("newest11"));
 });
 
+
+// ---- review fixes ----
+const HR = "[[HANDOFF-RESUME]] C:\\h.md";
+function pair(tag, newOpts, newStatus) {
+  const oldF = transcript(tag + "-old", { lastAt: NOW - 60 * MIN });
+  let newF;
+  if (newOpts === "noassistant") {
+    newF = path.join(tmp, tag + "-new.jsonl");
+    fs.writeFileSync(newF, line({ type: "user", timestamp: iso(NOW - 25 * MIN), origin: { kind: "human" }, message: { content: HR } }) + "\n");
+  } else newF = transcript(tag + "-new", { firstPrompt: HR, lastAt: NOW - 2 * MIN });
+  return describe([copy("oldoldol", 300, oldF), copy("newnewne", 25, newF, newStatus)]);
+}
+t("fix1: newest copy must be healthy (not failed/stopped, has started working) before the old one is closed", () => {
+  assert.deepStrictEqual(DC.planAutoClose(pair("h1"), { now: NOW }).close, ["oldoldol"]);
+  assert.deepStrictEqual(DC.planAutoClose(pair("h2", null, "failed"), { now: NOW }).close, []);
+  assert.deepStrictEqual(DC.planAutoClose(pair("h3", null, "stopped"), { now: NOW }).close, []);
+  assert.deepStrictEqual(DC.planAutoClose(pair("h4", "noassistant"), { now: NOW }).close, [], "resume prompt only, no assistant reply, no later activity");
+});
+t("fix2: the copy the pane is attached to is never auto-closed; an attach in flight blocks the rule", () => {
+  const rows = pair("a1");
+  assert.deepStrictEqual(DC.planAutoClose(rows, { now: NOW, attachedId: "oldoldol" }).close, []);
+  assert.deepStrictEqual(DC.planAutoClose(rows, { now: NOW, attachedId: "newnewne" }).close, ["oldoldol"]);
+  assert.deepStrictEqual(DC.planAutoClose(rows, { now: NOW, attachedId: "?" }).close, []);
+});
+t("fix3: the plan is recomputed from fresh rows - a changed old copy (now busy / unfinished) drops out", () => {
+  const before = pair("r1");
+  assert.deepStrictEqual(DC.planAutoClose(before, { now: NOW }).close, ["oldoldol"]);
+  const oldF = transcript("r1b-old", { lastAt: NOW - 20 * 1000, unfinished: true });
+  const newF = transcript("r1b-new", { firstPrompt: HR, lastAt: NOW - 2 * MIN });
+  const after = describe([copy("oldoldol", 300, oldF), copy("newnewne", 25, newF)]);
+  assert.deepStrictEqual(DC.planAutoClose(after, { now: NOW }).close, []);
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf-8");
+  assert.ok(/listLiveCopies\(shell, spawnEnv, sessionCwd, \{ fresh: true \}\);\s*const freshPlan/.test(src) && /auto-close of \$\{id\} ABORTED/.test(src), "main.js re-plans on a fresh list right before the stop");
+});
+t("fix4: an unfinished turn needs confirmation however old it is", () => {
+  const cs = [row("a", { unfinished: true, busy: false, idleMs: 99 * 60 * MIN }), row("b")];
+  const v = DC.validateClose(cs, "b");
+  assert.strictEqual(v.ok, false); assert.strictEqual(v.needsConfirm, true);
+  assert.strictEqual(DC.validateClose(cs, "b", null, { confirmBusy: true }).ok, true);
+});
+t("fix5: a copy with no readable transcript is 'unknown': needs confirmation, skipped by auto, labelled in the dialog", () => {
+  const rows = describe([copy("unkunkun", 300, path.join(tmp, "missing.jsonl")), copy("goodgood", 25, transcript("u-new", { firstPrompt: HR, lastAt: NOW - 2 * MIN }))]);
+  assert.strictEqual(rows[0].unknown, true);
+  assert.deepStrictEqual(DC.planAutoClose(rows, { now: NOW }).close, []);
+  const v = DC.validateClose(rows, "goodgood");
+  assert.strictEqual(v.needsConfirm, true);
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "stuck-alert.js"), "utf-8");
+  const win = { api: { onStuckState() {}, getStuckStates() { return Promise.resolve([]); } } };
+  vm.runInNewContext(src, { window: win, document: { querySelectorAll: () => [], createElement: () => ({}), getElementById: () => null }, setInterval() {}, console });
+  assert.ok(/state unknown/.test(win.StuckAlertPure.describeCopy(rows[0])));
+});
+
 // ---- config ----
 t("readConfig: defaults, overrides, nonsense ignored", () => {
   assert.deepStrictEqual(DC.readConfig(path.join(tmp, "missing.json")), { autoClose: true, idleMinutes: 10 });

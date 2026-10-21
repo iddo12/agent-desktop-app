@@ -25,7 +25,7 @@
   // One copy's plain description (rows come from main: duplicateCopies.describeCopies()).
   function describeCopy(c) {
     var started = c.startedAt ? new Date(c.startedAt).toLocaleString() : "unknown";
-    var state = c.busy ? "BUSY" : "idle for " + fmtAge(c.idleMs || 0);
+    var state = c.unknown ? "state unknown (no readable transcript)" : c.busy ? "BUSY" : "idle for " + fmtAge(c.idleMs || 0);
     var bits = ["copy " + c.shortId, "started " + started, state];
     if (c.unfinished) bits.push("holds an unfinished turn");
     if (c.handoffResume) bits.push("started by a handoff reset");

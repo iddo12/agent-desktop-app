@@ -51,13 +51,14 @@ function resumeInfoFromHead(headLines) {
 
 // Pure: from the tail lines, last timestamp / last readable message / whether the last turn is unfinished.
 function tailSummary(tailLines) {
-  let lastTs = 0, preview = "", last = null;
+  let lastTs = 0, preview = "", last = null, hasAssistant = false;
   for (let i = tailLines.length - 1; i >= 0; i--) {
     const line = tailLines[i];
     if (!line || !line.trim()) continue;
     let o; try { o = JSON.parse(line); } catch (e) { continue; }
     if (!o || !o.timestamp) continue;
     const ts = new Date(o.timestamp).getTime();
+    if (o.type === "assistant") hasAssistant = true;
     if ((o.type === "assistant" || o.type === "user") && o.message) {
       if (!last) {
         const c = o.message.content;
@@ -72,14 +73,14 @@ function tailSummary(tailLines) {
       }
     }
     if (ts > lastTs) lastTs = ts;
-    if (last && preview) break;
+    if (last && preview && hasAssistant) break;
   }
-  return { lastTs, preview, unfinished: !!last && !last.done };
+  return { lastTs, preview, hasAssistant, unfinished: !!last && !last.done };
 }
 
 // Reads one transcript file (head + tail only, bounded). Never throws; a missing/empty file gives hasTranscript:false.
 function inspectTranscript(file) {
-  const out = { hasTranscript: false, size: 0, mtimeMs: 0, lastTs: 0, preview: "", unfinished: false, handoffResume: false, handoffPath: null };
+  const out = { hasAssistant: false, hasTranscript: false, size: 0, mtimeMs: 0, lastTs: 0, preview: "", unfinished: false, handoffResume: false, handoffPath: null };
   let st; try { st = fs.statSync(file); } catch (e) { return out; }
   if (!st.size) return out;
   out.hasTranscript = true; out.size = st.size; out.mtimeMs = st.mtimeMs;
@@ -93,7 +94,7 @@ function inspectTranscript(file) {
     let tail = readRange(file, start, st.size - start);
     if (start > 0) tail = tail.slice(tail.indexOf("\n") + 1); // drop the partial first line
     const s = tailSummary(tail.split("\n"));
-    out.lastTs = s.lastTs; out.preview = s.preview; out.unfinished = s.unfinished;
+    out.hasAssistant = s.hasAssistant; out.lastTs = s.lastTs; out.preview = s.preview; out.unfinished = s.unfinished;
   } catch (e) { /* unreadable tail */ }
   return out;
 }
@@ -114,7 +115,7 @@ function describeCopies(live, transcriptFor, now) {
     return {
       id: a.id, shortId: String(a.id || "").slice(0, 8), sessionId: a.sessionId || a.id, startedAt: a.startedAt || 0,
       status: a.status || "", state: a.state || "", busy, idleMs, hasTranscript: !!tr.hasTranscript,
-      unfinished: !!tr.unfinished, preview: tr.preview || "", handoffResume: !!tr.handoffResume, handoffPath: tr.handoffPath || null, lastActivityAt: lastAct || null,
+      unfinished: !!tr.unfinished, unknown: !tr.hasTranscript, hasAssistant: !!tr.hasAssistant, lastTs: tr.lastTs || 0, preview: tr.preview || "", handoffResume: !!tr.handoffResume, handoffPath: tr.handoffPath || null, lastActivityAt: lastAct || null,
     };
   });
   rows.sort((a, b) => a.startedAt - b.startedAt);
@@ -132,8 +133,9 @@ function validateClose(copies, keepId, closeIds, opts) {
   for (const id of toClose) if (!byId.has(id)) return { ok: false, error: "Copy " + String(id).slice(0, 8) + " is not running any more. Refresh the list.", toClose: [] };
   if (!toClose.length) return { ok: false, error: "Nothing to close.", toClose: [] };
   if (byId.size - toClose.length < 1) return { ok: false, error: "Refused: this would close the last copy.", toClose: [] };
-  const busy = toClose.filter((id) => byId.get(id).busy);
-  if (busy.length && !o.confirmBusy) return { ok: false, needsConfirm: true, busy, error: "Copy " + busy.map((b) => String(b).slice(0, 8)).join(", ") + " is busy (working or holding an unfinished turn). Confirm to close it anyway.", toClose: [] };
+  // confirmation is needed for a busy copy, ANY copy holding an unfinished turn (however old), and a copy whose state cannot be read
+  const busy = toClose.filter((id) => { const c = byId.get(id); return c.busy || c.unfinished || c.unknown; });
+  if (busy.length && !o.confirmBusy) return { ok: false, needsConfirm: true, busy, error: "Copy " + busy.map((b) => String(b).slice(0, 8)).join(", ") + " is busy, holds an unfinished turn, or its state could not be read. Confirm to close it anyway.", toClose: [] };
   return { ok: true, toClose };
 }
 
@@ -149,9 +151,16 @@ function planAutoClose(copies, opts) {
   if (list.length < 2) return none("fewer than two copies");
   const newest = list[list.length - 1];
   if (!newest.handoffResume) return none("newest copy was not started by a handoff resume");
+  // the kept copy must be healthy: not failed/stopped, and it has really started working (an assistant message, or activity after its start)
+  const st = String(newest.status || "").toLowerCase();
+  if (st === "failed" || st === "stopped") return none("newest copy is " + st);
+  if (!(newest.hasAssistant || (newest.lastTs && newest.lastTs > newest.startedAt + 5000))) return none("newest copy has not shown it works yet");
+  if (o.attachedId === "?") return none("a restart or attach is in flight");
   const close = [];
   for (const c of list.slice(0, -1)) {
     if (!(c.startedAt < newest.startedAt)) continue;
+    if (c.unknown) continue;
+    if (o.attachedId && (c.id === o.attachedId)) continue; // never the copy the conversation pane is attached to
     if (c.busy || c.unfinished) continue;
     if (c.idleMs < idleMs) continue;
     close.push(c.id);

@@ -2554,7 +2554,7 @@ ipcMain.handle("trust-agent-folders", async (event, { agentPaths } = {}) => {
 // and the OLD idle copy left behind by a planned handoff reset is closed automatically (src/duplicateCopies.js has the rules). Both paths stop
 // a copy through stopClaudeAgent() - the same stop path the empty-duplicate cleanup uses - never by killing a process.
 const dupCopies = require("./duplicateCopies");
-// Sandbox only: with userDataake-agent-copies.json present, the live-copy list and the stop come from that file, so duplicate-copy handling
+// Sandbox only: with userData/fake-agent-copies.json present, the live-copy list and the stop come from that file, so duplicate-copy handling
 // can be exercised without spending quota or touching any real session. Never active outside TEST_MODE.
 function fakeCopiesFile() { return testMode.TEST_MODE ? path.join(app.getPath("userData"), "fake-agent-copies.json") : null; }
 function readFakeCopies() {
@@ -2576,6 +2576,13 @@ async function stopCopy(shell, id, spawnEnv) {
 function copyRows(live, sessionCwd) {
   const projDir = path.join(app.getPath("home"), ".claude", "projects", encodeProjectPath(sessionCwd));
   return dupCopies.describeCopies(live, (a) => dupCopies.inspectTranscript(path.join(projDir, (a.sessionId || a.id) + ".jsonl")), Date.now());
+}
+// The copy the conversation pane is attached to right now (null = none; "?" = a restart/attach is in flight, so no copy may be auto-closed).
+function attachedCopyId(agentPath) {
+  const s = ptySessions.get(agentPath);
+  if (!s) return null;
+  if (s.starting) return "?";
+  return s.agentId || null;
 }
 function dupConfig() { return dupCopies.readConfig(path.join(app.getPath("userData"), "duplicate-copies.json")); }
 
@@ -2609,9 +2616,17 @@ async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
     let copies = real.length > 1 ? copyRows(real, sessionCwd) : [];
     const cfg = dupConfig();
     if (cfg.autoClose && copies.length > 1) {
-      const plan = dupCopies.planAutoClose(copies, { idleMinutes: cfg.idleMinutes, now: Date.now() });
+      const attachedId = attachedCopyId(agent.path);
+      const plan = dupCopies.planAutoClose(copies, { idleMinutes: cfg.idleMinutes, now: Date.now(), attachedId });
       for (const id of plan.close) {
         try {
+          // right before the stop: a FRESH list and transcript read; abort unless the same decision still holds
+          const freshLive = await listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true });
+          const freshPlan = dupCopies.planAutoClose(copyRows(freshLive, sessionCwd), { idleMinutes: cfg.idleMinutes, now: Date.now(), attachedId: attachedCopyId(agent.path) });
+          if (!freshPlan.close.includes(id) || freshPlan.keep !== plan.keep) {
+            logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} auto-close of ${id} ABORTED (state changed since the plan: ${freshPlan.reason})`);
+            continue;
+          }
           await stopCopy(shell, id, spawnEnv);
           logStuckWatchdog(`stopEmptyDuplicateAgents: AUTO-CLOSED old idle copy ${id} of ${agent.folderName} (${plan.reason}; kept ${plan.keep}; idle >= ${cfg.idleMinutes} min)`);
           real = real.filter((a) => a.id !== id);
