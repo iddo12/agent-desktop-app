@@ -2981,6 +2981,7 @@ function setBusy(agentPath, session, busy) {
 const THINKING_INDICATOR_QUIET_MS = 60000;
 let thinkingIndicatorInterval = null;
 function updateThinkingIndicator() {
+  if (window.stuckAlert && window.stuckAlert.paint(activeAgentPath, chatThinkingIndicatorEl)) return; // v1.134.0: "STUCK ... auto-restart failed" replaces the faint Working line
   if (window.connHealth && window.connHealth.paint(activeAgentPath, chatThinkingIndicatorEl)) return; // v1.67.0: "not connected" replaces a stale Working timer
   const session = activeAgentPath && terminals.get(activeAgentPath);
   const working = !!session && (session.turnStartedAt || session.transcriptWorking);

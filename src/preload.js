@@ -191,6 +191,11 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("connection-state", (event, payload) => callback(payload));
   },
   getConnectionStates: () => ipcRenderer.invoke("get-connection-states"),
+  // v1.134.0 stuck-failing agents / duplicate live copies (src/stuckEscalation.js)
+  onStuckState: (callback) => {
+    ipcRenderer.on("stuck-state", (event, payload) => callback(payload));
+  },
+  getStuckStates: () => ipcRenderer.invoke("get-stuck-states"),
   // v1.69.0 Keep going (see src/keepGoing.js)
   keepGoingGet: () => ipcRenderer.invoke("keepgoing-get"),
   keepGoingSet: (agentPath, enabled) => ipcRenderer.invoke("keepgoing-set", { agentPath, enabled }),

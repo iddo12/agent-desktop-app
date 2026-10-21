@@ -39,6 +39,7 @@ const {
   getSessionActivity,
   getLatestTranscriptMtimeMs,
   getLatestTranscriptSizeBytes,
+  getLastRealProgressMs,
   getHaltInfo,
   listConversations,
   getCurrentConversation,
@@ -2543,7 +2544,7 @@ async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
     if (dispatchedRecently(sessionCwd)) continue;
     const target = path.resolve(sessionCwd);
     const live = all.filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
-    if (live.length < 2) continue;
+    if (live.length < 2) { try { stuckEsc.setDuplicates(agent.path, agent.folderName, []); } catch (e) {} continue; }
     const projDir = path.join(app.getPath("home"), ".claude", "projects", encodeProjectPath(sessionCwd));
     const hasTranscript = (a) => {
       try {
@@ -2564,6 +2565,7 @@ async function stopEmptyDuplicateAgents(shell, spawnEnv, agentsToCheck) {
         logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} stop ${dup.id} failed: ${e.message}`);
       }
     }
+    try { stuckEsc.setDuplicates(agent.path, agent.folderName, real.length > 1 ? real.map((a) => a.id) : []); } catch (e) { /* surfacing only */ }
     if (real.length > 1) {
       logStuckWatchdog(`stopEmptyDuplicateAgents: ${agent.folderName} has ${real.length} live copies WITH conversations (${real.map((a) => a.id).join(", ")}) - left alone, needs a human`);
     }
@@ -3735,6 +3737,64 @@ ipcMain.handle("get-connection-states", () => connHealth.getAll());
 // v1.86.0 demo mode: hand the session internals to the fake-session code (nothing happens with demo mode off).
 if (demo.ON) demo.attach({ ptySessions, dialogTails, connHealth, sessionCwdFor, send: (channel, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload); } });
 
+// v1.134.0 (2026-10-21): a FAILING recovery loop is detected, escalated and shown loudly - see src/stuckEscalation.js for the rules.
+// Incident: Software Engineering was re-dispatched 74 times in 5 h (the same hung conversation each time) and nobody was told.
+function focusMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+const stuckEscalation = require("./stuckEscalation");
+const stuckQuestions = stuckEscalation.openQuestionsStore(path.join(AGENTS_ROOT, "shared_state", "open_questions"));
+const stuckEsc = stuckEscalation.create({
+  log: (line) => logStuckWatchdog(line),
+  progressMs: (agentPath) => getLastRealProgressMs(sessionCwdFor(agentPath)),
+  handoffPath: (agentPath) => { const f = path.join(agentPath, "handoff_latest.md"); return fs.existsSync(f) ? f : null; },
+  emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("stuck-state", snap); },
+  notify: (title, body) => {
+    try {
+      if (!Notification.isSupported()) return;
+      const n = new Notification({ title, body });
+      n.on("click", focusMainWindow);
+      n.show();
+    } catch (e) { /* a notification failure must never break the watchdog */ }
+  },
+  addQuestion: (agent, question, context) => { stuckQuestions.add(agent, question, context); },
+  resolveQuestion: (agent, question) => { stuckQuestions.resolve(agent, question); },
+  escalate: (agentPath, prompt) => escalateStuckAgent(agentPath, prompt),
+});
+ipcMain.handle("get-stuck-states", () => stuckEsc.getAll());
+
+// Closes the doomed session and starts a FRESH one (no --resume) whose first prompt points at handoff_latest.md. Same teardown order as
+// switchConversationImpl(): drop the entry first so the pty exit does not trigger an auto-reattach to the conversation being left.
+async function escalateStuckAgent(agentPath, prompt) {
+  const sessionCwd = sessionCwdFor(agentPath);
+  const live = ptySessions.get(agentPath);
+  const cols = (live && live.cols) || 120, rows = (live && live.rows) || 30;
+  if (live && !live.starting) {
+    if (live.archiveTimer) clearInterval(live.archiveTimer);
+    try { syncArchive(agentPath, sessionCwd); } catch (e) {}
+    ptySessions.delete(agentPath);
+    killProcessTree(live.proc);
+  }
+  ptySessions.set(agentPath, { starting: true, pendingInput: [] });
+  let newId;
+  try {
+    await stopBackgroundAgentForCwd(sessionCwd);
+    const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
+    const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+    newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { forceFresh: true, initialPrompt: prompt, urgent: true });
+    logStuckWatchdog(`escalation: closed the old session of ${agentPath}, started fresh session ${newId}`);
+    await startTerminalSession(agentPath, sessionCwd, cols, rows, newId, false, false, "stuck-escalation");
+  } catch (e) {
+    dropPlaceholder(agentPath);
+    throw e;
+  }
+  return { agentId: newId };
+}
+
 async function recoverStuckSession(agentPath, session, recoveryCount) {
   const { sessionCwd, cols, rows } = session;
   logStuckWatchdog(
@@ -3742,6 +3802,7 @@ async function recoverStuckSession(agentPath, session, recoveryCount) {
       `(recovery #${recoveryCount} in current ${AUTO_RECOVERY_WINDOW_MS / 60000}min window)`
   );
   killProcessTree(session.proc);
+  try { stuckEsc.recordRecovery(agentPath); } catch (e) { /* bookkeeping only */ }
   // Same synchronous-placeholder-then-await pattern the start-terminal IPC
   // handler uses (see its own comment) - closes the exact "no session
   // object at all" input-loss window that pattern was built to fix, which
@@ -3775,8 +3836,10 @@ async function recoverStuckSession(agentPath, session, recoveryCount) {
 }
 
 async function checkForStuckTurns() {
+  try { await stuckEsc.tick(); } catch (e) { logStuckWatchdog(`stuckEsc.tick error: ${e.message}`); }
   for (const [agentPath, session] of ptySessions) {
     if (!session || session.starting || !session.proc) continue; // nothing real to check yet
+    if (stuckEsc.isFailing(agentPath)) continue; // v1.134.0: stuck-failing: no more blind re-dispatch of the same conversation (tick above escalates)
     let activity;
     try {
       activity = getSessionActivity(session.sessionCwd);
@@ -3811,6 +3874,11 @@ async function checkForStuckTurns() {
     if (stuckForMs < thresholdMs) continue;
 
     const now = Date.now();
+    // v1.134.0: 3+ recoveries in the window with no real progress after them = failing; stop re-dispatching this conversation.
+    if (stuckEsc.evaluate(agentPath, { name: path.basename(agentPath), windowMs: 3 * thresholdMs })) {
+      session.stuckWatch = null;
+      continue;
+    }
     let tracking = autoRecoveryTracking.get(agentPath);
     if (!tracking || now - tracking.windowStart > AUTO_RECOVERY_WINDOW_MS) {
       tracking = { windowStart: now, count: 0 };

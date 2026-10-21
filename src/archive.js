@@ -722,6 +722,33 @@ function getLatestTranscriptSizeBytes(sessionCwd) {
   return size;
 }
 
+// v1.134.0: timestamp (ms) of the newest REAL progress entry (assistant output or a tool result) in the newest transcript; queue-operation
+// lines, attachments and human prompts are ignored (they bump the mtime while the agent is frozen). null = could not read, 0 = none found.
+function getLastRealProgressMs(sessionCwd) {
+  let newest = null, latest = -Infinity;
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try { const st = cachedStat(jsonlPath); if (st.mtimeMs > latest) { latest = st.mtimeMs; newest = { jsonlPath, size: st.size }; } } catch (e) { /* skip */ }
+  }
+  if (!newest) return null;
+  const { lastRealProgressFromLines } = require("./stuckEscalation");
+  let fd;
+  try {
+    fd = fs.openSync(newest.jsonlPath, "r");
+    for (const tail of [1024 * 1024, 8 * 1024 * 1024]) {
+      const len = Math.min(newest.size, tail), buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, newest.size - len);
+      const ts = lastRealProgressFromLines(buf.toString("utf-8").split(String.fromCharCode(10)));
+      if (ts > 0) return ts;
+      if (len >= newest.size) break;
+    }
+    return 0;
+  } catch (e) {
+    return null;
+  } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch (e) { /* ignore */ } }
+  }
+}
+
 function getLatestTranscriptMtimeMs(sessionCwd) {
   let latest = null;
   for (const jsonlPath of findJsonlFiles(sessionCwd)) {
@@ -1981,6 +2008,7 @@ function repinAgentName(sessionCwd, name) {
 }
 
 module.exports = {
+  getLastRealProgressMs,
   syncArchive,
   listArchivedDays,
   readArchivedDay,
