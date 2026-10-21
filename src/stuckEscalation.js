@@ -8,7 +8,7 @@
 //   * lastRealProgressFromLines(): the progress signal. Only real assistant output and tool results count. queue-operation lines
 //     (messages the owner queued while the agent hangs), attachments, snapshots and human prompts do NOT, because they bump the file's mtime
 //     without the agent having done anything.
-//   * evaluate(): >= 3 recoveries inside the window and no real progress after any of them = "stuck-failing". Blind re-dispatch stops.
+//   * evaluate(): >= 3 recoveries since the last real progress (unknown progress never counts) = "stuck-failing". Blind re-dispatch stops.
 //   * tick(): for a stuck-failing agent, re-notify every 30 min, escalate ONCE per episode (fresh session in the agent's folder, no --resume)
 //     at most once per 30 min per agent and never when the transcript showed real progress in the last 10 min, clear itself on real progress.
 //   * setDuplicates(): the "N live copies WITH conversations" condition, surfaced the same way (one plain line).
@@ -17,8 +17,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const WINDOW_MS = 15 * 60 * 1000;           // recoveries counted inside this window
-const MIN_RECOVERIES = 3;                   // this many recoveries without progress = failing
+const MIN_RECOVERIES = 3;                   // this many recoveries since the last REAL progress = failing (no time window: a 5-6 min cadence counts too)
+const FLEET_MAX_STUCK = 2;                  // more than this many stuck-failing agents at once = a fleet-wide cause (API/network), escalate none
+const FLEET_MIN_GAP_MS = 5 * 60 * 1000;     // global cap: at most one escalation across ALL agents per 5 min ...
+const FLEET_MAX_PER_HOUR = 2;               // ... and two per hour
 const RENOTIFY_MS = 30 * 60 * 1000;         // OS notification repeat while the state lasts
 const ESCALATE_MIN_GAP_MS = 30 * 60 * 1000; // at most one fresh-session escalation per agent per 30 min
 const NO_PROGRESS_BEFORE_ESCALATE_MS = 10 * 60 * 1000; // never close a session that progressed in the last 10 min
@@ -62,7 +64,7 @@ function freshPrompt(agentName, handoffPath) {
   const head = "This is a fresh session started automatically by Agent Desktop because your previous session for " + agentName +
     " froze and automatic restarts did not help. Do NOT try to resume the old conversation. ";
   if (handoffPath) {
-    return head + "Read " + handoffPath + " and continue from its EXACT NEXT STEP. Then tell the owner in one line that you were restarted and what you resumed.";
+    return head + "Read '" + String(handoffPath).replace(/'/g, "") + "' and continue from its EXACT NEXT STEP. Then tell the owner in one line that you were restarted and what you resumed.";
   }
   return head + "There is no handoff_latest.md in your agent folder, so say so plainly to the owner, read your CLAUDE.md and master_state.md (if present) and ask what to continue with.";
 }
@@ -114,6 +116,11 @@ function create(deps) {
   const failing = new Map();   // agentPath -> state
   const lastEscalate = new Map(); // agentPath -> ms (survives clearing: the 30 min limit is per agent, not per episode)
   const dups = new Map();      // agentPath -> { name, ids, since, lastNotifyAt }
+  const dupSeen = new Map();   // agentPath -> consecutive sweeps that saw the duplicates (the alert needs 2: a fresh dispatch can show twice for a moment)
+  let escalationLog = [];      // timestamps of escalations across ALL agents (global cap)
+  let fleetAlert = null;       // { name, lastNotifyAt } while more than FLEET_MAX_STUCK agents are stuck-failing
+  const MIN_MS = 1000 * 60;
+  const FLEET_QUESTION = "Several agents are frozen at the same time - probably the Claude API or the network, not the agents. Check that first.";
 
   const stuckQuestion = (name) => name + " is stuck - it froze and automatic restarts did not help. Open it and check, or start a new chat.";
   const dupQuestion = (name, n) => name + " has " + n + " live copies with conversations and none is safe to stop automatically. Pick the one to keep and stop the others.";
@@ -139,23 +146,23 @@ function create(deps) {
   function evaluate(agentPath, opts) {
     opts = opts || {};
     if (failing.has(agentPath)) return true;
-    const t = now(), windowMs = Math.max(WINDOW_MS, opts.windowMs || 0);
+    const t = now();
     const prog = deps.progressMs ? deps.progressMs(agentPath) : null;
-    if (prog == null) return false; // cannot read the transcript: never declare a failure on a guess
-    let h = (history.get(agentPath) || []).filter((e) => t - e.at <= windowMs);
-    // real progress since the first recovery in the window: that recovery worked, forget the older ones
-    if (h.length && prog > h[0].progressAt) h = [];
+    if (!(prog > 0)) return false; // null or 0 = UNKNOWN: never declare a failure (or touch the history) on a guess
+    let h = history.get(agentPath) || [];
+    // real progress since the first counted recovery: those recoveries worked, forget them (both values must be known)
+    if (h.length && h[0].progressAt > 0 && prog > h[0].progressAt) h = [];
     history.set(agentPath, h);
     if (h.length < MIN_RECOVERIES) return false;
     const name = opts.name || path.basename(agentPath);
     const st = {
-      name, enteredAt: t, baseProgress: prog, since: prog > 0 && prog <= t ? prog : h[0].at, lastNotifyAt: 0, escalated: false,
+      name, enteredAt: t, baseProgress: prog, since: prog <= t ? prog : h[0].at, lastNotifyAt: 0, escalated: false,
       detail() { return this.escalated ? "A fresh session was started at " + new Date(this.escalatedAt).toISOString() + (this.freshFailed ? " and it has not produced output either." : ".") : "No fresh session started yet."; },
     };
     failing.set(agentPath, st);
-    log(`STUCK-FAILING ${agentPath}: ${h.length} auto-recoveries in ${Math.round(windowMs / 60000)} min, no real transcript progress since ${prog ? new Date(prog).toISOString() : "never"} - blind re-dispatch stopped`);
+    log(`STUCK-FAILING ${agentPath}: ${h.length} auto-recoveries with no real transcript progress since ${new Date(prog).toISOString()} - blind re-dispatch stopped (the watchdog skips this agent until it shows real progress or a person acts)`);
     notifyStuck(agentPath, st, "Frozen with no output; the automatic restarts did not help. Open it in Agent Desktop.");
-    call(deps.addQuestion, name, stuckQuestion(name), "Last real output: " + (prog ? new Date(prog).toISOString() : "none") + ". Agent Desktop restarted its session " + h.length + " times in " + Math.round(windowMs / 60000) + " min with no result, so it stopped restarting the same conversation.");
+    call(deps.addQuestion, name, stuckQuestion(name), "Last real output: " + new Date(prog).toISOString() + ". Agent Desktop restarted its session " + h.length + " times with no result, so it stopped restarting the same conversation.");
     emit(agentPath);
     return true;
   }
@@ -163,7 +170,7 @@ function create(deps) {
   function recordRecovery(agentPath) {
     const prog = deps.progressMs ? deps.progressMs(agentPath) : null;
     const h = history.get(agentPath) || [];
-    h.push({ at: now(), progressAt: prog == null ? 0 : prog });
+    h.push({ at: now(), progressAt: prog > 0 ? prog : 0 });
     history.set(agentPath, h.slice(-20));
   }
 
@@ -177,11 +184,44 @@ function create(deps) {
     emit(agentPath);
   }
 
+  function fleetAlertUpdate(n) {
+    if (n > FLEET_MAX_STUCK && !fleetAlert) {
+      const names = Array.from(failing.values()).map((x) => x.name);
+      fleetAlert = { name: names[0], lastNotifyAt: now() };
+      log(`FLEET-WIDE FREEZE: ${n} agents are stuck-failing at once (${names.join(", ")}) - escalating none, one alert raised`);
+      call(deps.notify, "Fleet-wide freeze (API or network?)", n + " agents are frozen at once. Agent Desktop is not restarting them one by one.");
+      call(deps.addQuestion, fleetAlert.name, FLEET_QUESTION, "Frozen: " + names.join(", ") + ". Check the Claude API status and the network first.");
+    } else if (n <= FLEET_MAX_STUCK && fleetAlert) {
+      log("fleet-wide freeze cleared");
+      call(deps.resolveQuestion, fleetAlert.name, FLEET_QUESTION);
+      fleetAlert = null;
+    } else if (fleetAlert && now() - fleetAlert.lastNotifyAt >= RENOTIFY_MS) {
+      fleetAlert.lastNotifyAt = now();
+      call(deps.notify, "Fleet-wide freeze (API or network?)", n + " agents are still frozen.");
+    }
+  }
+  function fleetCapOk() {
+    const t = now();
+    escalationLog = escalationLog.filter((x) => t - x < 60 * MIN_MS);
+    if (escalationLog.length && t - escalationLog[escalationLog.length - 1] < FLEET_MIN_GAP_MS) return false;
+    return escalationLog.length < FLEET_MAX_PER_HOUR;
+  }
+
   async function tick() {
+    // agents that were deleted or paused: their state is meaningless now
+    for (const p of Array.from(new Set([...failing.keys(), ...dups.keys()]))) {
+      if (deps.stillExists && !call(deps.stillExists, p)) {
+        clear(p, "agent removed or paused");
+        const d = dups.get(p);
+        if (d) { dups.delete(p); call(deps.resolveQuestion, d.name, dupQuestion(d.name, d.ids.length)); emit(p); }
+        dupSeen.delete(p);
+      }
+    }
+    fleetAlertUpdate(failing.size);
     for (const [agentPath, st] of Array.from(failing)) {
       const t = now();
       const prog = deps.progressMs ? deps.progressMs(agentPath) : null;
-      if (prog != null && prog > st.baseProgress) { clear(agentPath, "real transcript progress at " + new Date(prog).toISOString()); continue; }
+      if (prog > 0 && prog > st.baseProgress) { clear(agentPath, "real transcript progress at " + new Date(prog).toISOString()); continue; }
       if (st.escalated && !st.freshFailed && t - st.escalatedAt >= FRESH_GRACE_MS) {
         st.freshFailed = true;
         log(`STUCK-FAILING ${agentPath}: the fresh session showed no real progress within ${FRESH_GRACE_MS / 60000} min - not escalating again, alert stays up`);
@@ -189,17 +229,24 @@ function create(deps) {
       } else if (t - st.lastNotifyAt >= RENOTIFY_MS) {
         notifyStuck(agentPath, st, "Still frozen. Open it in Agent Desktop.");
       }
-      if (!st.escalated && prog != null && t - prog >= NO_PROGRESS_BEFORE_ESCALATE_MS && t - (lastEscalate.get(agentPath) || -Infinity) >= ESCALATE_MIN_GAP_MS) {
-        st.escalated = true; st.escalatedAt = t; lastEscalate.set(agentPath, t);
-        const handoff = deps.handoffPath ? deps.handoffPath(agentPath) : null;
-        log(`STUCK-FAILING ${agentPath}: escalating - closing the doomed session and starting a FRESH one (no --resume), handoff ${handoff || "none found"}`);
-        try {
-          const r = await deps.escalate(agentPath, freshPrompt(st.name, handoff));
-          log(`STUCK-FAILING ${agentPath}: fresh session started ${r && r.agentId ? "(id " + r.agentId + ")" : ""}`);
-        } catch (e) {
-          st.freshFailed = true;
-          log(`STUCK-FAILING ${agentPath}: starting the fresh session FAILED: ${e.message} - not retrying, alert stays up`);
-          notifyStuck(agentPath, st, "Could not start a fresh session: " + e.message);
+      const quiet = prog > 0 && t - prog >= NO_PROGRESS_BEFORE_ESCALATE_MS; // unknown progress (null/0) never escalates
+      if (!st.escalated && quiet && !fleetAlert && failing.size <= FLEET_MAX_STUCK && fleetCapOk() &&
+          t - (lastEscalate.get(agentPath) || -Infinity) >= ESCALATE_MIN_GAP_MS) {
+        const ok = deps.canEscalate ? call(deps.canEscalate, agentPath) : { ok: true };
+        if (!ok || !ok.ok) {
+          if (!st.skipLogged) { st.skipLogged = true; log(`STUCK-FAILING ${agentPath}: escalation skipped - ${ok && ok.reason ? ok.reason : "guard refused"}`); }
+        } else {
+          st.escalated = true; st.escalatedAt = t; lastEscalate.set(agentPath, t); escalationLog.push(t);
+          const handoff = deps.handoffPath ? deps.handoffPath(agentPath) : null;
+          log(`STUCK-FAILING ${agentPath}: escalating - closing the doomed session and starting a FRESH one (no --resume), handoff ${handoff || "none found"}`);
+          try {
+            const r = await deps.escalate(agentPath, freshPrompt(st.name, handoff));
+            log(`STUCK-FAILING ${agentPath}: fresh session started ${r && r.agentId ? "(id " + r.agentId + ")" : ""}`);
+          } catch (e) {
+            st.freshFailed = true;
+            log(`STUCK-FAILING ${agentPath}: escalation aborted/FAILED: ${e.message} - not retrying, alert stays up`);
+            notifyStuck(agentPath, st, "Could not start a fresh session: " + e.message);
+          }
         }
       }
       emit(agentPath);
@@ -214,10 +261,14 @@ function create(deps) {
   function setDuplicates(agentPath, name, ids) {
     const d = dups.get(agentPath);
     if (!ids || ids.length < 2) {
+      dupSeen.delete(agentPath);
       if (d) { dups.delete(agentPath); log(`duplicate copies cleared for ${agentPath}`); call(deps.resolveQuestion, d.name, dupQuestion(d.name, d.ids.length)); emit(agentPath); }
       return;
     }
     if (d) { d.ids = ids.slice(); return; }
+    const seen = (dupSeen.get(agentPath) || 0) + 1;
+    dupSeen.set(agentPath, seen);
+    if (seen < 2) return; // debounce: only a second sweep in a row raises it
     const nd = { name, ids: ids.slice(), since: now(), lastNotifyAt: now() };
     dups.set(agentPath, nd);
     call(deps.notify, name + ": duplicate sessions", dupQuestion(name, ids.length));
@@ -233,4 +284,4 @@ function create(deps) {
   };
 }
 
-module.exports = { create, lastRealProgressFromLines, humanDuration, stuckLabel, freshPrompt, openQuestionsStore, WINDOW_MS, MIN_RECOVERIES, RENOTIFY_MS, ESCALATE_MIN_GAP_MS, NO_PROGRESS_BEFORE_ESCALATE_MS };
+module.exports = { create, lastRealProgressFromLines, humanDuration, stuckLabel, freshPrompt, openQuestionsStore, MIN_RECOVERIES, FLEET_MAX_STUCK, RENOTIFY_MS, ESCALATE_MIN_GAP_MS, NO_PROGRESS_BEFORE_ESCALATE_MS };

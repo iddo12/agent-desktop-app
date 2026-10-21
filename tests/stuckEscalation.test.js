@@ -1,5 +1,5 @@
-// Run: node tests/stuckEscalation.test.js - v1.132.0 stuck-failing loop detection, progress signal, escalation limits, state clearing,
-// duplicate-copies surfacing, the open-questions writer and the renderer's pure label picker.
+// Run: node tests/stuckEscalation.test.js - v1.134.0 stuck-failing loop detection, progress signal, escalation limits, state clearing,
+// duplicate-copies surfacing, fleet-wide cap, guards, the open-questions writer, getLastRealProgressMs on real files and the renderer's pure label picker.
 "use strict";
 const assert = require("assert"), fs = require("fs"), os = require("os"), path = require("path"), vm = require("vm");
 const SE = require("../src/stuckEscalation");
@@ -16,7 +16,9 @@ function harness(over) {
   h.esc = SE.create({
     now: () => h.t,
     log: (l) => h.logs.push(l),
-    progressMs: () => h.progress,
+    progressMs: (p) => (h.progressMap && p in h.progressMap ? h.progressMap[p] : h.progress),
+    stillExists: (p) => (h.gone ? !h.gone.has(p) : true),
+    canEscalate: (p) => (h.guard ? h.guard(p) : { ok: true }),
     handoffPath: () => h.handoff,
     notify: (title, body) => h.notes.push({ title, body, at: h.t }),
     addQuestion: (agent, q, ctx) => h.questions.push({ agent, q, ctx }),
@@ -64,10 +66,10 @@ t("three recoveries with no progress are allowed; the next trigger declares stuc
   assert.strictEqual(h.esc.isFailing(P), true);
   assert.ok(h.logs.some((l) => /STUCK-FAILING/.test(l)));
 });
-t("recoveries spread over more than 15 min are not one failing loop", () => {
+t("no time window: a slow 6-8 min recovery cadence still declares stuck-failing after 3 recoveries", () => {
   const h = harness();
-  for (let i = 0; i < 6; i++) { h.trigger(P); h.t += 8 * MIN; }
-  assert.strictEqual(h.esc.isFailing(P), false);
+  for (let i = 0; i < 3; i++) { assert.strictEqual(h.trigger(P), false); h.t += 8 * MIN; }
+  assert.strictEqual(h.trigger(P), true);
 });
 t("real progress between recoveries resets the count", () => {
   const h = harness();
@@ -77,10 +79,29 @@ t("real progress between recoveries resets the count", () => {
   assert.strictEqual(h.trigger(P), false);
   assert.strictEqual(h.esc.isFailing(P), false);
 });
-t("an unreadable transcript never declares a failure", () => {
+t("an unreadable or empty transcript (null / 0 = unknown) never declares a failure", () => {
+  for (const unknown of [null, 0]) {
+    const h = harness({ progress: unknown });
+    for (let i = 0; i < 6; i++) { h.trigger(P); h.t += MIN; }
+    assert.strictEqual(h.esc.isFailing(P), false);
+  }
+});
+t("unknown -> known progress does not wipe the recovery history", () => {
   const h = harness({ progress: null });
-  for (let i = 0; i < 6; i++) { h.trigger(P); h.t += MIN; }
-  assert.strictEqual(h.esc.isFailing(P), false);
+  for (let i = 0; i < 3; i++) { h.esc.evaluate(P, {}); h.esc.recordRecovery(P); h.t += MIN; } // three recoveries recorded while the read failed
+  h.progress = 100 * MIN; // the read works again
+  assert.strictEqual(h.esc.evaluate(P, {}), true, "the three earlier recoveries still count");
+  assert.strictEqual(h.esc._state.history.get(P).length, 3, "history kept");
+});
+t("unknown progress never escalates", async () => {
+  const h = harness();
+  enterFailing(h);
+  h.progress = null;
+  await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 0);
+  h.progress = 0;
+  await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 0);
 });
 t("entering the state notifies once, registers one question and emits a plain label", () => {
   const h = harness();
@@ -205,6 +226,148 @@ t("duplicate live copies with conversations: one plain line, notified once, re-n
   h.esc.setDuplicates(P, "Software Engineering Agent", ["bf03fe1e"]);
   assert.strictEqual(h.resolved.length, 1);
   assert.deepStrictEqual(h.esc.getAll(), []);
+});
+
+t("duplicate alert is debounced: one sighting raises nothing, a clean sweep in between resets it", () => {
+  const h = harness();
+  const ids = ["a1", "b2"];
+  h.esc.setDuplicates(P, "SE", ids);
+  assert.strictEqual(h.notes.length, 0); assert.deepStrictEqual(h.esc.getAll(), []);
+  h.esc.setDuplicates(P, "SE", []);
+  h.esc.setDuplicates(P, "SE", ids);
+  assert.strictEqual(h.notes.length, 0, "the sighting counter restarted");
+  h.esc.setDuplicates(P, "SE", ids);
+  assert.strictEqual(h.notes.length, 1);
+});
+
+// ---- fleet-wide cap ----
+const P2 = "D:/agents/Two", P3 = "D:/agents/Three", P4 = "D:/agents/Four";
+function failMany(h, paths) { for (const p of paths) for (let i = 0; i < 4; i++) { h.trigger(p); h.t += MIN; } }
+t("more than 2 agents stuck-failing at once: nobody is escalated, ONE fleet-wide alert", async () => {
+  const h = harness();
+  failMany(h, [P, P2, P3]);
+  await h.esc.tick(); await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 0);
+  const fleetQs = h.questions.filter((q) => /Several agents are frozen/.test(q.q));
+  assert.strictEqual(fleetQs.length, 1, "one fleet question");
+  assert.ok(h.notes.some((x) => /Fleet-wide freeze/.test(x.title)));
+  assert.ok(h.logs.some((l) => /FLEET-WIDE FREEZE/.test(l)));
+});
+t("fleet alert clears when the count drops to 2, then escalation is possible again", async () => {
+  const h = harness();
+  failMany(h, [P, P2, P3]);
+  await h.esc.tick();
+  h.progressMap = { [P3]: h.t + 1 }; // P3 recovers
+  await h.esc.tick(); // P3 cleared in this pass
+  await h.esc.tick(); // the fleet alert sees 2 and clears
+  assert.ok(h.resolved.some((r) => /Several agents are frozen/.test(r.q)));
+  await h.esc.tick();
+  assert.ok(h.escalations.length >= 1, "two stuck agents may be escalated (under the global cap)");
+});
+t("global cap: at most one escalation per 5 min and two per hour across ALL agents", async () => {
+  const h = harness();
+  failMany(h, [P, P2]);
+  await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 1, "only one of the two in the same pass (5 min gap)");
+  h.t += 2 * MIN; await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 1, "still inside 5 min");
+  h.t += 4 * MIN; await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 2, "second agent after 5 min");
+  h.progressMap = { [P]: h.t + 1, [P2]: h.t + 1 }; await h.esc.tick(); // both recovered
+  failMany(h, [P3]);
+  h.t += 6 * MIN; await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 2, "third inside the hour is refused");
+  h.t += 61 * MIN; await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 3, "allowed once the hour has passed");
+});
+
+// ---- guards at escalation time, removed / paused agents ----
+t("tick re-checks the guards: refused (no session / not working / approval-blocked) = skipped, logged once, alert stays", async () => {
+  const h = harness({ guard: () => ({ ok: false, reason: "waiting on an approval prompt, not frozen" }) });
+  enterFailing(h);
+  await h.esc.tick(); await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 0);
+  assert.strictEqual(h.logs.filter((l) => /escalation skipped/.test(l)).length, 1);
+  assert.strictEqual(h.esc.isFailing(P), true);
+  h.guard = null; await h.esc.tick();
+  assert.strictEqual(h.escalations.length, 1, "once the guard passes it escalates");
+});
+t("a removed or paused agent loses its stuck and duplicate state", async () => {
+  const h = harness();
+  enterFailing(h);
+  h.esc.setDuplicates(P2, "Two", ["a", "b"]); h.esc.setDuplicates(P2, "Two", ["a", "b"]);
+  assert.strictEqual(h.esc.getAll().length, 2);
+  h.gone = new Set([P, P2]);
+  await h.esc.tick();
+  assert.deepStrictEqual(h.esc.getAll(), []);
+  assert.strictEqual(h.escalations.length, 0);
+  assert.ok(h.resolved.length >= 2);
+});
+t("fresh prompt quotes the handoff path in single quotes (paths with spaces)", () => {
+  const p = SE.freshPrompt("X", "D:/Dropbox/Claude stuff/X Agent/handoff_latest.md");
+  assert.ok(p.includes("Read 'D:/Dropbox/Claude stuff/X Agent/handoff_latest.md' and continue"), p);
+  assert.ok(!/"/.test(p));
+});
+
+// ---- getLastRealProgressMs on real files (HOME redirected to a temp dir) ----
+t("getLastRealProgressMs: tail read, 1 MB -> 8 MB fallback, cut first line, queue-only newest file, max of newest two", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "prog-home-"));
+  const saved = { u: process.env.USERPROFILE, h: process.env.HOME };
+  process.env.USERPROFILE = home; process.env.HOME = home;
+  try {
+    const archive = require("../src/archive");
+    const mk = (name) => { const cwd = path.join(home, "work", name, ".claude-session"); const dir = path.join(home, ".claude", "projects", archive.encodeProjectPath(cwd)); fs.mkdirSync(dir, { recursive: true }); return { cwd, dir }; };
+    const asst = (iso) => JSON.stringify({ type: "assistant", timestamp: iso, message: { content: [] } });
+    const queue = (iso) => JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: iso, content: "hello?" });
+    const setM = (f, secs) => { const d = new Date(Date.now() + secs * 1000); fs.utimesSync(f, d, d); };
+    // 1. no transcript at all
+    assert.strictEqual(archive.getLastRealProgressMs(mk("none").cwd), null);
+    // 2. small file: last real entry, queue lines after it ignored
+    let a = mk("small");
+    fs.writeFileSync(path.join(a.dir, "s1.jsonl"), [asst("2026-10-20T22:58:00.000Z"), queue("2026-10-21T01:00:00.000Z"), ""].join("\n"));
+    archive.invalidateStatCache();
+    assert.strictEqual(archive.getLastRealProgressMs(a.cwd), Date.parse("2026-10-20T22:58:00.000Z"));
+    // 3. 1 MB of queue lines after the last real entry: found by the 8 MB fallback
+    a = mk("fallback");
+    const filler = queue("2026-10-21T01:00:00.000Z");
+    const many = new Array(Math.ceil((1.3 * 1024 * 1024) / filler.length)).fill(filler);
+    fs.writeFileSync(path.join(a.dir, "f1.jsonl"), [asst("2026-10-20T10:00:00.000Z")].concat(many, [""]).join("\n"));
+    archive.invalidateStatCache();
+    assert.strictEqual(archive.getLastRealProgressMs(a.cwd), Date.parse("2026-10-20T10:00:00.000Z"));
+    // 4. the 1 MB tail starts in the middle of a line: that cut line is skipped, a real entry later in the tail still found
+    a = mk("cut");
+    const big = JSON.stringify({ type: "user", timestamp: "2026-10-20T09:00:00.000Z", message: { content: "x".repeat(1100 * 1024) } });
+    fs.writeFileSync(path.join(a.dir, "c1.jsonl"), [big, asst("2026-10-20T11:00:00.000Z"), ""].join("\n"));
+    archive.invalidateStatCache();
+    assert.strictEqual(archive.getLastRealProgressMs(a.cwd), Date.parse("2026-10-20T11:00:00.000Z"));
+    // 5. newest file is queue-only: the older file's real progress is still reported (max of the newest two)
+    a = mk("two");
+    const older = path.join(a.dir, "old.jsonl"), newer = path.join(a.dir, "new.jsonl");
+    fs.writeFileSync(older, [asst("2026-10-20T08:00:00.000Z"), ""].join("\n"));
+    fs.writeFileSync(newer, [queue("2026-10-21T02:00:00.000Z"), ""].join("\n"));
+    setM(older, -100); setM(newer, 0);
+    archive.invalidateStatCache();
+    assert.strictEqual(archive.getLastRealProgressMs(a.cwd), Date.parse("2026-10-20T08:00:00.000Z"));
+    // 6. a queue-only transcript has no progress: 0 (unknown), never a made-up value
+    a = mk("queueonly");
+    fs.writeFileSync(path.join(a.dir, "q.jsonl"), [queue("2026-10-21T02:00:00.000Z"), ""].join("\n"));
+    archive.invalidateStatCache();
+    assert.strictEqual(archive.getLastRealProgressMs(a.cwd), 0);
+  } finally {
+    if (saved.u === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = saved.u;
+    if (saved.h === undefined) delete process.env.HOME; else process.env.HOME = saved.h;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ---- main.js wiring (source checks: escalateStuckAgent needs electron, so its guards are asserted by reading the source) ----
+t("main.js escalateStuckAgent has the guards and does not use urgent / single-copy stop", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf-8");
+  const body = src.slice(src.indexOf("async function escalateStuckAgent"), src.indexOf("async function recoverStuckSession"));
+  for (const re of [/liveAgentsPermitted\(\)/, /existsSync\(agentPath\)/, /rec\.paused/, /live\.starting/, /fresh: true/, /remaining\.length/]) assert.ok(re.test(body), String(re));
+  assert.ok(!/urgent:\s*true/.test(body), "escalation dispatch must not be urgent");
+  assert.ok(!/stopBackgroundAgentForCwd/.test(body), "must stop ALL live copies, not just the first");
+  assert.ok(/stillExists/.test(src) && /canEscalate/.test(src) && /approvalBlockedSince\.has\(agentPath\)/.test(src));
 });
 
 // ---- open questions writer ----

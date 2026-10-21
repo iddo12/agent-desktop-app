@@ -3764,6 +3764,22 @@ const stuckEsc = stuckEscalation.create({
   addQuestion: (agent, question, context) => { stuckQuestions.add(agent, question, context); },
   resolveQuestion: (agent, question) => { stuckQuestions.resolve(agent, question); },
   escalate: (agentPath, prompt) => escalateStuckAgent(agentPath, prompt),
+  stillExists: (agentPath) => {
+    if (!fs.existsSync(agentPath)) return false;
+    const rec = listAgents().find((a) => a.path === agentPath);
+    return !!rec && !rec.paused;
+  },
+  // re-checked at the moment of escalation (tick), not only when the state was entered
+  canEscalate: (agentPath) => {
+    if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) return { ok: false, reason: "test mode: live agents not permitted" };
+    const s = ptySessions.get(agentPath);
+    if (!s || s.starting || !s.proc) return { ok: false, reason: "no attached session (or a restart is in flight)" };
+    if (approvalBlockedSince.has(agentPath)) return { ok: false, reason: "waiting on an approval prompt, not frozen" };
+    let act = null;
+    try { act = getSessionActivity(s.sessionCwd); } catch (e) { /* unknown */ }
+    if (!act || !act.working) return { ok: false, reason: "agent is not working any more" };
+    return { ok: true };
+  },
 });
 ipcMain.handle("get-stuck-states", () => stuckEsc.getAll());
 
@@ -3771,9 +3787,15 @@ ipcMain.handle("get-stuck-states", () => stuckEsc.getAll());
 // switchConversationImpl(): drop the entry first so the pty exit does not trigger an auto-reattach to the conversation being left.
 async function escalateStuckAgent(agentPath, prompt) {
   const sessionCwd = sessionCwdFor(agentPath);
+  if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) throw new Error("test mode: live agents are not permitted - escalation refused");
+  if (!fs.existsSync(agentPath)) throw new Error("the agent folder no longer exists");
+  const rec = listAgents().find((a) => a.path === agentPath);
+  if (!rec) throw new Error("not a listed agent any more");
+  if (rec.paused) throw new Error("the agent is paused");
   const live = ptySessions.get(agentPath);
+  if (live && live.starting) throw new Error("a restart is already in flight for this agent - not overwriting it");
   const cols = (live && live.cols) || 120, rows = (live && live.rows) || 30;
-  if (live && !live.starting) {
+  if (live) {
     if (live.archiveTimer) clearInterval(live.archiveTimer);
     try { syncArchive(agentPath, sessionCwd); } catch (e) {}
     ptySessions.delete(agentPath);
@@ -3782,11 +3804,18 @@ async function escalateStuckAgent(agentPath, prompt) {
   ptySessions.set(agentPath, { starting: true, pendingInput: [] });
   let newId;
   try {
-    await stopBackgroundAgentForCwd(sessionCwd);
     const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
     const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
-    newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { forceFresh: true, initialPrompt: prompt, urgent: true });
-    logStuckWatchdog(`escalation: closed the old session of ${agentPath}, started fresh session ${newId}`);
+    const target = path.resolve(sessionCwd);
+    const liveCopies = async () => (await listBackgroundAgents(shell, spawnEnv, { fresh: true })).filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
+    // stop EVERY live copy for this folder (a copy left running would keep the doomed conversation alive next to the fresh one)
+    for (const c of await liveCopies()) await stopClaudeAgent(shell, c.id, spawnEnv);
+    let remaining = await liveCopies();
+    for (let i = 0; remaining.length && i < 10; i++) { await new Promise((r) => setTimeout(r, 500)); remaining = await liveCopies(); }
+    if (remaining.length) throw new Error(`${remaining.length} live copy(ies) still running after stop - not starting a fresh session`);
+    // NOT urgent: the fresh start respects the CPU-guard start limiter like any other start
+    newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { forceFresh: true, initialPrompt: prompt });
+    logStuckWatchdog(`escalation: closed all live sessions of ${agentPath}, started fresh session ${newId}`);
     await startTerminalSession(agentPath, sessionCwd, cols, rows, newId, false, false, "stuck-escalation");
   } catch (e) {
     dropPlaceholder(agentPath);
@@ -3875,7 +3904,7 @@ async function checkForStuckTurns() {
 
     const now = Date.now();
     // v1.134.0: 3+ recoveries in the window with no real progress after them = failing; stop re-dispatching this conversation.
-    if (stuckEsc.evaluate(agentPath, { name: path.basename(agentPath), windowMs: 3 * thresholdMs })) {
+    if (stuckEsc.evaluate(agentPath, { name: path.basename(agentPath) })) {
       session.stuckWatch = null;
       continue;
     }
