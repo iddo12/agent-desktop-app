@@ -1,0 +1,7 @@
+/* v1.134.0 stuck / duplicate-copies alert (see stuck-alert.js). Red = frozen, amber = needs a person to pick a copy. */
+.stuck-pill { display: inline-block; margin-top: 2px; padding: 1px 7px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; line-height: 1.5; color: #fff; max-width: 100%; white-space: normal; }
+.stuck-pill.stuck { background: var(--needs-blocked, #b6342f); }
+.stuck-pill.dup { background: var(--health-warning, #b45309); }
+#agent-list .agent-item.xp-stuck { box-shadow: inset 4px 0 0 0 var(--needs-blocked, #b6342f); background: var(--needs-blocked-bg, #f8ece8); }
+#chat-thinking-indicator.stuck-failing { color: #fff; background: var(--needs-blocked, #b6342f); font-weight: 700; padding: 4px 10px; border-radius: 6px; animation: none; }
+#chat-thinking-indicator.dup-copies { color: var(--health-warning, #b45309); font-weight: 700; animation: none; }

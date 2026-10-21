@@ -722,6 +722,44 @@ function getLatestTranscriptSizeBytes(sessionCwd) {
   return size;
 }
 
+// v1.134.0: timestamp (ms) of the newest REAL progress entry (assistant output or a tool result) in the newest transcript; queue-operation
+// lines, attachments and human prompts are ignored (they bump the mtime while the agent is frozen). null = could not read, 0 = none found.
+function realProgressOfFile(jsonlPath, size) {
+  const { lastRealProgressFromLines } = require("./stuckEscalation");
+  let fd;
+  try {
+    fd = fs.openSync(jsonlPath, "r");
+    for (const tail of [1024 * 1024, 8 * 1024 * 1024]) {
+      const len = Math.min(size, tail), buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      // the first line of a tail read may be cut in half: it fails to parse and is skipped
+      const ts = lastRealProgressFromLines(buf.toString("utf-8").split(String.fromCharCode(10)));
+      if (ts > 0) return ts;
+      if (len >= size) break;
+    }
+    return 0;
+  } catch (e) {
+    return null;
+  } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch (e) { /* ignore */ } }
+  }
+}
+// Max over the NEWEST TWO transcript files (a fresh queue-only file must not hide the real conversation next to it).
+function getLastRealProgressMs(sessionCwd) {
+  const files = [];
+  for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+    try { const st = cachedStat(jsonlPath); files.push({ jsonlPath, size: st.size, mtimeMs: st.mtimeMs }); } catch (e) { /* skip */ }
+  }
+  if (!files.length) return null;
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let best = null;
+  for (const f of files.slice(0, 2)) {
+    const v = realProgressOfFile(f.jsonlPath, f.size);
+    if (v != null && (best == null || v > best)) best = v;
+  }
+  return best;
+}
+
 function getLatestTranscriptMtimeMs(sessionCwd) {
   let latest = null;
   for (const jsonlPath of findJsonlFiles(sessionCwd)) {
@@ -1981,6 +2019,7 @@ function repinAgentName(sessionCwd, name) {
 }
 
 module.exports = {
+  getLastRealProgressMs,
   syncArchive,
   listArchivedDays,
   readArchivedDay,
