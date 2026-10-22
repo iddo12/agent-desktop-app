@@ -88,8 +88,16 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
   const NOTE_NAME = /^[A-Za-z0-9_.-]+$/;
   const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;   // Windows device names
   const noteKey = (p) => path.basename(String(p || "")).toLowerCase();
-  // the watcher puts a small "---" metadata header (kind: command) on top of a held note: not part of what Iddo reviews, sees or sends
-  const stripMeta = (x) => x.replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]{0,400}?\r?\n---[ \t]*(\r?\n|$)/, "").replace(/^\s+/, "");
+  // The watcher puts a fixed "---" header (kind: command) on top of a held note. Only that exact shape is hidden: every line must be an allowlisted
+  // key with a short plain value. Anything else in the header means the whole note is shown, so nothing the agent receives is ever hidden from Iddo.
+  const META_KEYS = /^(kind|sub|media|source|type):[ \t]*[A-Za-z0-9_-]{1,24}[ \t]*$/;
+  function stripMeta(x) {
+    const m = /^\uFEFF?---[ \t]*\r?\n([\s\S]{0,200}?)\r?\n---[ \t]*(\r?\n|$)/.exec(x);
+    if (!m) return x;
+    const hl = m[1].split(/\r?\n/);
+    if (hl.length > 5 || !hl.every((l) => META_KEYS.test(l))) return x;
+    return x.slice(m[0].length);
+  }
   function readNote(p, sealedPaths) {
     try {
       const name = path.basename(String(p || ""));
