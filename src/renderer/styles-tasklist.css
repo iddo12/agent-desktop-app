@@ -44,3 +44,4 @@ body.dark .tl-c-needs_you { color: #f5cf85; } body.dark .tl-c-working { color: #
 .tl-undo { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); background: #26241f; color: #fff; padding: 8px 16px; border-radius: 8px; display: flex; gap: 12px; align-items: center; }
 .tl-undo.hidden { display: none; }
 #tasklist-view button:focus-visible, #tasklist-view select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tl-auto { display: flex; align-items: center; gap: 4px; padding: 8px 18px 0; font-size: 13.5px; cursor: pointer; }

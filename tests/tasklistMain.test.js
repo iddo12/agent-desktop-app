@@ -58,6 +58,15 @@ const api = require("../src/tasklist/main-tasklist").init({
   assert.strictEqual(file.archive.length, 1);   // kept, not deleted
   assert.ok((await h["tasklist-undo"](ev, { agent: "all" })).ok);
   r = await h["tasklist-load"](ev, {}); assert.strictEqual(r.counts.finished, 1);
+  assert.deepStrictEqual([(await h["tasklist-load"](ev, { agent: "Alpha" })).auto.agent, (await h["tasklist-load"](ev, {})).auto.global], [false, false]);   // default off
+  assert.ok((await h["tasklist-auto"](ev, { agent: "Alpha", on: true })).ok);
+  assert.strictEqual((await h["tasklist-load"](ev, { agent: "Alpha" })).auto.agent, true);
+  assert.strictEqual((await h["tasklist-load"](ev, { agent: "Beta" })).auto.agent, false);   // only Alpha
+  assert.ok((await h["tasklist-auto"](ev, { agent: "all", on: true })).ok);
+  assert.strictEqual((await h["tasklist-load"](ev, {})).auto.global, true);
+  assert.ok((await h["tasklist-auto"](ev, { agent: "all", on: false })).ok);
+  assert.strictEqual((await h["tasklist-auto"](ev, { agent: "nope", on: true })).ok, false);
+  assert.strictEqual((await h["tasklist-auto"](ev, { agent: "Alpha", on: "yes" })).ok, false);
   api.stop();
   console.log("tasklistMain.test.js: all passed");
 })().catch((e) => { console.error(e); process.exit(1); }).finally(() => { try { fs.rmSync(ws, { recursive: true, force: true }); } catch (e) { /* none */ } });

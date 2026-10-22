@@ -40,8 +40,13 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
       if (path.dirname(path.resolve(f)).toLowerCase() !== path.resolve(d).toLowerCase()) return null;
       const st = fs.statSync(f); if (!st.isFile() || st.size > MAX_STORE_BYTES) return null;
       const j = JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, ""));
-      return { agent, items: Array.isArray(j.items) ? j.items : [], archive: Array.isArray(j.archive) ? j.archive : [] };
+      return { agent, items: Array.isArray(j.items) ? j.items : [], archive: Array.isArray(j.archive) ? j.archive : [], auto: !!(j.settings && j.settings.autoContinue) };
     } catch (e) { return null; }
+  }
+  // Iddo's switch "always continue to the next task, even after a handoff": the global flag lives next to the task folder, the per-agent flag in the store
+  function globalAuto() {
+    const r = cfg("sharedReports"); if (!r) return false;
+    try { const f = path.join(r, "task_list_settings.json"); if (fs.statSync(f).size > 4096) return false; return JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")).autoContinue === true; } catch (e) { return false; }
   }
   const known = (agent) => { const n = agentNames(); return typeof agent === "string" && n && n.includes(agent); };
 
@@ -64,7 +69,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
     const stores = want.map(readStore).filter(Boolean);
     const sum = L.summarize(stores, clock());
     const perAgent = names.map((n) => { const s = stores.find((x) => x.agent === n); return { agent: n }; });
-    return { ok: true, agents: perAgent, counts: sum.counts, rows: sum.rows.slice(0, MAX_ROWS), truncated: sum.rows.length > MAX_ROWS, canReorder: want.length === 1, canWrite: !!(cfg("pythonExe") && cfg("tasksTool")), at: clock() };
+    return { ok: true, agents: perAgent, counts: sum.counts, rows: sum.rows.slice(0, MAX_ROWS), truncated: sum.rows.length > MAX_ROWS, canReorder: want.length === 1, auto: { global: globalAuto(), agent: want.length === 1 && stores[0] ? stores[0].auto : null }, canWrite: !!(cfg("pythonExe") && cfg("tasksTool")), at: clock() };
   });
 
   handle("tasklist-move", async (a) => {
@@ -89,6 +94,13 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
     let failed = 0;
     for (const ag of targets) { const s = readStore(ag); if (!s || !s.archive.length) continue; const r = await runTool(["--agent", ag, "--unarchive-last"]); if (!r.ok) failed++; }
     return failed ? { ok: false, reason: "Some lists could not be restored." } : { ok: true };
+  });
+  handle("tasklist-auto", async (a) => {
+    if (typeof a.on !== "boolean") return { ok: false, reason: "Bad request." };
+    const all = !a.agent || a.agent === "all";
+    if (!all && !known(a.agent)) return { ok: false, reason: "That agent has no task list." };
+    const r = await runTool((all ? [] : ["--agent", a.agent]).concat(["--auto-continue", a.on ? "on" : "off"], all ? ["--global"] : []));
+    return r.ok ? { ok: true } : r;
   });
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; } };
 }

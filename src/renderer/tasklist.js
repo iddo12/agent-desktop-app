@@ -43,6 +43,12 @@
       S.busy = true; api.clear(S.agent).then((r) => { S.busy = false; if (r && r.ok) showUndo(S.agent); else say((r && r.reason) || "That did not work."); refresh(); }).catch(() => { S.busy = false; });
     });
     head.append(sel, clr);
+    const isAll = S.agent === "all", autoOn = isAll ? d.auto.global : !!(d.auto.agent || d.auto.global);
+    const lab = el("label", "tl-auto"); const cb = el("input"); cb.type = "checkbox"; cb.checked = autoOn; cb.disabled = !d.canWrite || (!isAll && d.auto.global);
+    lab.append(cb, document.createTextNode(isAll ? " Every agent always continues to its next task, even after a handoff" : " This agent always continues to its next task, even after a handoff" + (d.auto.global ? " (on for everyone)" : "")));
+    lab.title = "When on, an agent that fills its memory and restarts goes straight on to its next task without waiting for you. Tasks that need you are skipped.";
+    cb.addEventListener("change", () => { cb.disabled = true; api.auto(S.agent, cb.checked).then((r) => { if (!r || !r.ok) say((r && r.reason) || "That did not work."); refresh(); }).catch(() => refresh()); });
+    stats.before(lab);
     const stat = (n, label, cls, y) => { const b = el("div", "tl-stat " + cls); b.append(el("b", "tl-n", String(n)), el("span", "tl-l", label + (y != null ? " (yesterday " + y + ")" : ""))); stats.append(b); };
     stat(c.needs_you, "Need you", "amber"); stat(c.stuck, "Stuck", "red"); stat(c.working, "Working", "blue"); stat(c.not_started, "Not started", "grey"); stat(c.doneToday, "Done today", "green", c.doneYesterday);
     if (!d.rows.length) { body.append(el("p", "tl-note", "Nothing here. When an agent starts a task, it appears in this list.")); return; }
