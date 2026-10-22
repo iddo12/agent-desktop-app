@@ -35,7 +35,7 @@ function createFeedReader(opts) {
     let fd = null, text;
     try {
       let lst;
-      try { lst = fsx.lstatSync(p); } catch (e) { return { ok: false, code: e && e.code === "ENOENT" ? "MISSING" : "STAT", reason: "The finance feed file was not found." }; }
+      try { lst = fsx.lstatSync(p); } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "STAT") + " pathlen=" + p.length + " dirExists=" + (() => { try { return fsx.existsSync(path.dirname(p)); } catch (x) { return "err"; } })() + " rootExists=" + (() => { try { return fsx.existsSync(path.parse(p).root); } catch (x) { return "err"; } })()); return { ok: false, code: e && e.code === "ENOENT" ? "MISSING" : "STAT", reason: "The finance feed file was not found." }; }
       if (lst.isSymbolicLink()) { say("finance-feed refused: code=NOT_PLAIN_FILE"); return { ok: false, code: "NOT_PLAIN_FILE", reason: "The finance feed must be a plain file (not a link)." }; }
       try { fd = fsx.openSync(p, "r"); } catch (e) { say("finance-feed read failed: code=" + (e && e.code ? e.code : "OPEN")); return { ok: false, code: "READ", reason: "The finance feed file could not be read." }; }
       const st = fsx.fstatSync(fd);

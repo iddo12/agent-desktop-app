@@ -260,7 +260,7 @@ contextBridge.exposeInMainWorld("api", {
   // v1.90.0 MY FINANCE skeleton (renderer/finance.js): the renderer sends filter values and "drop"/"vault"; the folder is fixed in main.
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),
-    feed: (scope, page, offset, filter) => ipcRenderer.invoke("finance-feed", { scope, page, offset, filter }),
+    feed: (scope, page, offset, filter, from, to) => ipcRenderer.invoke("finance-feed", { scope, page, offset, filter, from, to }),
     transactions: (q) => ipcRenderer.invoke("finance-transactions", q),
     importScan: () => ipcRenderer.invoke("finance-import-scan"),
     demoCreate: () => ipcRenderer.invoke("finance-demo-create"),
