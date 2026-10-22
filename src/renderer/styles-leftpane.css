@@ -76,7 +76,7 @@ body.lp-f #systems-group.lp-more-closed .lp-soon { display: none; }
 body.lp-f #systems-group .lp-soon { flex-direction: row; }
 body.lp-f #systems-group .lp-soon-name { font-size: 12px; font-weight: 700; }
 /* badges inline at the right of a card */
-body.lp-f #systems-group .daily-nav-badge, body.lp-f #systems-group .iris-nav-badge, body.lp-f #systems-group .research-nav-badge { margin-left: auto; flex: none; }
+body.lp-f #systems-group .daily-nav-badge, body.lp-f #systems-group .iris-nav-badge, body.lp-f #systems-group .research-nav-badge, body.lp-f #systems-group .tasklist-nav-badge, body.lp-f #systems-group .intake-nav-badge { margin-left: auto; flex: none; }
 body.lp-f #systems-group .argus-nav-lamps { flex: none; }
 /* rows stay bare: picture + name + run state; the description and the memory bars live in the dock */
 body.lp-f #agent-list .agent-item { padding: 5px 8px; margin-bottom: 1px; }
@@ -119,7 +119,7 @@ body.lp-c #systems-group .daily-nav-name, body.lp-c #systems-group .lp-soon-name
 body.lp-c #systems-group .argus-nav-sub, body.lp-c #systems-group .memory-nav-sub, body.lp-c #systems-group .iris-nav-sub,
 body.lp-c #systems-group .library-nav-title { display: none; }
 /* badges sit on the tile's top-right corner */
-body.lp-c #systems-group .daily-nav-badge, body.lp-c #systems-group .iris-nav-badge, body.lp-c #systems-group .research-nav-badge { position: absolute; top: -6px; right: -5px; min-width: 17px; height: 17px; font-size: 10px; padding: 0 4px; }
+body.lp-c #systems-group .daily-nav-badge, body.lp-c #systems-group .iris-nav-badge, body.lp-c #systems-group .research-nav-badge, body.lp-c #systems-group .tasklist-nav-badge, body.lp-c #systems-group .intake-nav-badge { position: absolute; top: -6px; right: -5px; min-width: 17px; height: 17px; font-size: 10px; padding: 0 4px; }
 body.lp-c #systems-group .argus-nav-lamps { position: absolute; top: -6px; right: -5px; gap: 2px; }
 body.lp-c #systems-group .argus-dot { min-width: 17px; height: 17px; font-size: 10px; padding: 0 4px; }
 /* Library is a plain tile; only its red unread pill shows, on the corner (click the tile: Documents; the Library view has the tabs) */
@@ -143,7 +143,7 @@ body.lp-on #systems-group.lp-strip .lp-soon, body.lp-on #systems-group.lp-strip 
 body.lp-on #systems-group.lp-strip .memory-nav-title, body.lp-on #systems-group.lp-strip .memory-nav-sub, body.lp-on #systems-group.lp-strip .daily-nav-name,
 body.lp-on #systems-group.lp-strip .iris-nav-name, body.lp-on #systems-group.lp-strip .library-nav-row, body.lp-on #systems-group.lp-strip .library-nav-title { display: none; }
 body.lp-on #systems-group.lp-strip #library-nav::after { content: none; }
-body.lp-f #systems-group.lp-strip .daily-nav-badge, body.lp-f #systems-group.lp-strip .iris-nav-badge, body.lp-f #systems-group.lp-strip .research-nav-badge, body.lp-f #systems-group.lp-strip .argus-nav-lamps
+body.lp-f #systems-group.lp-strip .daily-nav-badge, body.lp-f #systems-group.lp-strip .iris-nav-badge, body.lp-f #systems-group.lp-strip .research-nav-badge, body.lp-f #systems-group.lp-strip .tasklist-nav-badge, body.lp-f #systems-group.lp-strip .intake-nav-badge, body.lp-f #systems-group.lp-strip .argus-nav-lamps
 { position: absolute; top: -6px; right: -5px; margin: 0; }
 
 /* ================= ARGUS open: the sidebar is a narrow strip; keep only ARGUS and MEMORY, stacked ================= */
@@ -164,13 +164,13 @@ body.argus-open:not(.argus-sidebar-wide) #systems-group .memory-nav-title, body.
    Mixed case, medium weight, no wide tracking. ARGUS / MEMORY / IRIS are typed in capitals by their modules, so they are
    shown as Argus / Memory / Iris with lowercase + capital first letter (the others are already mixed case). Sizes stay per layout. */
 body.lp-on #systems-group .lp-tile .argus-nav-title, body.lp-on #systems-group .lp-tile .memory-nav-title, body.lp-on #systems-group .lp-tile .iris-nav-title,
-body.lp-on #systems-group .lp-tile .daily-nav-name, body.lp-on #systems-group .lp-tile .health-nav-name, body.lp-on #systems-group .lp-tile .tools-nav-name, body.lp-on #systems-group .lp-tile .research-nav-name, body.lp-on #systems-group .lp-tile .finance-nav-name, body.lp-on #systems-group .lp-tile .designs-nav-name,
+body.lp-on #systems-group .lp-tile .daily-nav-name, body.lp-on #systems-group .lp-tile .health-nav-name, body.lp-on #systems-group .lp-tile .tools-nav-name, body.lp-on #systems-group .lp-tile .research-nav-name, body.lp-on #systems-group .lp-tile .tasklist-nav-name, body.lp-on #systems-group .lp-tile .intake-nav-name, body.lp-on #systems-group .lp-tile .finance-nav-name, body.lp-on #systems-group .lp-tile .designs-nav-name,
 body.lp-on #systems-group .lp-tile .library-nav-title, body.lp-on #systems-group .lp-tile .lp-soon-name, body.lp-c #systems-group #library-nav::after {
   font-weight: 500; letter-spacing: .01em; text-transform: none; }
 body.lp-on #systems-group .lp-tile .argus-nav-title, body.lp-on #systems-group .lp-tile .memory-nav-title, body.lp-on #systems-group .lp-tile .iris-nav-title { text-transform: lowercase; }
 body.lp-on #systems-group .lp-tile .argus-nav-title::first-letter, body.lp-on #systems-group .lp-tile .memory-nav-title::first-letter, body.lp-on #systems-group .lp-tile .iris-nav-title::first-letter { text-transform: uppercase; }
 body.lp-f #systems-group .lp-tile .argus-nav-title, body.lp-f #systems-group .lp-tile .memory-nav-title, body.lp-f #systems-group .lp-tile .iris-nav-title,
-body.lp-f #systems-group .lp-tile .daily-nav-name, body.lp-f #systems-group .lp-tile .health-nav-name, body.lp-f #systems-group .lp-tile .tools-nav-name, body.lp-f #systems-group .lp-tile .research-nav-name, body.lp-f #systems-group .lp-tile .finance-nav-name, body.lp-f #systems-group .lp-tile .designs-nav-name,
+body.lp-f #systems-group .lp-tile .daily-nav-name, body.lp-f #systems-group .lp-tile .health-nav-name, body.lp-f #systems-group .lp-tile .tools-nav-name, body.lp-f #systems-group .lp-tile .research-nav-name, body.lp-f #systems-group .lp-tile .tasklist-nav-name, body.lp-f #systems-group .lp-tile .intake-nav-name, body.lp-f #systems-group .lp-tile .finance-nav-name, body.lp-f #systems-group .lp-tile .designs-nav-name,
 body.lp-f #systems-group .lp-tile .library-nav-title, body.lp-f #systems-group .lp-tile .lp-soon-name { font-size: 12px; }
 
 /* ================= v1.83.2: shapes on the agent row's health dot (colour is not the only signal), F and C only ================= */
@@ -206,7 +206,7 @@ body.lp-f:not(.argus-open) #systems-group .argus-nav .argus-nav-lamps { grid-col
 body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile { container-type: inline-size; flex-wrap: wrap; gap: 2px 8px; align-content: center; min-height: 44px; }
 
 /* labels: size follows the tile, at most 2 lines, then an ellipsis (the full text is the tile's tooltip) */
-body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-title, .iris-nav-title, .memory-nav-title, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .finance-nav-name, .designs-nav-name, .library-nav-title, .fleet-nav-title, .lp-soon-name) {
+body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-title, .iris-nav-title, .memory-nav-title, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name, .library-nav-title, .fleet-nav-title, .lp-soon-name) {
   font-size: clamp(11.5px, 8px + 3cqw, 14.5px); letter-spacing: .01em; line-height: 1.2; min-width: 0; max-width: 100%;
   white-space: normal; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -215,11 +215,11 @@ body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav
   white-space: normal; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 /* the name block takes what is left but never forces the badge out of the tile */
-body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-name, .iris-nav-name, .fleet-nav-name, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .finance-nav-name, .designs-nav-name) { flex: 1 1 56px; min-width: 0; }
+body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-name, .iris-nav-name, .fleet-nav-name, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name) { flex: 1 1 56px; min-width: 0; }
 body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .fleet-nav { padding: 8px 10px; }
 
 /* badges: one size rule for all, wrap under the name when short of room, any number of digits */
-body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.daily-nav-badge, .iris-nav-badge, .research-nav-badge, .fleet-nav-badge) {
+body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.daily-nav-badge, .iris-nav-badge, .research-nav-badge, .tasklist-nav-badge, .intake-nav-badge, .fleet-nav-badge) {
   flex: none; margin-left: 0; margin-inline-start: auto; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; white-space: nowrap;
   font-size: clamp(10.5px, 7px + 2.4cqw, 12px); font-variant-numeric: tabular-nums; }
 
