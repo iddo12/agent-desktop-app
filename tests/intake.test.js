@@ -36,7 +36,7 @@ t("rejected and already-approved cannot be approved again", () => {
 t("foldApprovals ignores junk", () => assert.deepStrictEqual(Object.keys(L.foldApprovals([{ id: "a", action: "approve" }, { id: "b", action: "x" }, null])), ["a"]));
 t("sealed is sticky: a later event cannot unseal and the sealed path is remembered", () => {
   const f = L.foldIndex([{ id: "health/s", kind: "health", sealed: true, path: "secret.txt", title: "x" }, { id: "health/s", kind: "capture", title: "now open", path: "other.txt" }]);
-  assert.ok(f[0].sealed && f[0].title === "" && f[0].path === "" && f[0].sealedPath === "secret.txt");
+  assert.ok(f[0].sealed && f[0].title === "" && f[0].path === "" && f[0].sealedPaths.includes("secret.txt") && f[0].sealedPaths.includes("other.txt"));
 });
 t("approve needs the hash of what was shown", () => {
   assert.strictEqual(L.decide({ action: "approve" }, get("capture/a"), {}, O, "T").ok, false);

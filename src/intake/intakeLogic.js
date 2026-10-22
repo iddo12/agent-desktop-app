@@ -22,9 +22,10 @@ function foldIndex(events) {
     const sub = prev.sealed ? prev.sub : clip(String(e.sub || ""), 24).toLowerCase();
     // sealed is sticky: a later event can never unseal an id; a sealed item's path stays recorded so no other id can read that file
     const sealed = prev.sealed === true || e.sealed === true || SEALED_KINDS.includes(kind) || SEALED_KINDS.includes(id.split("/")[0]);
-    const sealedPath = prev.sealedPath || (sealed ? clip(String(e.path || prev.path || ""), 500) : "");
+    const sealedPaths = (prev.sealedPaths || []).slice();
+    if (sealed) for (const q of [prev.path, e.path]) { const c = clip(String(q || ""), 500); if (c && !sealedPaths.includes(c)) sealedPaths.push(c); }
     by.set(id, {
-      id, kind, sub, sealed, sealedPath,
+      id, kind, sub, sealed, sealedPaths,
       status: STATUSES.includes(e.status) ? e.status : (prev.status || "new"),
       created: clip(String(e.created || prev.created || ""), 40),
       title: sealed ? "" : clip(String(e.title || prev.title || ""), 300),

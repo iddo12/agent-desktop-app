@@ -10,7 +10,7 @@ const lines = [
   { id: "health/h", kind: "health", status: "new", sealed: true, title: "secret", path: "sealed.txt" },
   { id: "capture/steal", kind: "capture", sub: "command", status: "pending_approval", title: "steal", path: "sealed.txt" },
   { id: "capture/trav", kind: "capture", sub: "command", status: "pending_approval", title: "trav", path: "../intake_index.jsonl" },
-  { id: "health/h", kind: "capture", title: "unseal try", path: "n.txt" },
+  { id: "health/h", kind: "capture", title: "unseal try", path: "other.txt" },
 ];
 fs.writeFileSync(path.join(dir, "intake_index.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n");
 fs.mkdirSync(path.join(dir, "notes")); fs.writeFileSync(path.join(dir, "notes", "n.txt"), "Draft the recap"); fs.writeFileSync(path.join(dir, "notes", "sealed.txt"), "SEALED TEXT");

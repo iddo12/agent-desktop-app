@@ -51,7 +51,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
     const sent = readSent();
     for (const id of sent) if (approvals[id]) approvals[id] = Object.assign({}, approvals[id], { delivered: true });
     const items = L.foldIndex(ix.events);
-    const sealedPaths = new Set(items.map((i) => i.sealedPath).filter(Boolean).map((p) => noteKey(p)));
+    const sealedPaths = new Set(); for (const i of items) for (const q of i.sealedPaths || []) sealedPaths.add(noteKey(q));
     for (const it of items) { it.hash = it.sealed ? "" : L.sha256(messageOf(it, sealedPaths)); }
     return { ok: true, items, approvals, empty: ix.empty, sealedPaths };
   };
@@ -86,14 +86,17 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
   function readNote(p, sealedPaths) {
     try {
       const name = path.basename(String(p || ""));
-      if (!NOTE_NAME.test(name) || name.startsWith(".") || (sealedPaths && sealedPaths.has(name.toLowerCase()))) return null;
+      if (!NOTE_NAME.test(name) || name.startsWith(".") || /[. ]$/.test(name) || (sealedPaths && sealedPaths.has(name.toLowerCase()))) return null;
       const notesDir = path.join(dir(), "notes"), full = path.join(notesDir, name);
       if (path.isAbsolute(String(p)) && path.dirname(path.resolve(String(p))).toLowerCase() !== path.resolve(notesDir).toLowerCase()) return null;
       if (fs.lstatSync(full).isSymbolicLink()) return null;
       const real = fs.realpathSync(full);
       if (path.dirname(real).toLowerCase() !== fs.realpathSync(notesDir).toLowerCase()) return null;
       const fd = fs.openSync(real, "r");
-      try { const st = fs.fstatSync(fd); if (!st.isFile() || st.size > MAX_NOTE_BYTES) return null; const buf = Buffer.alloc(st.size); fs.readSync(fd, buf, 0, st.size, 0); return buf.toString("utf8"); }
+      try {
+        const st = fs.fstatSync(fd); if (!st.isFile() || st.size > MAX_NOTE_BYTES) return null;
+        // same file by identity (dev+ino), not just by name: Windows name tricks (short names, trailing dots) cannot reach a sealed file
+        for (const sn of sealedPaths || []) { try { const ss = fs.statSync(path.join(notesDir, sn)); if (ss.ino && ss.ino === st.ino && ss.dev === st.dev) return null; } catch (e) { /* no such sealed file here */ } } const buf = Buffer.alloc(st.size); fs.readSync(fd, buf, 0, st.size, 0); return buf.toString("utf8"); }
       finally { fs.closeSync(fd); }
     } catch (e) { return null; }
   }
@@ -123,6 +126,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
     const it2 = again.items.find((x) => x.id === a.id);
     const st2 = it2 ? L.effectiveStatus(it2, again.approvals) : "";
     if (!it2 || it2.hash !== d.record.hash || st2 === "approved" || st2 === "sent") return { ok: false, reason: "This item changed. Open it again to review." };
+    if (L.sha256(msg) !== d.record.hash || L.sha256(msg) !== a.hash) return { ok: false, reason: "This item changed. Open it again to review." };   // delivered bytes = approved bytes
     appendLine(approvalsFile(), d.record);           // the approval is on record BEFORE anything is delivered
     let res = null;
     try { res = await deliverToAgent(ap, msg); } catch (e) { res = null; }
