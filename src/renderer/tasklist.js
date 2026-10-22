@@ -7,7 +7,9 @@
   const G = [["needs_you", "⚠ Needs you", "Needs you"], ["stuck", "◼ Stuck", "Stuck"], ["working", "▶ Working on it", "Working"], ["not_started", "○ Not started", "Not started"], ["finished", "✓ Finished", "Finished"]];
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-  const view = el("div"); view.id = "tasklist-view"; view.className = "hidden";
+  // The standalone Task List app runs this same file: it sets window.TASKLIST_STANDALONE (no Escape-to-close) and may add ?compact=1 (second-monitor layout).
+  const standalone = !!window.TASKLIST_STANDALONE;
+  const view = el("div"); view.id = "tasklist-view"; view.className = "hidden" + (/[?&]compact=1\b/.test(String(location.search)) ? " tl-compact" : "");
   const head = el("div", "tl-head"), stats = el("div", "tl-stats"), body = el("div", "tl-body"), undoBar = el("div", "tl-undo hidden");
   undoBar.setAttribute("role", "status");
   view.append(head, stats, body, undoBar);
@@ -82,7 +84,7 @@
   }
 
   let off = null;
-  const onKey = (e) => { if (e.key === "Escape" && open) { close(); e.preventDefault(); } };
+  const onKey = (e) => { if (e.key === "Escape" && open && !standalone) { close(); e.preventDefault(); } };
   function openView() {
     if (open) return;
     if (window.viewManager) window.viewManager.closeAll();

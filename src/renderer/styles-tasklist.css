@@ -45,3 +45,14 @@ body.dark .tl-c-needs_you { color: #f5cf85; } body.dark .tl-c-working { color: #
 .tl-undo.hidden { display: none; }
 #tasklist-view button:focus-visible, #tasklist-view select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tl-auto { display: flex; align-items: center; gap: 4px; padding: 8px 18px 0; font-size: 13.5px; cursor: pointer; }
+/* Compact layout for a second monitor (standalone app, ?compact=1): smaller numbers, tighter rows, no wasted space */
+#tasklist-view.tl-compact { font-size: 13px; }
+#tasklist-view.tl-compact .tl-head { padding: 6px 10px; gap: 8px; }
+#tasklist-view.tl-compact .tl-title { font-size: 16px; }
+#tasklist-view.tl-compact .tl-stats { padding: 6px 10px 2px; gap: 6px; }
+#tasklist-view.tl-compact .tl-stat { min-width: 70px; padding: 4px 8px; }
+#tasklist-view.tl-compact .tl-n { font-size: 20px; }
+#tasklist-view.tl-compact .tl-l { font-size: 11px; }
+#tasklist-view.tl-compact .tl-body { padding: 4px 10px 10px; gap: 8px; }
+#tasklist-view.tl-compact .tl-row { padding: 5px 8px; }
+#tasklist-view.tl-compact .tl-auto { padding: 4px 10px 0; font-size: 12px; }
