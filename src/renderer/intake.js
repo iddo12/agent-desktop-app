@@ -42,6 +42,7 @@
     btn.append(el("b", "in-approve-n", String(c.pending)), document.createTextNode(c.pending ? " waiting for your approval ›" : " waiting ✓"));
     btn.addEventListener("click", () => { S.pendingOnly = c.pending ? !S.pendingOnly : false; S.tab = "all"; S.openId = null; render(); });
     head.append(btn);
+    if (S.data.requireVerified === false) body.append(el("p", "in-note in-warn", "Warning: phone signing is not live yet, so Intake cannot tell that an item really came from your phone. Check each one before you approve."));
     if (S.openId) return renderItem();
     for (const [id, label] of TABS) {
       const b = el("button", "in-tab" + (S.tab === id ? " active" : ""), label + " " + (id === "all" ? c.all : c[id] || 0));
@@ -87,9 +88,9 @@
       if (row.sealed || row.status === "sent" || row.status === "rejected" || row.status === "approved") { if (row.status === "approved") card.append(el("p", "in-note", "Approved. The watcher delivers it within a minute.")); return; }
       card.append(el("p", "in-note", "Nothing has been sent. This goes out only if you approve it here."));
       const pick = el("select", "in-pick"); pick.setAttribute("aria-label", "Send to");
-      const def = r.defaultAgent || "Personal Assistant";
+      const def = r.defaultAgent || "";
       const add = (v, label) => { const o = el("option", "", label); o.value = v; pick.append(o); };
-      add(def, (row.suggestedAgent && row.suggestedAgent !== def ? "Default: " : "") + def + " (default)");
+      if (def) add(def, (row.suggestedAgent && row.suggestedAgent !== def ? "Default: " : "") + def + " (default)"); else add("", "Choose an agent…");
       if (row.suggestedAgent && row.suggestedAgent !== def) add(row.suggestedAgent, "⭐ " + row.suggestedAgent + " (suggested)");
       api.agents(false).then((ar) => { if (ar && ar.ok) for (const n of ar.agents) if (n !== def && n !== row.suggestedAgent) add(n, n); }).catch(() => {});
       if (row.suggestedAgent && row.suggestedAgent !== def) pick.value = row.suggestedAgent;
@@ -97,7 +98,7 @@
       ok.type = no.type = "button";
       const act = (action) => {
         if (S.busy) return; S.busy = true; ok.disabled = no.disabled = true;
-        api.decide(row.id, action, pick.value, null).then((d) => {
+        api.decide(row.id, action, pick.value, r.hash).then((d) => {
           S.busy = false;
           if (!d || !d.ok) { say((d && d.reason) || "That did not work."); ok.disabled = no.disabled = false; return; }
           say(action === "reject" ? "Rejected." : d.sent ? "Approved and sent." : d.reason || "Approved.");
