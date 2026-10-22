@@ -1,52 +1,58 @@
-// Intake (PC side of the phone app): pure rules, no I/O. The watcher (Security\Tools\IntakeWatcher) writes intake_index.json; this app
-// writes ONLY the approvals file. Rules from Iddo (2026-10-22): a command from the phone stays pending until he approves it here; an item
-// that is not verified cannot be approved; sealed kinds (medical/food/health) never leave this PC except to the Health agent.
+// Intake (PC side of the phone app): pure rules, no I/O. The watcher (Security\Tools\IntakeWatcher) appends EVENTS to intake_index.jsonl
+// (fold by id, last line wins); this app appends ONLY to intake_approvals.jsonl. Rules from Iddo (2026-10-22): a command from the phone stays
+// held until he approves it here; sealed items (medical/health/nutrition) are shown as counts, have no Send-to, and never leave this PC.
 "use strict";
 
 const STATUSES = ["new", "pending_approval", "approved", "sent", "rejected"];
-const SEALED = ["medical", "food", "health"];
 const TABS = ["notes", "review", "receipts", "medical", "food", "health", "rejected"];
-const KIND_TAB = { note: "notes", idea: "notes", command: "notes", order: "notes", review: "review", product: "review", photo: "review", receipt: "receipts", medical: "medical", food: "food", health: "health" };
-const MAX_TEXT = 4000;
-
+const KIND_TAB = { capture: "notes", note: "notes", idea: "notes", command: "notes", reminder: "notes", review: "review", product: "review", photo: "review", receipts: "receipts", receipt: "receipts", invoice: "receipts", medical: "medical", nutrition: "food", food: "food", health: "health" };
+const SEALED_KINDS = ["medical", "health", "nutrition", "food"];
+const HELD_SUBS = ["command", "reminder"];
 const clip = (v, n) => (typeof v === "string" ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, n) : "");
 
-// -> clean item list. Unknown kinds fall into "notes"; an item without a usable id is dropped; verified must be literally true.
-function normalizeIndex(raw) {
-  const list = raw && Array.isArray(raw.items) ? raw.items : Array.isArray(raw) ? raw : [];
-  const out = [];
-  const seen = new Set();
-  for (const it of list) {
-    if (!it || typeof it !== "object") continue;
-    const id = clip(String(it.id == null ? "" : it.id), 80);
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const kind = clip(String(it.kind || "note"), 24).toLowerCase();
-    const status = STATUSES.includes(it.status) ? it.status : "new";
-    out.push({
-      id, kind, status,
-      created: clip(String(it.created || ""), 40),
-      summary: clip(it.summary || it.title || "", 300),
-      transcriptPath: clip(it.transcript_path || it.transcriptPath || "", 500),
-      transcript: clip(it.transcript || "", MAX_TEXT),
-      suggestedAgent: clip(it.suggested_agent || it.suggestedAgent || "", 80),
-      verified: it.verified === true,
-      sealed: SEALED.includes(kind),
-      isCommand: kind === "command" || kind === "order",
+// lines/events -> folded, validated item list. Malformed events are skipped; a later event for the same id replaces the earlier one.
+function foldIndex(events) {
+  const by = new Map();
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+    const id = clip(typeof e.id === "string" ? e.id : "", 120);
+    if (!id || !/^[A-Za-z0-9_\-./]+$/.test(id) || id.includes("..")) continue;
+    const kind = clip(String(e.kind || id.split("/")[0] || "capture"), 24).toLowerCase();
+    const sub = clip(String(e.sub || ""), 24).toLowerCase();
+    const sealed = e.sealed === true || SEALED_KINDS.includes(kind) || SEALED_KINDS.includes(id.split("/")[0]);
+    const prev = by.get(id) || {};
+    by.set(id, {
+      id, kind, sub, sealed,
+      status: STATUSES.includes(e.status) ? e.status : (prev.status || "new"),
+      created: clip(String(e.created || prev.created || ""), 40),
+      title: sealed ? "" : clip(String(e.title || prev.title || ""), 300),
+      path: sealed ? "" : clip(String(e.path || prev.path || ""), 500),
+      suggestedAgent: sealed ? "" : clip(String(e.suggested_agent || prev.suggestedAgent || ""), 80),
+      verified: e.verified === true,
+      held: HELD_SUBS.includes(sub),
     });
   }
-  return out;
+  return Array.from(by.values());
 }
 
-// Approval records win over what the index says: the watcher cannot mark something approved by itself.
+// fold the approvals lines: id -> last record
+function foldApprovals(records) {
+  const map = {};
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r || typeof r.id !== "string" || (r.action !== "approve" && r.action !== "reject")) continue;
+    map[r.id] = r;
+  }
+  return map;
+}
+
+// Our own record wins over what the index says: the watcher cannot mark something approved by itself.
 function effectiveStatus(item, approvals) {
   const a = approvals && approvals[item.id];
   if (a && a.action === "reject") return "rejected";
-  if (a && a.action === "send" && a.delivered === true) return "sent";
-  if (a && (a.action === "approve" || a.action === "send")) return "approved";
-  if (item.status === "pending_approval" || (item.isCommand && item.status === "new")) return "pending_approval";
-  if (item.status === "approved" || item.status === "sent") return "pending_approval";   // the index claims an approval AD never recorded: show it as waiting
-  return item.status;
+  if (item.status === "rejected") return "rejected";
+  if (a && a.action === "approve") return item.status === "sent" ? "sent" : (a.delivered === true ? "sent" : "approved");
+  if (item.held) return "pending_approval";   // held until WE record an approval, whatever the index claims
+  return item.status === "pending_approval" ? "pending_approval" : item.status;
 }
 
 function tabOf(item, status) {
@@ -54,55 +60,40 @@ function tabOf(item, status) {
   return KIND_TAB[item.kind] || "notes";
 }
 
+// counts never include sealed items in the shared totals or in the waiting count
 function summarize(items, approvals) {
   const counts = { all: 0, pending: 0 };
   TABS.forEach((t) => { counts[t] = 0; });
-  const rows = items.map((it) => {
-    const status = effectiveStatus(it, approvals);
-    const tab = tabOf(it, status);
-    return Object.assign({}, it, { status, tab });
-  });
+  const rows = items.map((it) => { const status = effectiveStatus(it, approvals); return Object.assign({}, it, { status, tab: tabOf(it, status) }); });
   for (const r of rows) {
     counts[r.tab]++;
-    if (!r.sealed) counts.all++;                       // sealed items never add to the shared totals
-    if (r.status === "pending_approval" && !r.sealed && r.verified) counts.pending++;
+    if (!r.sealed) counts.all++;
+    if (r.status === "pending_approval" && !r.sealed) counts.pending++;
   }
   return { rows, counts };
 }
 
-// Who may receive this item. Sealed: only the Health agent (healthAgent = its folder name from the configuration). Others: any agent name.
-function canSendTo(item, agent, healthAgent) {
-  if (!agent || typeof agent !== "string") return { ok: false, reason: "Pick an agent." };
-  if (item.sealed) {
-    if (!healthAgent || agent !== healthAgent) return { ok: false, reason: "Sealed items go only to the Health agent." };
-  }
-  return { ok: true };
-}
-
-// The message an agent receives. Plain text only, always says it was approved on the PC.
-function buildMessage(item, text) {
-  const body = clip(text != null ? text : (item.transcript || item.summary), MAX_TEXT).trim();
-  return body + "\n(From Iddo, approved on the PC in Agent Desktop Intake. Item " + item.id + ".)";
-}
-
-// Validate an approve/reject/send request against the current state. -> {ok, record?, reason?}
-function decide(req, item, approvals, healthAgent, now) {
+// Validate approve/reject. -> {ok, record?, deliver?, reason?}. `to` = chosen agent; default = the watcher's own route (no `to`).
+function decide(req, item, approvals, opts, nowIso) {
   const act = req && req.action;
   if (!item) return { ok: false, reason: "That item is gone." };
-  if (act !== "approve" && act !== "reject" && act !== "send") return { ok: false, reason: "Unknown action." };
+  if (act !== "approve" && act !== "reject") return { ok: false, reason: "Unknown action." };
   const st = effectiveStatus(item, approvals);
-  if (act === "reject") {
-    if (st === "sent") return { ok: false, reason: "Already sent." };
-    return { ok: true, record: { id: item.id, action: "reject", at: now } };
-  }
-  if (!item.verified) return { ok: false, reason: "Not from your phone: it cannot be approved." };
-  if (st === "rejected") return { ok: false, reason: "Rejected items cannot be sent." };
   if (st === "sent") return { ok: false, reason: "Already sent." };
-  const agent = req.agent || item.suggestedAgent;
-  const can = canSendTo(item, agent, healthAgent);
-  if (!can.ok) return can;
-  const message = buildMessage(item, req.text);
-  return { ok: true, record: { id: item.id, action: act, agent, message, at: now } };
+  if (act === "reject") return { ok: true, record: { id: item.id, action: "reject", at: nowIso } };
+  if (item.sealed) return { ok: false, reason: "Sealed items stay on this PC and cannot be sent." };
+  if (st === "rejected") return { ok: false, reason: "Rejected items cannot be approved." };
+  if (st === "approved") return { ok: false, reason: "Already approved." };
+  if (opts && opts.requireVerified && !item.verified) return { ok: false, reason: "Not from your phone: it cannot be approved." };
+  const rec = { id: item.id, action: "approve", at: nowIso };
+  const to = typeof req.to === "string" ? req.to.trim() : "";
+  if (to && to !== (opts && opts.defaultAgent)) { rec.to = to; rec.to_other = true; return { ok: true, record: rec, deliver: { agent: to } }; }
+  return { ok: true, record: rec };
 }
 
-module.exports = { STATUSES, SEALED, TABS, normalizeIndex, effectiveStatus, summarize, canSendTo, buildMessage, decide };
+// The text an agent receives when AD itself delivers (to_other). Plain, says it was approved on the PC.
+function buildMessage(item, body) {
+  return clip(body || item.title, 4000).trim() + "\n(From Iddo, approved on the PC in Agent Desktop Intake. Item " + item.id + ".)";
+}
+
+module.exports = { STATUSES, TABS, foldIndex, foldApprovals, effectiveStatus, summarize, decide, buildMessage };

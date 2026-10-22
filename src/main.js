@@ -5489,6 +5489,24 @@ if (!demo.ON) {
   }
 }
 
+// INTAKE (phone app, PC side): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./intake/main-intake").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never item text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+      sentLogPath: path.join(app.getPath("userData"), "intake_ad_sent.jsonl"),
+      agentPathFor: (name) => { const n = String(name || ""); return n && !/[\\/:*?"<>|]/.test(n) && n !== "." && n !== ".." && fs.existsSync(path.join(AGENTS_ROOT, n)) ? path.join(AGENTS_ROOT, n) : null; },
+      deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "an approved Intake item", { ttlSec: 600 }),
+      listAgentNames: () => listAgents({ noAvatar: true }).map((a) => a.folderName),
+    });
+  } catch (e) {
+    console.error("intake failed to load:", e && e.code);
+  }
+}
+
 // --- Chats panel (per-agent conversation list / switch / rename) -----------
 //
 // Each agent's `.claude-session` cwd accumulates one <sessionId>.jsonl per

@@ -23,6 +23,7 @@
     { id: "designs", cls: "designs-open", nav: ".designs-nav", close: () => { if (window.designsView) window.designsView.close(); } },
     { id: "setup",   cls: "setup-open",   nav: "#setup-nav",   close: () => { if (window.setupView) window.setupView.close(); } },
     { id: "finance", cls: "finance-open", nav: ".finance-nav", close: () => { if (window.financeView) window.financeView.close(); else if (window.demoFinance) window.demoFinance.close(); } },
+    { id: "intake", cls: "intake-open", nav: ".intake-nav", close: () => { if (window.intakeView) window.intakeView.close(); } },
   ];
 
   const openSet = () => new Set(VIEWS.filter((v) => body.classList.contains(v.cls)).map((v) => v.id));

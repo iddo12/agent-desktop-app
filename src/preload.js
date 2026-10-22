@@ -258,6 +258,13 @@ contextBridge.exposeInMainWorld("api", {
     seenAll: () => ipcRenderer.invoke("research-seen-all"),
   },
   // v1.90.0 MY FINANCE skeleton (renderer/finance.js): the renderer sends filter values and "drop"/"vault"; the folder is fixed in main.
+  intake: {
+    load: () => ipcRenderer.invoke("intake-load"),
+    item: (id) => ipcRenderer.invoke("intake-item", { id }),
+    agents: (sealed) => ipcRenderer.invoke("intake-agents", { sealed: !!sealed }),
+    decide: (id, action, agent, text) => ipcRenderer.invoke("intake-decide", { id, action, agent, text }),
+    audit: () => ipcRenderer.invoke("intake-audit"),
+  },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),
     feed: (scope, page, offset, filter) => ipcRenderer.invoke("finance-feed", { scope, page, offset, filter }),
