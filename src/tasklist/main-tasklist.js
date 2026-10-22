@@ -80,19 +80,24 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
     const args = L.moveArgs(rows, a.id, a.dir); if (!args) return { ok: true, changed: false };
     const r = await runTool(["--agent", a.agent].concat(args)); return r.ok ? { ok: true, changed: true } : r;
   });
+  // Clear tags what it archives with one batch id and reports which agents it really cleared; Undo restores exactly that batch (never an older clear).
   handle("tasklist-clear", async (a) => {
     const targets = a.agent && a.agent !== "all" ? (known(a.agent) ? [a.agent] : []) : (agentNames() || []);
-    let n = 0, failed = 0;
+    const batch = require("crypto").randomBytes(8).toString("hex");
+    const cleared = []; let failed = 0;
     for (const ag of targets) {
       const s = readStore(ag); if (!s || !s.items.some((i) => i && i.status === "done")) continue;
-      const r = await runTool(["--agent", ag, "--clear-finished"]); if (r.ok) n++; else failed++;
+      const r = await runTool(["--agent", ag, "--clear-finished", "--batch", batch]); if (r.ok) cleared.push(ag); else failed++;
     }
-    return failed ? { ok: false, reason: "Some lists could not be cleared." } : { ok: true, cleared: n, agents: targets.filter((ag) => true).length ? targets : [] };
+    return failed ? { ok: false, reason: "Some lists could not be cleared." } : { ok: true, cleared: cleared.length, batch: cleared.length ? batch : null, agents: cleared };
   });
   handle("tasklist-undo", async (a) => {
-    const targets = a.agent && a.agent !== "all" ? (known(a.agent) ? [a.agent] : []) : (agentNames() || []);
+    if (typeof a.batch !== "string" || !/^[0-9a-f]{8,64}$/.test(a.batch)) return { ok: false, reason: "Nothing to undo." };
     let failed = 0;
-    for (const ag of targets) { const s = readStore(ag); if (!s || !s.archive.length) continue; const r = await runTool(["--agent", ag, "--unarchive-last"]); if (!r.ok) failed++; }
+    for (const ag of agentNames() || []) {
+      const s = readStore(ag); if (!s || !s.archive.some((i) => i && i.archiveBatch === a.batch)) continue;
+      const r = await runTool(["--agent", ag, "--unarchive-batch", a.batch]); if (!r.ok) failed++;
+    }
     return failed ? { ok: false, reason: "Some lists could not be restored." } : { ok: true };
   });
   handle("tasklist-auto", async (a) => {

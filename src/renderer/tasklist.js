@@ -42,7 +42,7 @@
     sel.value = S.agent; sel.addEventListener("change", () => { S.agent = sel.value; S.show = {}; refresh(); });
     const clr = el("button", "tl-btn", "Clear finished" + (c.finished ? " (" + c.finished + ")" : "")); clr.type = "button"; clr.disabled = !c.finished || S.busy || !d.canWrite;
     clr.addEventListener("click", () => {
-      S.busy = true; api.clear(S.agent).then((r) => { S.busy = false; if (r && r.ok) showUndo(S.agent); else say((r && r.reason) || "That did not work."); refresh(); }).catch(() => { S.busy = false; });
+      S.busy = true; api.clear(S.agent).then((r) => { S.busy = false; if (r && r.ok && r.batch) showUndo(r.batch); else if (r && r.ok) say("Nothing to clear."); else say((r && r.reason) || "That did not work."); refresh(); }).catch(() => { S.busy = false; });
     });
     head.append(sel, clr);
     const isAll = S.agent === "all", autoOn = isAll ? d.auto.global : !!(d.auto.agent || d.auto.global);
@@ -60,8 +60,8 @@
       const sec = el("section", "tl-group tl-" + gid); sec.append(el("h3", "tl-gh", label + " " + rows.length));
       rows.slice(0, lim).forEach((r, k) => {
         const row = el("div", "tl-row"); const txt = el("div", "tl-txt");
-        txt.append(el("div", "tl-rt", r.title || "(no title)"));
-        const sub = [r.line, d.canReorder ? "" : r.agent].filter(Boolean).join(" · "); if (sub) txt.append(el("div", "tl-rs", sub));
+        const rt = el("div", "tl-rt", r.title || "(no title)"); rt.dir = "auto"; txt.append(rt);
+        const sub = [r.line, d.canReorder ? "" : r.agent].filter(Boolean).join(" · "); if (sub) { const rs = el("div", "tl-rs", sub); rs.dir = "auto"; txt.append(rs); }
         row.append(txt, el("span", "tl-chip tl-c-" + gid, G.find((g) => g[0] === gid)[2]));
         if (d.canReorder && gid !== "finished" && d.canWrite) {
           const mk = (sym, dir, lab, off) => { const b = el("button", "tl-mv", sym); b.type = "button"; b.setAttribute("aria-label", lab); b.disabled = off || S.busy; b.addEventListener("click", () => { S.busy = true; api.move(S.agent, r.id, dir).then(() => { S.busy = false; refresh(); }).catch(() => { S.busy = false; }); }); return b; };
@@ -77,9 +77,9 @@
   }
 
   function say(t) { undoBar.textContent = t; undoBar.classList.remove("hidden"); clearTimeout(S.undoTimer); S.undoTimer = setTimeout(() => undoBar.classList.add("hidden"), 6000); }
-  function showUndo(agent) {
+  function showUndo(batch) {
     undoBar.textContent = "Finished tasks cleared from this list. "; const u = el("button", "tl-btn", "Undo"); u.type = "button";
-    u.addEventListener("click", () => { clearTimeout(S.undoTimer); undoBar.classList.add("hidden"); api.undo(agent).then(refresh).catch(() => {}); });
+    u.addEventListener("click", () => { clearTimeout(S.undoTimer); undoBar.classList.add("hidden"); api.undo(batch).then(refresh).catch(() => {}); });
     undoBar.append(u); undoBar.classList.remove("hidden"); clearTimeout(S.undoTimer); S.undoTimer = setTimeout(() => undoBar.classList.add("hidden"), 10000);
   }
 

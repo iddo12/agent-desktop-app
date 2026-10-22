@@ -7,7 +7,15 @@ const path = require("path");
 const cp = require("child_process");
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), "tasklist-"));
 const cfgAll = (() => { try { return require("../src/appConfig"); } catch (e) { return null; } })();
-const tool = (process.env.TASKLIST_TEST_TASKS_PY) || (cfgAll && cfgAll.get("tasksTool")) || "";
+// tasks.py: env override > the configured tasksTool > shared_tools/tasks/tasks.py found in a parent folder (a checkout inside a workspace).
+function findTool() {
+  if (process.env.TASKLIST_TEST_TASKS_PY) return process.env.TASKLIST_TEST_TASKS_PY;
+  const c = cfgAll && cfgAll.get("tasksTool"); if (c && fs.existsSync(c)) return c;
+  let cur = __dirname;
+  for (let i = 0; i < 8; i++) { const cand = path.join(cur, "shared_tools", "tasks", "tasks.py"); if (fs.existsSync(cand)) return cand; const up = path.dirname(cur); if (up === cur) break; cur = up; }
+  return "";
+}
+const tool = findTool();
 const py = (cfgAll && cfgAll.get("pythonExe")) || "python";
 const haveTool = tool && fs.existsSync(tool);
 fs.mkdirSync(path.join(ws, "Alpha")); fs.mkdirSync(path.join(ws, "Beta"));
@@ -30,6 +38,7 @@ const api = require("../src/tasklist/main-tasklist").init({
   assert.deepStrictEqual(await h["tasklist-load"]({ sender: {}, senderFrame: {} }, {}), { ok: false, reason: "Not allowed." });
   const empty = await h["tasklist-load"](ev, {});
   assert.ok(empty.ok && empty.rows.length === 0);
+  if (!haveTool && process.env.TASKLIST_REQUIRE_TOOL === "1") throw new Error("tasks.py not found but TASKLIST_REQUIRE_TOOL=1");
   if (!haveTool) { console.log("tasklistMain.test.js: tasks.py not found, store-writing checks skipped"); return; }
   sh(["--agent", "Alpha", "--add", "One", "--plain", "Plain one"]); sh(["--agent", "Alpha", "--add", "Two", "--plain", "Plain two"]); sh(["--agent", "Alpha", "--add", "Three", "--plain", "Plain three"]);
   sh(["--agent", "Beta", "--add", "Beta task", "--plain", "Beta plain"]);
@@ -52,11 +61,13 @@ const api = require("../src/tasklist/main-tasklist").init({
   assert.strictEqual((await h["tasklist-move"](ev, { agent: "Alpha", id: "two", dir: "sideways" })).ok, false);
   // clear finished (archive, kept) and undo
   const cl = await h["tasklist-clear"](ev, { agent: "all" });
-  assert.ok(cl.ok);
+  assert.ok(cl.ok && cl.batch && cl.agents.length === 1 && cl.agents[0] === "Alpha");   // only the agent that really had finished tasks
+  assert.deepStrictEqual((await h["tasklist-clear"](ev, { agent: "all" })).batch, null);   // nothing left: no batch, so no Undo offered
   r = await h["tasklist-load"](ev, {}); assert.strictEqual(r.counts.finished, 0);
   const file = JSON.parse(fs.readFileSync(path.join(reports, "tasks", "Alpha.json"), "utf8"));
   assert.strictEqual(file.archive.length, 1);   // kept, not deleted
-  assert.ok((await h["tasklist-undo"](ev, { agent: "all" })).ok);
+  assert.strictEqual((await h["tasklist-undo"](ev, { batch: "nothex" })).ok, false);
+  assert.ok((await h["tasklist-undo"](ev, { batch: cl.batch })).ok);
   r = await h["tasklist-load"](ev, {}); assert.strictEqual(r.counts.finished, 1);
   assert.deepStrictEqual([(await h["tasklist-load"](ev, { agent: "Alpha" })).auto.agent, (await h["tasklist-load"](ev, {})).auto.global], [false, false]);   // default off
   assert.ok((await h["tasklist-auto"](ev, { agent: "Alpha", on: true })).ok);

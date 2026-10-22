@@ -37,6 +37,7 @@ t("moveArgs: up/down/top/bottom inside one agent, finished never moves", () => {
   assert.deepStrictEqual(L.moveArgs(rows, "d", "bottom"), ["--move", "d", "--bottom"]);
   assert.deepStrictEqual(L.moveArgs(rows, "e", "top"), ["--move", "e", "--top"]);
   assert.strictEqual(L.moveArgs(rows, "f", "up"), null);
+  assert.strictEqual(L.moveArgs(rows, "--top", "up"), null);   // an id that starts with "-" never reaches the argument list
 });
 t("agent names with path characters are refused", () => { assert.ok(L.AGENT_OK.test("Software Engineering Agent")); assert.ok(!L.AGENT_OK.test("..\\x")); assert.ok(!L.AGENT_OK.test("a/b")); });
 console.log("tasklist.test.js: " + n + " passed");

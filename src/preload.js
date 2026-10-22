@@ -261,7 +261,7 @@ contextBridge.exposeInMainWorld("api", {
     load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
     move: (agent, id, dir) => ipcRenderer.invoke("tasklist-move", { agent, id, dir }),
     clear: (agent) => ipcRenderer.invoke("tasklist-clear", { agent }),
-    undo: (agent) => ipcRenderer.invoke("tasklist-undo", { agent }),
+    undo: (batch) => ipcRenderer.invoke("tasklist-undo", { batch }),
     auto: (agent, on) => ipcRenderer.invoke("tasklist-auto", { agent, on: !!on }),   // Iddo switch: continue to the next task after a handoff
     onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("tasklist-changed", h); return () => ipcRenderer.removeListener("tasklist-changed", h); },
   },

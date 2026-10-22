@@ -5,6 +5,7 @@
 const GROUPS = ["needs_you", "stuck", "working", "not_started", "finished"];
 const LABEL = { needs_you: "Needs you", stuck: "Stuck", working: "Working on it", not_started: "Not started", finished: "Finished" };
 const clip = (v, n) => (typeof v === "string" ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f​-‏‪-‮⁠-⁤⁦-⁩﻿]/g, "").slice(0, n) : "");
+const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const AGENT_OK = /^[^\\/:*?"<>|\u0000-\u001f]{1,120}$/;
 
 function groupOf(i) {
@@ -60,7 +61,8 @@ function summarize(stores, todayIso) {
 
 // Reorder inside ONE agent's not-finished rows. Up/down swap with the neighbour in the SAME group (what the person sees). -> tasks.py arguments or null.
 function moveArgs(rowsOfAgent, id, dir) {
-  const live = rowsOfAgent.filter((r) => r.group !== "finished").sort(cmp);
+  const live = rowsOfAgent.filter((r) => r.group !== "finished" && ID_OK.test(r.id)).sort(cmp);
+  if (typeof id !== "string" || !ID_OK.test(id)) return null;
   const at = live.findIndex((r) => r.id === id);
   if (at < 0) return null;
   if (dir === "top") return at === 0 ? null : ["--move", id, "--top"];
@@ -78,4 +80,4 @@ function moveArgs(rowsOfAgent, id, dir) {
   return null;
 }
 
-module.exports = { GROUPS, LABEL, AGENT_OK, groupOf, toRow, summarize, moveArgs, clip };
+module.exports = { GROUPS, LABEL, AGENT_OK, ID_OK, groupOf, toRow, summarize, moveArgs, clip };
