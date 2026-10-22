@@ -71,7 +71,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     const s = state(); if (!s.ok) return s;
     const sum = L.summarize(s.items, s.approvals);
     const rows = sum.rows.map((r) => ({ id: r.id, kind: r.kind, sub: r.sub, status: r.status, tab: r.tab, created: r.created, verified: r.verified, sealed: r.sealed, held: r.held, suggestedAgent: r.suggestedAgent, title: r.title }));
-    return { ok: true, counts: sum.counts, rows, empty: !!s.empty, defaultAgent: opts().defaultAgent, requireVerified: opts().requireVerified };
+    return { ok: true, counts: sum.counts, rows, empty: !!s.empty, defaultAgent: opts().defaultAgent, requireVerified: opts().requireVerified, synced: /dropbox|onedrive|google ?drive|icloud|syncthing|box sync/i.test(String(dir() || "")) };
   });
   // one item opened: the held note text, read from inside the Intake folder only
   handle("intake-item", (a) => {
@@ -83,7 +83,8 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     if (!it.sealed && it.path) text = readNote(it.path, s.sealedPaths) || "";
     return { ok: true, item: { id: it.id, kind: it.kind, sub: it.sub, status: st, sealed: it.sealed }, text: text || it.title, message: L.buildMessage(it, text || it.title), retry: !!(s.approvals[it.id] && s.approvals[it.id].to_other && st === "approved"), hash: it.hash, defaultAgent: opts().defaultAgent };
   });
-  // Notes are read ONLY as a plain file name directly inside <intakeDir>/notes (never cwd-relative, never a sealed item's file, never a link).
+  // Notes are read ONLY as a plain file name directly inside <intakeDir>/pending_commands (never cwd-relative, never a sealed item's file, never a link).
+  const NOTES_SUB = "pending_commands";   // where the phone watcher keeps held notes (the index `path` points there)
   const NOTE_NAME = /^[A-Za-z0-9_.-]+$/;
   const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;   // Windows device names
   const noteKey = (p) => path.basename(String(p || "")).toLowerCase();
@@ -91,7 +92,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     try {
       const name = path.basename(String(p || ""));
       if (!NOTE_NAME.test(name) || name.startsWith(".") || /[. ]$/.test(name) || RESERVED.test(name) || (sealedPaths && sealedPaths.has(name.toLowerCase()))) return null;
-      const notesDir = path.join(dir(), "notes"), full = path.join(notesDir, name);
+      const notesDir = path.join(dir(), NOTES_SUB), full = path.join(notesDir, name);
       if (path.isAbsolute(String(p)) && path.dirname(path.resolve(String(p))).toLowerCase() !== path.resolve(notesDir).toLowerCase()) return null;
       if (fs.lstatSync(notesDir).isSymbolicLink() || fs.lstatSync(full).isSymbolicLink()) return null;
       const real = fs.realpathSync(full);

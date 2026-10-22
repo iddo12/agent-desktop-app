@@ -42,6 +42,7 @@
     btn.append(el("b", "in-approve-n", String(c.pending)), document.createTextNode(c.pending ? " waiting for your approval ›" : " waiting ✓"));
     btn.addEventListener("click", () => { S.pendingOnly = c.pending ? !S.pendingOnly : false; S.tab = "all"; S.openId = null; render(); });
     head.append(btn);
+    if (S.data.synced) body.append(el("p", "in-note in-warn", "Warning: the Intake folder is inside a synced folder (Dropbox, OneDrive or similar). Anyone who can write there could forge entries. Move it to a local, unsynced folder in Setup (intakeDir)."));
     if (S.data.requireVerified === false) body.append(el("p", "in-note in-warn", "Warning: phone signing is not live yet, so Intake cannot tell that an item really came from your phone. Check each one before you approve."));
     if (S.openId) return renderItem();
     for (const [id, label] of TABS) {

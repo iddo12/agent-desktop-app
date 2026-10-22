@@ -13,7 +13,7 @@ const lines = [
   { id: "health/h", kind: "capture", title: "unseal try", path: "other.txt" },
 ];
 fs.writeFileSync(path.join(dir, "intake_index.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n");
-fs.mkdirSync(path.join(dir, "notes")); fs.writeFileSync(path.join(dir, "notes", "n.txt"), "Draft the recap"); fs.writeFileSync(path.join(dir, "notes", "sealed.txt"), "SEALED TEXT");
+fs.mkdirSync(path.join(dir, "pending_commands")); fs.writeFileSync(path.join(dir, "pending_commands", "n.txt"), "Draft the recap"); fs.writeFileSync(path.join(dir, "pending_commands", "sealed.txt"), "SEALED TEXT");
 const h = {};
 const wc = { mainFrame: {} };
 const win = { webContents: wc, isDestroyed: () => false };
