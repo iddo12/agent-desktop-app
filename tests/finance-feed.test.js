@@ -104,7 +104,7 @@ t("reader: refusals - no path, missing file, bad JSON, invalid feed (first error
   const g = good(); g.feed_version = "1.0"; assert.ok(/newer feed refused/.test(mk(writeFeed(dir, g)).firstError));
   assert.strictEqual(mk(writeFeed(dir, "\uFEFF" + JSON.stringify(good()))).ok, true, "a BOM is tolerated");
   assert.strictEqual(mk(dir).code, "NOT_PLAIN_FILE", "a folder is not a feed");
-  for (const l of log) assert.ok(/^finance-feed (refused|invalid|read failed): code=[A-Z_a-z0-9]+$/.test(l), "log format: " + l);
+  for (const l of log) assert.ok(/^finance-feed (refused|invalid|read failed): code=[A-Z_a-z0-9]+( [A-Za-z]+=[A-Za-z0-9]+)*$/.test(l), "log format: " + l);
 });
 t("reader: refuses a feed inside a cloud-synced folder, a network path, and the app folder (same check as the vault)", () => {
   const root = tmp(), appDir = path.join(root, "app");
@@ -246,7 +246,7 @@ t("ipc: logs carry channel names and codes only - no figures, names or paths", a
 
 // ------------------------------------------------------------------ slice 2: feed pages (v1.130.0)
 const FP = require("../src/finance/feedPages");
-const PG = (page, scope, o) => FP.pageView(good(), page, scope, Object.assign({ today: "2026-10-16" }, o || {}));
+const PG = (page, scope, o) => FP.pageView(good(), page, scope, Object.assign({ today: "2026-10-16", from: "2020-01", to: "2026-12" }, o || {}));   // wide period so these tests see every row; the period tests are below
 t("pages: every page exists, carries scope/synthetic/as_of, and unknown pages are null", () => {
   assert.deepStrictEqual(FP.PAGES.slice().sort(), ["accounts", "cards", "cash", "expenses", "income", "invoices", "package", "queue", "rates", "sources", "vat"]);
   for (const p of FP.PAGES) for (const s of ["business", "personal", "all"]) {
@@ -419,7 +419,7 @@ t("guards: no hard-coded path/drive/name in the feed code; read-only (no write/d
 t("guards: renderer - textContent only, no path sent, https-only links, scope toggle, SYNTHETIC badge, Feed invalid, 7-day marks, stylesheet tokens", () => {
   const js = fs.readFileSync(path.join(SRC, "renderer", "finance.js"), "utf8"), css = fs.readFileSync(path.join(SRC, "renderer", "styles-finance.css"), "utf8");
   const pre = fs.readFileSync(path.join(SRC, "preload.js"), "utf8");
-  assert.ok(/feed: \(scope, page, offset, filter\) => ipcRenderer\.invoke\("finance-feed", \{ scope, page, offset, filter \}\)/.test(pre), "the renderer sends the scope string only");
+  assert.ok(/feed: \(scope, page, offset, filter, from, to\) => ipcRenderer\.invoke\("finance-feed", \{ scope, page, offset, filter, from, to \}\)/.test(pre), "the renderer sends the scope string only");
   assert.ok(!/innerHTML|insertAdjacentHTML/.test(js));
   for (const w of ["SYNTHETIC DATA", "Feed invalid.", "Get fresh data", "Business", "Personal", "Needs you", "Balances now", "Total in NIS", "Updated ", "Not updated "]) assert.ok(js.includes(w), "Home shows: " + w);
   assert.ok(/\/\^https:\\\/\\\//.test(js), "the login link is shown only when it is https");
@@ -430,6 +430,30 @@ t("guards: renderer - textContent only, no path sent, https-only links, scope to
   assert.ok(/\.mf-synthetic/.test(css) && /\.mf-fresh-ok/.test(css) && /\.mf-fresh-bad/.test(css) && /\.mf-scope-b/.test(css));
   assert.ok(/dir="auto"|setAttribute\("dir", "auto"\)/.test(js) && /unicode-bidi: plaintext/.test(css), "Hebrew-safe");
   assert.ok(/text-align: end/.test(css) && /border-inline-start/.test(css), "logical properties for RTL");
+});
+
+t("expenses: spend:false rows stay out of the totals and are listed apart; to_review is carried", () => {
+  const f = good(), r0 = f.expenses.by_category[0], mk = (o) => Object.assign(JSON.parse(JSON.stringify(r0)), o);
+  f.expenses.by_category = [mk({ category: "rent", spend: true }), mk({ category: "transfer_or_card_settlement", spend: false }), mk({ category: "payment_transfer_review", spend: false, to_review: true })];
+  const e = FP.pageView(f, "expenses", "all", { today: "2026-10-16" }), one = r0.money.nis;
+  assert.deepStrictEqual(e.categories.map((c) => c.category), ["rent"]); assert.strictEqual(e.total.this + e.total.last, one);
+  assert.deepStrictEqual(e.not_spend.map((c) => [c.category, c.to_review]).sort(), [["payment_transfer_review", true], ["transfer_or_card_settlement", false]]);
+});
+t("period selector: income / invoices / accounts honour from-to (default last 2 months), bad input falls back, swapped range is fixed", () => {
+  const FP = require("../src/finance/feedPages"), f = good(), pv = (page, o) => FP.pageView(f, page, "all", Object.assign({ today: "2026-10-16" }, o));
+  const d = pv("income"); assert.deepStrictEqual(d.range, { from: "2026-09", to: "2026-10" });
+  const one = pv("income", { from: "2026-10", to: "2026-10" }); assert.deepStrictEqual(one.range, { from: "2026-10", to: "2026-10" });
+  assert.ok(one.by_client.every((r) => r.month === "2026-10")); assert.ok(one.total < d.total, "one month < two months");
+  assert.strictEqual(pv("income", { from: "2020-01", to: "2020-02" }).total, 0, "empty period -> 0, not all-time");
+  { const f2 = good(); f2.income.by_year = [{ year: "2025", scope: "business", nis: 100 }, { year: "bad", scope: "business", nis: 5 }, { year: "2026", scope: "personal", nis: 7 }]; const b = FP.pageView(f2, "income", "business", { today: "2026-10-16" }); assert.deepStrictEqual(b.by_year, [{ year: "2025", nis: 100 }]); }
+  assert.deepStrictEqual(pv("income", { from: "garbage", to: "2026-13" }).range, { from: "2026-09", to: "2026-10" });
+  assert.deepStrictEqual(pv("income", { from: "2026-10", to: "2026-09" }).range, { from: "2026-09", to: "2026-10" });
+  const inv = pv("invoices", { from: "2026-10", to: "2026-10" }); assert.ok(inv.rows.every((r) => r.status !== "paid" ? true : r.date.startsWith("2026-10")), "paid rows follow the period");
+  assert.deepStrictEqual([inv.summary.unpaid.count, inv.summary.overdue.count], [4, 1], "open invoices count at any date");
+  const acc = pv("accounts", { from: "2026-10", to: "2026-10" }); assert.ok(acc.transactions.every((r) => r.date.startsWith("2026-10")));
+  assert.ok(pv("accounts", { from: "2026-09", to: "2026-10" }).total > acc.total);
+  assert.ok(pv("income", { from: "2025-12", to: "2026-01" }).range.from === "2025-12", "year rollover shift ok");
+  assert.deepStrictEqual(FP.pageView(f, "income", "all", { today: "2026-01-05" }).range, { from: "2025-12", to: "2026-01" });
 });
 
 (async () => {

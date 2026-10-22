@@ -350,3 +350,8 @@ button.mf-tile-val { text-decoration: underline; }
 .mf-cash-line { stroke: var(--fin-head); stroke-width: 2; }
 .mf-cash-dot { fill: var(--fin-head); }
 .mf-cash-tick { stroke: var(--fin-accent); stroke-width: 2; }
+.mf-period { margin: 6px 0 10px; }
+.mf-period-now { font-weight: 600; margin-inline-end: 8px; }
+.mf-btn.mf-btn-on { background: var(--fin-accent); border-color: var(--fin-accent); color: var(--fin-on-accent); }
+.mf-period input[type="month"] { font: inherit; font-size: 14px; height: 34px; color: var(--fin-text); background: var(--fin-surface); border: 1px solid var(--fin-hair); border-radius: 8px; padding: 0 8px; }
+.mf-note.mf-warn { color: var(--fin-warn, #8a5a00); font-weight: 600; }

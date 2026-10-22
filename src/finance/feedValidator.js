@@ -124,14 +124,14 @@ function validateFeed(feed) {
     const iv = feed.invoices;
     for (const k of ["unpaid", "overdue"]) if (iv[k] !== undefined && obj(iv[k], "invoices." + k)) { int(iv[k].count, "invoices." + k + ".count"); money(iv[k].amount, "invoices." + k + ".amount"); }
     if (iv.rows !== undefined) rows(iv.rows, "invoices.rows", (r, p) => {
-      str(r.id, p + ".id"); oneOf(r.direction, INVOICE_DIR, p + ".direction"); str(r.party_masked, p + ".party_masked"); date(r.date, p + ".date"); date(r.due, p + ".due");
+      str(r.id, p + ".id"); oneOf(r.direction, INVOICE_DIR, p + ".direction"); str(r.party_masked, p + ".party_masked"); if (r.party !== undefined && r.party !== null) str(r.party, p + ".party"); date(r.date, p + ".date"); date(r.due, p + ".due");
       oneOf(r.status, INVOICE_STATUS, p + ".status"); oneOf(r.scope, ROW_SCOPES, p + ".scope"); money(r.money, p + ".money");
     });
   }
 
   if (feed.income !== undefined && obj(feed.income, "income")) {
     if (feed.income.by_client !== undefined) rows(feed.income.by_client, "income.by_client", (r, p) => {
-      str(r.party_masked, p + ".party_masked"); oneOf(r.kind, INCOME_KINDS, p + ".kind"); oneOf(r.currency, CURRENCIES, p + ".currency");
+      str(r.party_masked, p + ".party_masked"); if (r.party !== undefined && r.party !== null) str(r.party, p + ".party"); oneOf(r.kind, INCOME_KINDS, p + ".kind"); oneOf(r.currency, CURRENCIES, p + ".currency");
       if (!isPeriod(r.month)) err(p + ".month", "must be a period YYYY-MM"); oneOf(r.scope, ROW_SCOPES, p + ".scope"); money(r.money, p + ".money");
     });
     if (feed.income.expected_vs_received !== undefined) rows(feed.income.expected_vs_received, "income.expected_vs_received", (r, p) => {

@@ -61,6 +61,20 @@
       sel.addEventListener("change", () => S.onPage(tab, 0, sel.value || null));
       l.appendChild(sel); return l;
     }
+    // Period selector (money pages: income, invoices, accounts). Presets + custom month range; the active period is printed in words.
+    function periodBar(S, P) {
+      const r = P.range || {}, t = (P.today || "").slice(0, 7);
+      const shift = (ym, d) => { const n = (+ym.slice(0, 4)) * 12 + (+ym.slice(5, 7) - 1) + d; return Math.floor(n / 12) + "-" + String((n % 12) + 1).padStart(2, "0"); };
+      const presets = [["This month", t, t], ["Last month", shift(t, -1), shift(t, -1)], ["Last 2 months", shift(t, -1), t], ["Last 3 months", shift(t, -2), t], ["This year", t.slice(0, 4) + "-01", t]];
+      const w = el("div", "mf-filters mf-period"); w.setAttribute("role", "group"); w.setAttribute("aria-label", "Period");
+      w.appendChild(el("span", "mf-period-now", "Period: " + (r.from === r.to ? periodWord(r.from) : periodWord(r.from) + " - " + periodWord(r.to))));
+      for (const [label, f, to] of presets) { const b = btn(label, () => S.onPeriod(f, to), "mf-btn" + (r.from === f && r.to === to ? " mf-btn-on" : "")); b.setAttribute("aria-pressed", r.from === f && r.to === to ? "true" : "false"); w.appendChild(b); }
+      const mk = (val, lab) => { const i = el("input"); i.type = "month"; i.value = val || ""; i.setAttribute("aria-label", lab); return i; };
+      const a = mk(r.from, "From month"), z = mk(r.to, "To month");
+      const go = btn("Apply", () => { if (/^\d{4}-\d{2}$/.test(a.value) && /^\d{4}-\d{2}$/.test(z.value)) S.onPeriod(a.value, z.value); }, "mf-btn");
+      w.append(el("span", "", "Custom"), a, el("span", "", "to"), z, go);
+      return w;
+    }
     const receiptChip = (r) => (r === "matched" ? chip("✓ Matched", "mf-chip-ok") : chip("? Missing"));
     const matchChip = (m) => (m === "matched" ? chip("✓ Matched", "mf-chip-ok") : m === "unmatched" ? chip("? Unmatched") : chip("! Needs check"));
     const statusChip = (s) => (s === "paid" ? chip("✓ Paid", "mf-chip-ok") : s === "overdue" ? chip("▲ Overdue", "mf-chip-bad") : chip("Unpaid"));
@@ -100,6 +114,8 @@
     function invoices(S, P) {
       const root = el("div", "mf-page");
       root.appendChild(heading(S, "Invoices", P.as_of));
+      root.appendChild(periodBar(S, P));
+      root.appendChild(el("p", "mf-note", "Unpaid and overdue invoices are shown for all dates; the period applies to paid invoices."));
       if (P.empty) { root.appendChild(empty("No invoices in the feed.")); return root; }
       const sm = P.summary, tiles = el("div", "mf-tiles4");
       const go = (f) => () => S.onPage("finvoices", 0, P.filter === f ? null : f);
@@ -118,6 +134,7 @@
     function income(S, P) {
       const root = el("div", "mf-page");
       root.appendChild(heading(S, "Income", P.as_of));
+      root.appendChild(periodBar(S, P));
       const cols = el("div", "mf-home-cols");
       const ev = card("Expected vs received", P.expected_vs_received[0] && P.expected_vs_received[0].as_of);
       if (P.expected_vs_received.length) {
@@ -134,18 +151,31 @@
       k.appendChild(P.by_client.length ? table([{ t: "Source" }, { t: "Kind" }, { t: "Month" }, { t: "NIS", num: 1 }, { t: "Share", num: 1 }, { t: "Currency" }],
         P.by_client.map((r) => [{ node: auto(el("span", "", r.party)) }, r.kind, periodWord(r.month), nisCell(r.nis), r.share + "%", r.currencies.join(", ")])) : empty("No income rows in this view."));
       if (P.by_client_total > P.by_client.length) k.appendChild(el("p", "mf-note", "Showing " + P.by_client.length + " of " + P.by_client_total + " rows."));
-      root.appendChild(k); return root;
+      root.appendChild(k);
+      if (P.by_year && P.by_year.length) {
+        const y = card("Income by year (all years, for context; not part of the period above)", P.as_of);
+        y.appendChild(table([{ t: "Year" }, { t: "NIS", num: 1 }], P.by_year.map((r) => [r.year, nisCell(r.nis)])));
+        root.appendChild(y);
+      }
+      return root;
     }
 
     function expenses(S, P) {
       const root = el("div", "mf-page");
       root.appendChild(heading(S, "Expenses", P.as_of));
-      const k = card("By category, " + (periodWord(P.period) || "no period") + (P.previous ? " vs " + periodWord(P.previous) : ""), P.as_of);
+      const partial = P.period && P.today && P.today.slice(0, 7) === P.period;   // the newest period is still running: it is not comparable with a full month
+      const k = card("By category, " + (periodWord(P.period) || "no period") + (partial ? " (month so far, to " + shortDay(P.today) + ")" : "") + (P.previous ? " vs " + periodWord(P.previous) + (partial ? " (full month)" : "") : ""), P.as_of);
       if (!P.categories.length) { k.appendChild(empty("No expense rows in this view.")); root.appendChild(k); return root; }
-      const rows = P.categories.map((c) => [{ node: auto(el("span", "", c.category)) }, nisCell(c.this), nisCell(c.last), c.change == null ? "-" : (c.change > 0 ? "▲ +" : c.change < 0 ? "▼ " : "■ ") + c.change + "%"]);
+      const rows = P.categories.map((c) => [{ node: auto(el("span", "", c.category === "uncategorised" ? "uncategorised, needs rules" : c.category)) }, nisCell(c.this), nisCell(c.last), c.change == null ? "-" : (c.change > 0 ? "▲ +" : c.change < 0 ? "▼ " : "■ ") + c.change + "%"]);
       rows.push({ cls: "mf-total", cells: ["Total", nisCell(P.total.this), nisCell(P.total.last), P.total.last ? (P.total.this >= P.total.last ? "▲ +" : "▼ ") + Math.round(((P.total.this - P.total.last) / P.total.last) * 100) + "%" : "-"] });
       k.appendChild(table([{ t: "Category" }, { t: "This period", num: 1 }, { t: "Last period", num: 1 }, { t: "Change", num: 1 }], rows));
-      root.appendChild(k); return root;
+      root.appendChild(k);
+      if (P.not_spend && P.not_spend.length) {
+        const n = card("Not counted as spending (transfers, card settlements, refunds)", P.as_of);
+        n.appendChild(table([{ t: "Category" }, { t: "This period", num: 1 }, { t: "Last period", num: 1 }, { t: "" }], P.not_spend.map((c) => [{ node: auto(el("span", "", c.category)) }, nisCell(c.this), nisCell(c.last), c.to_review ? { node: chip("? To review") } : ""])));
+        root.appendChild(n);
+      }
+      return root;
     }
 
     function vat(S, P) {
@@ -156,6 +186,7 @@
       hero.appendChild(el("div", "mf-big", grp(c.result) + (c.result >= 0 ? " refund" : " to pay")));
       hero.appendChild(el("p", "mf-note", "Charged " + grp(c.charged) + " · Input " + grp(c.input) + " · File by " + shortDay(c.file_by) + (P.periods[1] ? " · Last period: " + (P.periods[1].result >= 0 ? "refund " : "to pay ") + grp(P.periods[1].result) : "")));
       if (c.to_check) hero.appendChild(btn(c.to_check + " item" + (c.to_check === 1 ? "" : "s") + " to check before this is final (open the list)", () => S.go("fqueue")));
+      if (P.periods.every((r) => !r.input)) hero.appendChild(el("p", "mf-note mf-warn", "▲ Incomplete: input VAT (VAT on expenses) is 0 in every period, because expense VAT is not captured yet. These results show only VAT charged and are not final."));
       root.appendChild(hero);
       const k = card("Periods (current and previous)", P.as_of);
       k.appendChild(table([{ t: "Period" }, { t: "Charged", num: 1 }, { t: "Input", num: 1 }, { t: "Result", num: 1 }, { t: "To check", num: 1 }, { t: "File by" }, { t: "As of" }],
@@ -166,11 +197,14 @@
     function accounts(S, P) {
       const root = el("div", "mf-page");
       root.appendChild(heading(S, "Accounts & transactions", P.as_of));
+      root.appendChild(periodBar(S, P));   // applies to the transaction list and match counts; balances are always current
       const k = card("Balances", P.as_of), byId = new Map(P.sources.map((s) => [s.id, s]));
       k.appendChild(P.balances.length ? table([{ t: "Account" }, { t: "In its currency", num: 1 }, { t: "In NIS", num: 1 }, { t: "Last import" }, { t: "Refresh" }],
         P.balances.map((b) => { const s = byId.get(b.source), cell = el("span"); if (s) { const a = H.loginLink(s); if (a) cell.append(a, document.createTextNode(" ")); cell.appendChild(H.freshMark(s)); }
           return [{ node: auto(el("span", "", b.label)) }, money(b.currency, b.amount), nisCell(b.nis), s ? { node: el("span", s.fresh ? "" : "mf-stale", (s.fresh ? "" : "▲ ") + shortDay(s.last_import_date) + (s.fresh ? "" : ", " + s.age_days + " days")) } : "", { node: cell }]; })
         .concat([{ cls: "mf-total", cells: ["Total in NIS, as of " + shortDay(P.as_of), "", nisCell(P.total_nis), "", ""] }])) : empty("No accounts in this view."));
+      const hasBal = new Set(P.balances.map((b) => b.source)), nob = P.sources.filter((s) => !hasBal.has(s.id));
+      if (nob.length) k.appendChild(el("p", "mf-note", "No balance in the export (so not in the total): " + nob.map((s) => s.label).join(", ") + "."));
       root.appendChild(k);
       const tiles = el("div", "mf-tiles4");
       for (const [key, label] of [["matched", "Matched"], ["unmatched", "Unmatched"], ["needs_check", "Needs check"]]) {
