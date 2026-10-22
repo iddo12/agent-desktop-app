@@ -60,7 +60,11 @@ function create(deps) {
     return c;
   }
   // v1.74.0: an order "keep working regardless" (fleet or this agent) implies keep-going for the agent, whatever the old switches say
-  function relentlessFor(p) { return P.relentless.fleet === true || P.relentless.agents[p] === true; }
+  // v1.136.1-pre: the Task List's "always continue to the next task, even after a handoff" switch (deps.taskAutoContinue(agentPath), read from
+  // tasks.py's own files) is a SECOND source of the same mode. Turning relentless OFF in this app's UI therefore does not switch the mode off for an
+  // agent whose Task List switch (or the global one) is on: snap() reports autoContinue so the screen can say where the mode comes from. Fails closed.
+  function autoContinueOf(p) { try { return !!(deps.taskAutoContinue && deps.taskAutoContinue(p)); } catch (e) { return false; } }
+  function relentlessFor(p) { return P.relentless.fleet === true || P.relentless.agents[p] === true || autoContinueOf(p); }
   function enabledFor(p) { return relentlessFor(p) || (P.globalEnabled && !(P.agents[p] && P.agents[p].enabled === false)); }
   function snap(p) {
     const c = P.counters[p] || {};
@@ -68,7 +72,7 @@ function create(deps) {
     return { agentPath: p, state: c.stopped ? "stopped" : "ok", enabled: enabledFor(p), agentEnabled: !(P.agents[p] && P.agents[p].enabled === false),
       globalEnabled: P.globalEnabled, consecutive: c.consecutive || 0, since: c.stoppedAt || 0, reason: c.stoppedReason || "",
       mission: !!(P.mission[p] && P.mission[p].active),
-      relentless: relentlessFor(p), agentRelentless: P.relentless.agents[p] === true, fleetRelentless: P.relentless.fleet === true,
+      relentless: relentlessFor(p), autoContinue: autoContinueOf(p), agentRelentless: P.relentless.agents[p] === true, fleetRelentless: P.relentless.fleet === true,
       outOfProjects: !!(c.nothingLeft), outOfProjectsReason: c.nothingLeft ? c.nothingLeft.reason : "",
       // v1.74.4: a decision made before this app start is stale (it showed "fleet throttle is HOLD" long after the HOLD was gone):
       // not shown as the current reason. `attached` = the app has a terminal on this agent (agents it cannot reach are never judged);

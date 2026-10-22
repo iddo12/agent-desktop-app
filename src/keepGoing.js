@@ -25,6 +25,12 @@
 
   // v1.74.0: the text of the next-project nudge. The marker stays first (isSystemish / nudgeLabel); "[next-project]" tells the label apart.
   const NEXT_PROJECT_TAG = "[next-project]";
+  // v1.136.1-pre: how to move through the Task List (only when the task tool is known)
+  function tasksSentence(ctx) {
+    if (!(ctx && ctx.tasksTool)) return "";
+    const base = "python \"" + ctx.tasksTool + "\" --agent \"<your agent folder name>\" ";
+    return "After you finish or get blocked on the current item, take the top \"not started\" task (find it with `" + base + "--board`) with `" + base + "--start <ID>`, report progress with `" + base + "--working <ID> --note \"...\"`, and mark it finished with `" + base + "--close`. ";
+  }
   function modeParagraph(ctx) {
     const who = whoOf(ctx);
     const needs = ctx && ctx.ownerName ? "NEEDS " + String(ctx.ownerName).toUpperCase() : "NEEDS USER";
@@ -32,7 +38,7 @@
       ? "Run `python \"" + ctx.tasksTool + "\" --agent \"<your agent folder name>\" --list`, "
       : "Open your own task list (your handoff file or task tool), ";
     return "Mode: " + who + " ordered keep-working-regardless. Do not stop. " + list +
-      "pick the next open task that does not need " + who + " (not " + needs + ", not BLOCKED) and do it. If your current item is blocked, record why on the task with `--note` and switch to the next one. " +
+      "pick the next open task that does not need " + who + " (not " + needs + ", not BLOCKED) and do it. If your current item is blocked, record why on the task with `--note` and switch to the next one. " + tasksSentence(ctx) +
       "When the fleet throttle is SLOW, prefer cheap work in your own area and start no fan-outs. Never take an action that needs approval or is externally visible (publish, send, push, delete, merge) without that approval. " +
       "When nothing is left that you can do, reply with exactly one final line `NOTHING-LEFT: <one line>`.";
   }

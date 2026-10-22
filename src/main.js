@@ -3662,6 +3662,8 @@ try {
   keepGoing = require("./keepGoingGlue").create({
     log: (line) => logStuckWatchdog(line),
     ctx: () => featureCtx.keepGoing(), // owner name + task tool for the texts agents are sent
+    // v1.136.1-pre: the Task List's "always continue to the next task" switch (global or this agent's) counts as relentless mode; the agent's FOLDER name names its store
+    taskAutoContinue: (agentPath) => { const c = featureCtx.keepGoing(); return !!(c && c.tasksTool) && require("./taskAutoContinue").autoContinueFor({ tasksTool: c.tasksTool, agentName: agentPath }); },
     emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("keepgoing-state", snap); },
     agents: () => {
       const out = [];
