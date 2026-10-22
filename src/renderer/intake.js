@@ -84,8 +84,8 @@
     api.item(row.id).then((r) => {
       if (!open || S.openId !== row.id) return;
       if (!r || !r.ok) { txt.textContent = (r && r.reason) || "Could not open."; return; }
-      txt.textContent = row.sealed ? "Kept on this PC. Not sent anywhere." : r.text || "(no text)";
-      if (row.sealed || row.status === "sent" || row.status === "rejected" || row.status === "approved") { if (row.status === "approved") card.append(el("p", "in-note", "Approved. The watcher delivers it within a minute.")); return; }
+      txt.textContent = row.sealed ? "Kept on this PC. Not sent anywhere." : (r.message || r.text || "(no text)");
+      if (row.sealed || row.status === "sent" || row.status === "rejected" || row.status === "approved") { if (row.status === "approved") { card.append(el("p", "in-note", r.retry ? "Approved, but the agent did not confirm receipt." : "Approved. The watcher delivers it within a minute.")); if (r.retry) { const rb = el("button", "in-btn in-go", "Try delivering again"); rb.type = "button"; rb.addEventListener("click", () => { rb.disabled = true; api.decide(row.id, "approve", "", r.hash).then((d) => { say(d && d.sent ? "Delivered." : (d && d.reason) || "That did not work."); S.openId = null; refresh(); }).catch(() => { rb.disabled = false; }); }); card.append(rb); } } return; }
       card.append(el("p", "in-note", "Nothing has been sent. This goes out only if you approve it here."));
       const pick = el("select", "in-pick"); pick.setAttribute("aria-label", "Send to");
       const def = r.defaultAgent || "";

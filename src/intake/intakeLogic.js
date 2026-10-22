@@ -8,7 +8,7 @@ const TABS = ["notes", "review", "receipts", "medical", "food", "health", "rejec
 const KIND_TAB = { capture: "notes", note: "notes", idea: "notes", command: "notes", reminder: "notes", review: "review", product: "review", photo: "review", receipts: "receipts", receipt: "receipts", invoice: "receipts", medical: "medical", nutrition: "food", food: "food", health: "health" };
 const SEALED_KINDS = ["medical", "health", "nutrition", "food"];
 const HELD_SUBS = ["command", "reminder"];
-const clip = (v, n) => (typeof v === "string" ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, n) : "");
+const clip = (v, n) => (typeof v === "string" ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "").slice(0, n) : "");
 
 // lines/events -> folded, validated item list. Malformed events are skipped; a later event for the same id replaces the earlier one.
 function foldIndex(events) {
@@ -89,7 +89,11 @@ function decide(req, item, approvals, opts, nowIso) {
   if (act === "reject") return { ok: true, record: { id: item.id, action: "reject", at: nowIso } };
   if (item.sealed) return { ok: false, reason: "Sealed items stay on this PC and cannot be sent." };
   if (st === "rejected") return { ok: false, reason: "Rejected items cannot be approved." };
-  if (st === "approved") return { ok: false, reason: "Already approved." };
+  if (st === "approved") {
+    const ap = approvals && approvals[item.id];
+    if (ap && ap.to_other && ap.to && ap.hash === item.hash && req.hash === item.hash) return { ok: true, retry: true, record: ap, deliver: { agent: ap.to } };   // approved here, delivery never confirmed: try again, no new record
+    return { ok: false, reason: "Already approved." };
+  }
   if (typeof req.hash !== "string" || !req.hash) return { ok: false, reason: "Open the item again before approving it." };
   if (req.hash !== item.hash) return { ok: false, reason: "This item changed since you opened it. Open it again to review." };
   if (opts && opts.requireVerified && !item.verified) return { ok: false, reason: "Not from your phone: it cannot be approved." };

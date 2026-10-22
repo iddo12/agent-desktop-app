@@ -9,7 +9,7 @@ const MAX_ARG_CHARS = 6000;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_NOTE_BYTES = 64 * 1024;
 
-function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAgent, listAgentNames, sentLogPath, now }) {
+function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAgent, listAgentNames, sentLogPath, now }) {
   const say = typeof log === "function" ? log : () => {};
   const clock = now || (() => new Date().toISOString());
   const handle = (channel, fn) => raw.handle(channel, async (event, arg) => {
@@ -25,6 +25,9 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
   const dir = () => cfg("intakeDir");
   const indexFile = () => path.join(dir(), "intake_index.jsonl");
   const approvalsFile = () => path.join(dir(), "intake_approvals.jsonl");
+  // The synced file is only the hand-off for the watcher: anyone who can write the sync folder could forge a line in it. AD itself trusts only this local copy.
+  const localApprovals = localApprovalsPath || (sentLogPath ? path.join(path.dirname(sentLogPath), "intake_ad_approvals.jsonl") : null);
+  const writeApproval = (rec) => { if (localApprovals) appendLine(localApprovals, rec); appendLine(approvalsFile(), rec); };
   const opts = () => ({ requireVerified: cfg("intakeRequireVerified") === "yes", defaultAgent: cfg("intakeDefaultAgent") || "" });
 
   // -> {ok, events} ; a missing file is an empty list. Lines that do not parse are skipped (untrusted-ish input).
@@ -46,7 +49,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
   }
   const state = () => {
     const ix = readJsonl(indexFile()); if (!ix.ok) return ix;
-    const ap = readJsonl(approvalsFile()); if (!ap.ok) return ap;
+    const ap = localApprovals ? readJsonl(localApprovals) : readJsonl(approvalsFile()); if (!ap.ok) return ap;
     const approvals = L.foldApprovals(ap.events);
     const sent = readSent();
     for (const id of sent) if (approvals[id]) approvals[id] = Object.assign({}, approvals[id], { delivered: true });
@@ -78,19 +81,21 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
     const st = L.effectiveStatus(it, s.approvals);
     let text = "";
     if (!it.sealed && it.path) text = readNote(it.path, s.sealedPaths) || "";
-    return { ok: true, item: { id: it.id, kind: it.kind, sub: it.sub, status: st, sealed: it.sealed }, text: text || it.title, hash: it.hash, defaultAgent: opts().defaultAgent };
+    return { ok: true, item: { id: it.id, kind: it.kind, sub: it.sub, status: st, sealed: it.sealed }, text: text || it.title, message: L.buildMessage(it, text || it.title), retry: !!(s.approvals[it.id] && s.approvals[it.id].to_other && st === "approved"), hash: it.hash, defaultAgent: opts().defaultAgent };
   });
   // Notes are read ONLY as a plain file name directly inside <intakeDir>/notes (never cwd-relative, never a sealed item's file, never a link).
   const NOTE_NAME = /^[A-Za-z0-9_.-]+$/;
+  const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;   // Windows device names
   const noteKey = (p) => path.basename(String(p || "")).toLowerCase();
   function readNote(p, sealedPaths) {
     try {
       const name = path.basename(String(p || ""));
-      if (!NOTE_NAME.test(name) || name.startsWith(".") || /[. ]$/.test(name) || (sealedPaths && sealedPaths.has(name.toLowerCase()))) return null;
+      if (!NOTE_NAME.test(name) || name.startsWith(".") || /[. ]$/.test(name) || RESERVED.test(name) || (sealedPaths && sealedPaths.has(name.toLowerCase()))) return null;
       const notesDir = path.join(dir(), "notes"), full = path.join(notesDir, name);
       if (path.isAbsolute(String(p)) && path.dirname(path.resolve(String(p))).toLowerCase() !== path.resolve(notesDir).toLowerCase()) return null;
-      if (fs.lstatSync(full).isSymbolicLink()) return null;
+      if (fs.lstatSync(notesDir).isSymbolicLink() || fs.lstatSync(full).isSymbolicLink()) return null;
       const real = fs.realpathSync(full);
+      if (sealedPaths && sealedPaths.has(path.basename(real).toLowerCase())) return null;
       if (path.dirname(real).toLowerCase() !== fs.realpathSync(notesDir).toLowerCase()) return null;
       const fd = fs.openSync(real, "r");
       try {
@@ -116,7 +121,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
     if (!d.ok) return d;
     if (!d.deliver) {
       if (d.record.action === "approve" && L.effectiveStatus(it, s.approvals) !== "pending_approval" && L.effectiveStatus(it, s.approvals) !== "new") return { ok: false, reason: "Already handled." };
-      appendLine(approvalsFile(), d.record); return { ok: true, sent: false };
+      writeApproval(d.record); return { ok: true, sent: false };
     }
     const ap = typeof agentPathFor === "function" ? agentPathFor(d.deliver.agent) : null;
     if (!ap) return { ok: false, reason: "That agent was not found." };
@@ -125,15 +130,15 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAg
     if (!again.ok) return again;
     const it2 = again.items.find((x) => x.id === a.id);
     const st2 = it2 ? L.effectiveStatus(it2, again.approvals) : "";
-    if (!it2 || it2.hash !== d.record.hash || st2 === "approved" || st2 === "sent") return { ok: false, reason: "This item changed. Open it again to review." };
+    if (!it2 || it2.hash !== d.record.hash || (st2 === "approved" && !d.retry) || st2 === "sent") return { ok: false, reason: "This item changed. Open it again to review." };
     if (L.sha256(msg) !== d.record.hash || L.sha256(msg) !== a.hash) return { ok: false, reason: "This item changed. Open it again to review." };   // delivered bytes = approved bytes
-    appendLine(approvalsFile(), d.record);           // the approval is on record BEFORE anything is delivered
+    if (!d.retry) writeApproval(d.record);           // the approval is on record BEFORE anything is delivered
     let res = null;
     try { res = await deliverToAgent(ap, msg); } catch (e) { res = null; }
     if (res && res.delivered) { if (sentLogPath) { try { appendLine(sentLogPath, { id: it.id, to: d.deliver.agent, at: clock() }); } catch (e) { /* log is best effort */ } } return { ok: true, sent: true }; }
     return { ok: true, sent: false, reason: "Approved, but " + d.deliver.agent + " did not confirm receipt." };
   }
-  handle("intake-audit", () => { const ap = readJsonl(approvalsFile()); return ap.ok ? { ok: true, records: ap.events.slice(-100).filter((r) => r && typeof r.id === "string").map((r) => ({ id: r.id, action: r.action, to: r.to || "", at: r.at })) } : ap; });
+  handle("intake-audit", () => { const ap = localApprovals ? readJsonl(localApprovals) : readJsonl(approvalsFile()); return ap.ok ? { ok: true, records: ap.events.slice(-100).filter((r) => r && typeof r.id === "string").map((r) => ({ id: r.id, action: r.action, to: r.to || "", at: r.at })) } : ap; });
 }
 
 module.exports = { init };

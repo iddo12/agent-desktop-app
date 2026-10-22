@@ -50,4 +50,15 @@ t("approval record carries the hash; a changed item is pending again", () => {
   assert.strictEqual(L.effectiveStatus(get("capture/a"), { "capture/a": { id: "capture/a", action: "approve" } }), "pending_approval");   // no hash = not valid
 });
 t("no default agent and no pick = refused", () => assert.strictEqual(L.decide({ action: "approve", hash: "H" }, get("capture/a"), {}, { defaultAgent: "" }, "T").ok, false));
+t("bidi and zero-width characters are stripped", () => {
+  const f = L.foldIndex([{ id: "capture/z", kind: "capture", title: "a\u202Eb\u200Bc\u2066d" }]);
+  assert.strictEqual(f[0].title, "abcd");
+});
+t("approved but undelivered to_other item can be retried with the same hash", () => {
+  const it = get("capture/c");
+  const ap = { "capture/c": { id: "capture/c", action: "approve", to: "Marketing", to_other: true, hash: "H" } };
+  const d = L.decide({ action: "approve", hash: "H" }, it, ap, O, "T");
+  assert.ok(d.ok && d.retry && d.deliver.agent === "Marketing");
+  assert.strictEqual(L.decide({ action: "approve", hash: "X" }, it, ap, O, "T").ok, false);
+});
 console.log("intake.test.js: " + n + " passed");

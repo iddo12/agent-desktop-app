@@ -20,6 +20,7 @@ const win = { webContents: wc, isDestroyed: () => false };
 const ev = { sender: wc, senderFrame: wc.mainFrame };
 let delivered = [];
 require("../src/intake/main-intake").init({
+  localApprovalsPath: path.join(dir, "..", "intake-local-appr-" + process.pid + ".jsonl"),
   ipcMain: { handle: (c, f) => { h[c] = f; } }, getMainWindow: () => win, cfg: (k) => (k === "intakeDir" ? dir : k === "intakeDefaultAgent" ? "Personal Assistant" : null),
   agentPathFor: (n) => (n === "Marketing" ? "/x/Marketing" : null),
   deliverToAgent: async (p, t) => { delivered.push([p, t, fs.existsSync(path.join(dir, "intake_approvals.jsonl"))]); return { delivered: true }; },
@@ -48,6 +49,9 @@ require("../src/intake/main-intake").init({
   assert.deepStrictEqual([rec.length, rec[0].to_other, rec[0].to, rec[0].hash], [1, true, "Marketing", it.hash]);
   assert.strictEqual((await h["intake-decide"](ev, { id: "capture/a", action: "approve", agent: "Marketing", hash: it.hash })).ok, false);   // no second delivery
   assert.strictEqual((await h["intake-load"](ev)).counts.pending, 2);
+  // reserved Windows names and forged lines in the synced approvals file
+  fs.writeFileSync(path.join(dir, "intake_approvals.jsonl"), JSON.stringify({ id: "capture/trav", action: "approve", hash: "x", at: "T" }) + "\n", { flag: "a" });
+  assert.strictEqual((await h["intake-load"](ev)).rows.find((r) => r.id === "capture/trav").status, "pending_approval");   // forged synced line ignored
   console.log("intakeMain.test.js: all passed");
   fs.rmSync(dir, { recursive: true, force: true }); try { fs.unlinkSync(path.join(dir, "..", "intake-sent-" + process.pid + ".jsonl")); } catch (e) { /* none */ }
 })().catch((e) => { console.error(e); process.exit(1); });
