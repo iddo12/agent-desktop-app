@@ -8,7 +8,9 @@ const L = require("./tasklistLogic");
 const MAX_STORE_BYTES = 4 * 1024 * 1024;
 const MAX_ROWS = 400;
 
-function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
+function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch, setupHint }) {
+  // Host-specific wording for "where to fix this" (Agent Desktop has a Setup screen; the standalone app has a Choose folder button).
+  const hint = setupHint || { workspace: "Open Setup and fill in sharedReports.", tool: "Open Setup." };
   const say = typeof log === "function" ? log : () => {};
   const clock = now || (() => new Date().toISOString());
   const wc = () => { try { const w = getMainWindow(); return w && !(typeof w.isDestroyed === "function" && w.isDestroyed()) ? w.webContents : null; } catch (e) { return null; } };
@@ -24,7 +26,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
   const storeDir = () => { const r = cfg("sharedReports"); return r ? path.join(r, "tasks") : null; };
   const runTool = run || ((args) => new Promise((resolve) => {
     const py = cfg("pythonExe"), tool = cfg("tasksTool");
-    if (!py || !tool) return resolve({ ok: false, reason: "Python or tasks.py is not set up. Open Setup." });
+    if (!py || !tool) return resolve({ ok: false, reason: "Python or tasks.py is not set up. " + hint.tool });
     require("child_process").execFile(py, [tool].concat(args), { timeout: 20000, windowsHide: true }, (err, out, errOut) => resolve(err ? { ok: false, reason: "The task tool did not accept that." } : { ok: true, out: String(out || "") }));
   }));
 
@@ -61,7 +63,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch }) {
   }
 
   handle("tasklist-load", (a) => {
-    const d = storeDir(); if (!d) return { ok: false, reason: "The shared reports folder is not set. Open Setup and fill in sharedReports." };
+    const d = storeDir(); if (!d) return { ok: false, reason: "The shared reports folder is not set. " + hint.workspace };
     const names = agentNames(); if (!names) return { ok: false, reason: "The task folder could not be read." };
     startWatch();
     const want = a.agent && a.agent !== "all" ? (known(a.agent) ? [a.agent] : []) : names;
