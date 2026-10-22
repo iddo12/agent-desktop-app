@@ -88,6 +88,8 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
   const NOTE_NAME = /^[A-Za-z0-9_.-]+$/;
   const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;   // Windows device names
   const noteKey = (p) => path.basename(String(p || "")).toLowerCase();
+  // the watcher puts a small "---" metadata header (kind: command) on top of a held note: not part of what Iddo reviews, sees or sends
+  const stripMeta = (x) => x.replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]{0,400}?\r?\n---[ \t]*(\r?\n|$)/, "").replace(/^\s+/, "");
   function readNote(p, sealedPaths) {
     try {
       const name = path.basename(String(p || ""));
@@ -102,7 +104,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
       try {
         const st = fs.fstatSync(fd); if (!st.isFile() || st.size > MAX_NOTE_BYTES) return null;
         // same file by identity (dev+ino), not just by name: Windows name tricks (short names, trailing dots) cannot reach a sealed file
-        for (const sn of sealedPaths || []) { try { const ss = fs.statSync(path.join(notesDir, sn)); if (ss.ino && ss.ino === st.ino && ss.dev === st.dev) return null; } catch (e) { /* no such sealed file here */ } } const buf = Buffer.alloc(st.size); fs.readSync(fd, buf, 0, st.size, 0); return buf.toString("utf8"); }
+        for (const sn of sealedPaths || []) { try { const ss = fs.statSync(path.join(notesDir, sn)); if (ss.ino && ss.ino === st.ino && ss.dev === st.dev) return null; } catch (e) { /* no such sealed file here */ } } const buf = Buffer.alloc(st.size); fs.readSync(fd, buf, 0, st.size, 0); return stripMeta(buf.toString("utf8")); }
       finally { fs.closeSync(fd); }
     } catch (e) { return null; }
   }
