@@ -257,6 +257,13 @@ contextBridge.exposeInMainWorld("api", {
     seen: (items) => ipcRenderer.invoke("research-seen", { items }),
     seenAll: () => ipcRenderer.invoke("research-seen-all"),
   },
+  tasklist: {
+    load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
+    move: (agent, id, dir) => ipcRenderer.invoke("tasklist-move", { agent, id, dir }),
+    clear: (agent) => ipcRenderer.invoke("tasklist-clear", { agent }),
+    undo: (agent) => ipcRenderer.invoke("tasklist-undo", { agent }),
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("tasklist-changed", h); return () => ipcRenderer.removeListener("tasklist-changed", h); },
+  },
   // v1.90.0 MY FINANCE skeleton (renderer/finance.js): the renderer sends filter values and "drop"/"vault"; the folder is fixed in main.
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),

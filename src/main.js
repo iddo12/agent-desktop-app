@@ -5489,6 +5489,20 @@ if (!demo.ON) {
   }
 }
 
+// TASK LIST (plain-language view of the fleet task stores): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./tasklist/main-tasklist").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never task text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("tasklist failed to load:", e && e.code);
+  }
+}
+
 // --- Chats panel (per-agent conversation list / switch / rename) -----------
 //
 // Each agent's `.claude-session` cwd accumulates one <sessionId>.jsonl per
