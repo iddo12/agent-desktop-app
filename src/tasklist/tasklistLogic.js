@@ -60,7 +60,7 @@ function summarize(stores, todayIso) {
 }
 
 // Reorder inside ONE agent's not-finished rows. Up/down swap with the neighbour in the SAME group (what the person sees). -> tasks.py arguments or null.
-function moveArgs(rowsOfAgent, id, dir) {
+function moveArgs(rowsOfAgent, id, dir, target) {
   const live = rowsOfAgent.filter((r) => r.group !== "finished" && ID_OK.test(r.id)).sort(cmp);
   if (typeof id !== "string" || !ID_OK.test(id)) return null;
   const at = live.findIndex((r) => r.id === id);
@@ -68,6 +68,19 @@ function moveArgs(rowsOfAgent, id, dir) {
   if (dir === "top") return at === 0 ? null : ["--move", id, "--top"];
   if (dir === "bottom") return at === live.length - 1 ? null : ["--move", id, "--bottom"];
   const g = live[at].group;
+  if (dir === "before" || dir === "after") {   // drag and drop into the gap above/below the target row (same group only)
+    const rest = live.filter((r) => r.id !== id);
+    const tg = typeof target === "string" ? rest.findIndex((r) => r.id === target) : -1;
+    if (tg < 0 || rest[tg].group !== g) return null;
+    if (dir === "before") return ["--move", id, "--before", rest[tg].id];
+    return tg + 1 < rest.length ? ["--move", id, "--before", rest[tg + 1].id] : ["--move", id, "--bottom"];
+  }
+  if (dir === "to") {   // drag and drop: take the target's place (same group only)
+    const tg = typeof target === "string" ? live.findIndex((r) => r.id === target) : -1;
+    if (tg < 0 || tg === at || live[tg].group !== g) return null;
+    if (at > tg) return ["--move", id, "--before", live[tg].id];
+    return tg + 1 < live.length ? ["--move", id, "--before", live[tg + 1].id] : ["--move", id, "--bottom"];
+  }
   if (dir === "up") {
     for (let k = at - 1; k >= 0; k--) if (live[k].group === g) return ["--move", id, "--before", live[k].id];
     return null;

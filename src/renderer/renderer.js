@@ -4389,9 +4389,22 @@ async function deliverChatMessage(agentPath, session, toSend, entry) {
   // (compose box clearing and scroll-to-bottom moved in front of the awaits in sendChatInput, v1.68.0)
 }
 
+// Pasted or injected text (text copied from a web page, a dictation tool typing for us) can carry line breaks that arrive as Enter key
+// presses a few ms after the text. A human never presses Enter that fast after typing/pasting, so such an Enter becomes a new line
+// instead of sending the half-composed message (Iddo, 2026-10-22: a pasted web text was posted at once).
+let lastComposeInputAt = 0, lastComposePasteAt = 0;
+chatInputEl.addEventListener("paste", () => { lastComposePasteAt = Date.now(); });
+chatInputEl.addEventListener("input", () => { lastComposeInputAt = Date.now(); });
 chatInputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    const now = Date.now();
+    // 2026-10-23: the "< 120 ms after any input event" rule was dropped - something kept firing input events in the box
+    // and every Enter became a new line (Iddo). Only the paste rule remains; lastComposeInputAt is kept for diagnostics.
+    if (!e.isComposing && now - lastComposePasteAt < 400) {
+      document.execCommand("insertText", false, "\n");   // keeps undo history; fires "input" so auto-grow and draft parking still run
+      return;
+    }
     sendChatInput();
   }
 });
