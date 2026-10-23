@@ -498,8 +498,13 @@ function createAppConfig(opts) {
     return () => ee.removeListener("config-changed", fn);
   }
 
+  // Read-only copy of a plain top-level section of app-config.json (for example "wakeWatcher": { "enabled": true }); {} when absent.
+  function section(id) {
+    try { const v = load()[String(id)]; return v && typeof v === "object" && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {}; } catch (e) { return {}; }
+  }
+
   const api = {
-    get, path: pathOf, source, feature, isReady, usable, consentState, isConsented: (id) => consentState(id).granted, grantConsent, revokeConsent, hasSection: (id) => consentState(id).exists, set, setMany, setFeature, onChange,
+    section, get, path: pathOf, source, feature, isReady, usable, consentState, isConsented: (id) => consentState(id).granted, grantConsent, revokeConsent, hasSection: (id) => consentState(id).exists, set, setMany, setFeature, onChange,
     reload: () => { pathMemo = new Map(); load(true); return { exists, error: loadError }; },
     snapshot,
     setProbe: (id, fn) => { if (typeof fn === "function") probes[String(id)] = fn; else delete probes[String(id)]; },
@@ -529,7 +534,7 @@ function def() {
   return init({ userDataDir: ud, documentsDir: docs });
 }
 const proxy = { createAppConfig, init, KEYS, FILE_NAME, SCHEMA, envName };
-for (const m of ["get", "path", "source", "feature", "isReady", "usable", "consentState", "isConsented", "grantConsent", "revokeConsent", "hasSection", "set", "setMany", "setFeature", "onChange", "reload", "snapshot", "setProbe", "hasConfigFile", "configPath", "allKeys", "keyInfo", "suggestWorkspace", "clean", "on"]) {
+for (const m of ["section", "get", "path", "source", "feature", "isReady", "usable", "consentState", "isConsented", "grantConsent", "revokeConsent", "hasSection", "set", "setMany", "setFeature", "onChange", "reload", "snapshot", "setProbe", "hasConfigFile", "configPath", "allKeys", "keyInfo", "suggestWorkspace", "clean", "on"]) {
   proxy[m] = (...a) => def()[m](...a);
 }
 module.exports = proxy;
