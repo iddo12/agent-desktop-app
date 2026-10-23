@@ -261,7 +261,7 @@
     if (polls.length < FORCE_CONFIRM_POLLS) return false;
     forcePolls.delete(a.path);
     forcedInterrupts.set(a.path, now);
-    window.api.sendInput(a.path, "");              // Esc: interrupt the running turn
+    window.api.sendInput(a.path, "", { app: true });              // Esc: interrupt the running turn
     try { window.autoHandoffLog("forced Esc: " + a.displayName + " " + Math.round(t / 1000) + "K after " + Math.round(act.sinceMs / 1000) + " s continuous work"); } catch (e) {}
     console.log("[guards] forced checkpoint: interrupted", a.displayName, "at", t, "tokens after", Math.round(act.sinceMs / 60000), "min of continuous work");
     return true;
@@ -550,7 +550,7 @@
           const holds = await window.api.agentInputHoldsText(agentPath, text).catch(() => false);
           if (!holds) return false;
           window.autoHandoffLog(nm + ": handoff prompt sits unsent in the input box - pressing Enter");
-          if (typeof writeQueued === "function") writeQueued(se, () => window.api.sendInput(agentPath, "\r")); else window.api.sendInput(agentPath, "\r");
+          if (typeof writeQueued === "function") writeQueued(se, () => window.api.sendInput(agentPath, "\r", { app: true })); else window.api.sendInput(agentPath, "\r", { app: true });
           return true;
         },
         log: (line) => window.autoHandoffLog(nm + ": " + line),

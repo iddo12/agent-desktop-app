@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("api", {
   voiceWarm: () => ipcRenderer.invoke("voice-warm"),
   voiceSave: (wavBase64) => ipcRenderer.invoke("voice-save", { wavBase64 }),
   logGuard: (line) => ipcRenderer.send("guard-log", { line }),
-  sendInput: (agentPath, data, opts) => ipcRenderer.send("terminal-input", { agentPath, data, app: !!(opts && opts.app) }),
+  sendInput: (agentPath, data, opts) => ipcRenderer.send("terminal-input", { agentPath, data, app: !!(opts && opts.app), auto: !!(opts && opts.auto) }),
   onPhemeRequest: (callback) => { ipcRenderer.on("pheme-request", (event, payload) => callback(payload)); }, // v1.77.4 PHEME delivery
   phemeReply: (id, result) => ipcRenderer.send("pheme-reply", { id, result }),
   onVoiceInbox: (callback) => { ipcRenderer.on("voice-inbox-request", (event, payload) => callback(payload)); }, // v1.113.0 voice inbox (dictation addressed to one agent)

@@ -5350,6 +5350,77 @@ app.whenReady().then(() => {
   }
 });
 
+// v1.137.0 wake-up watcher (Project Autopilot): wakes an IDLE attached agent when a mail marker addresses it. OFF unless app-config.json
+// has "wakeWatcher": { "enabled": true } ("dryRun": true = log only). Logic: src/wakeWatcher.js (pure) + src/wakeWatcherMain.js (I/O);
+// delivery is the same verified path as Keep going. Isolated: a fault here only disables the watcher.
+const lastHumanInputAt = new Map(); // agentPath -> ms of the last terminal-input from the person (set in the terminal-input handler)
+let wakeWatcherInst = null;
+function startWakeWatcher() {
+  if (demo.ON || wakeWatcherInst) return;
+  try {
+    const cfgm = require("./appConfig"), WA = require("./wakeAgent");
+    const secs = () => { try { return cfgm.section("wakeWatcher"); } catch (e) { return {}; } };
+    const mailDir = () => {
+      const s = secs();
+      if (typeof s.mailDir === "string" && path.isAbsolute(s.mailDir)) return s.mailDir;
+      return cfgm.path("workspaceRoot", "shared_state", "mail") || path.join(AGENTS_ROOT, "shared_state", "mail");
+    };
+    wakeWatcherInst = require("./wakeWatcherMain").create({
+      settings: secs,
+      log: (line) => logStuckWatchdog(line),
+      mailDir,
+      projectsDir: () => cfgm.path("workspaceRoot", "shared_state", "projects") || path.join(AGENTS_ROOT, "shared_state", "projects"), // from workspaceRoot, independent of a mailDir override
+      stateFile: () => path.join(app.getPath("userData"), "wakewatcher.json"),
+      testBlocked: () => testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled()),
+      // only agents this app has a live attached session for; a stopped agent reads its mail at its next start
+      agents: () => {
+        const out = [];
+        for (const [p, s] of ptySessions) if (s && !s.starting && s.proc) out.push({ name: path.basename(p), path: p });
+        return out;
+      },
+      neverWake: (a, extra) => {
+        let cfg = null; try { cfg = readJsonFile(path.join(a.path, "agent_config.json")); } catch (e) { cfg = null; }
+        const disp = cfg && (cfg.name || cfg.displayName) ? String(cfg.name || cfg.displayName) : a.name;
+        return !!WA.isNeverWake(extra, { displayName: disp, folderName: a.name }) || WA.flaggedPersonal(cfg);
+      },
+      facts: (a) => {
+        const sc = sessionCwdPath(a.path), act = getSessionActivity(sc), nt = require("./archive").newestTranscript(sc);
+        const tail = dialogTails.get(a.path) || "";
+        let paused = false; try { paused = !!readJsonFile(path.join(a.path, "agent_config.json")).paused; } catch (e) { /* no config */ }
+        return {
+          working: !!(act && act.working), unknown: !tail.trim(),   // nothing known about the screen = never wake blind
+          idleForMs: nt ? Math.max(0, Date.now() - nt.mtimeMs) : null,
+          dialogOpen: promptLikelyOpen(a.path),
+          inputBoxNonEmpty: require("./handoffLogic").draftInInputBox(tail.slice(-600)),
+          handoffActive: (() => { const at = kgHandoffActive.get(norm_kg(a.path)); return !!at && Date.now() - at < 50 * 60 * 1000; })(),
+          lastHumanTypedAt: lastHumanInputAt.get(a.path) || 0, paused,
+        };
+      },
+      throttle: () => {
+        const tf = testGuard.usageNowPath(); if (!tf) return null;
+        const j = readJsonFile(tf); return j && j.fleetThrottle && j.fleetThrottle.state;
+      },
+      cpuHold: () => {
+        try { if (loadGovernor && loadGovernor.nudgeBlock()) return true; } catch (e) { /* governor optional */ }
+        try {
+          const SL = require("./startLimiter");
+          const info = SL.readHoldFile(path.join(require("./cpuGuardInstall").defaultStateDir(), "state", "fleet_hold.json"));
+          return !!(info && SL.holdIsActive(info, Date.now(), undefined, info.mtimeMs));
+        } catch (e) { return false; }
+      },
+      deliver: (agentInfo, line) => deliverToAgentVerified(agentInfo.path, line, "a wake-up line", { ttlSec: 180 }),
+      notify: () => {},   // events are in the app log; the stall detector reads that, nobody is messaged from here
+    });
+    wakeWatcherInst.start();
+    app.on("before-quit", () => { try { wakeWatcherInst.stop(); } catch (e) { /* closing */ } });
+  } catch (e) {
+    console.error("wake watcher failed to load:", e);
+    try { logStuckWatchdog(`wake watcher failed to load: ${e.message}`); } catch (e2) {}
+    wakeWatcherInst = null;
+  }
+}
+app.whenReady().then(() => { setTimeout(startWakeWatcher, 20000); }); // after the first agents are attached
+
 // v1.113.0 voice inbox: a dictation is addressed to the agent that was selected when the key was pressed (active-agent.json) and
 // dropped into <userData>\voice-inbox; the renderer delivers it to THAT agent through the outbox, whatever tab is open.
 app.whenReady().then(() => {
@@ -5641,8 +5712,9 @@ function logSentInput(agentPath, data) {
   } catch (e) {}
 }
 
-ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp }) => {
+ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp, auto: fromAuto }) => {
   logSentInput(agentPath, data);
+  if (!fromApp && !fromAuto) lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it (app-originated input: xterm replies, Keep going, handoffs, does not count)
   const session = ptySessions.get(agentPath);
   if (!session) {
     // No tracked session at all for this agent (as opposed to the "starting"
