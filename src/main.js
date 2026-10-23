@@ -5523,6 +5523,20 @@ if (!demo.ON) {
   }
 }
 
+// PROJECTS (Project Autopilot ledger view): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./projects/main-projects").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never project text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("projects failed to load:", e && e.code);
+  }
+}
+
 // --- Chats panel (per-agent conversation list / switch / rename) -----------
 //
 // Each agent's `.claude-session` cwd accumulates one <sessionId>.jsonl per

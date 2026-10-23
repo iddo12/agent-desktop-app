@@ -257,6 +257,13 @@ contextBridge.exposeInMainWorld("api", {
     seen: (items) => ipcRenderer.invoke("research-seen", { items }),
     seenAll: () => ipcRenderer.invoke("research-seen-all"),
   },
+  projects: {   // Projects tab (Project Autopilot): read the ledger, answer a blocking question, press Green light (both go through project.py)
+    list: () => ipcRenderer.invoke("projects-list"),
+    detail: (slug) => ipcRenderer.invoke("projects-detail", { slug }),
+    answer: (slug, qid, text) => ipcRenderer.invoke("projects-answer", { slug, qid, text }),
+    greenLight: (slug) => ipcRenderer.invoke("projects-green-light", { slug }),
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("projects-changed", h); return () => ipcRenderer.removeListener("projects-changed", h); },
+  },
   tasklist: {
     load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
     move: (agent, id, dir) => ipcRenderer.invoke("tasklist-move", { agent, id, dir }),
