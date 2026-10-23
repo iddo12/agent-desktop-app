@@ -2279,7 +2279,7 @@ async function rebuildChatView(agentPath, opts = {}) {
         pending.enterNudges = stepN + 1;
         pending.nudgeAt = now;
         window.api.agentInputHoldsText(agentPath, pending.text).then((holds) => {
-          if (holds) writeQueued(session, () => window.api.sendInput(agentPath, "\r"));
+          if (holds) writeQueued(session, () => window.api.sendInput(agentPath, "\r", { app: true }));
         }).catch(() => {});
       }
     }
@@ -3911,9 +3911,9 @@ function submitToAgent(agentPath, text, opts) {
     // v1.69.4: text ending in a backslash + Enter inserts a newline instead of submitting: one trailing space avoids it
     window.api.sendInput(agentPath, "\x1b[200~" + (/\\$/.test(text) ? text + " " : text), { app: true }); // app: a message from this send path (arms the stuck-Enter check), not keystrokes typed in the Terminal tab
     setTimeout(() => {
-      window.api.sendInput(agentPath, "\x1b[201~");
+      window.api.sendInput(agentPath, "\x1b[201~", { app: true });
       setTimeout(() => {
-        window.api.sendInput(agentPath, "\r");
+        window.api.sendInput(agentPath, "\r", { app: true });
         // v1.68.0: "sent" tick on the pending bubble (static, no animation)
         if (entryRef && entryRef.text === text && session && session.pendingSent.includes(entryRef)) {
           entryRef.written = true;
@@ -3930,7 +3930,7 @@ function submitToAgent(agentPath, text, opts) {
 try {
   window.api.onPressEnter(({ agentPath }) => {
     const s = terminals.get(agentPath);
-    if (s) writeQueued(s, () => window.api.sendInput(agentPath, "\r"));
+    if (s) writeQueued(s, () => window.api.sendInput(agentPath, "\r", { app: true }));
   });
 } catch (e) { /* older preload */ }
 
@@ -3943,7 +3943,7 @@ try {
       for (const st of steps) {
         // v1.69.4: Ctrl+C is asked from main right before it is typed (agent idle, text in the box, none in the last 10 s)
         if (st.guard === "ctrlc") { let ok = false; try { ok = await window.api.canSendCtrlC(agentPath, st.snippet); } catch (e) {} if (!ok) break; }
-        window.api.sendInput(agentPath, String(st.data));
+        window.api.sendInput(agentPath, String(st.data), String(st.data).indexOf("\x1b[200~") === 0 ? { auto: true } : { app: true }); // v1.137.0: the ladder re-typed message is auto (must not arm noteWrite); its keys are app input
         if (st.wait > 0) await new Promise((r) => setTimeout(r, st.wait));
       }
     });

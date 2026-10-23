@@ -249,7 +249,7 @@
     }
     s.connInterrupt = { at: Date.now(), idleSince: null, since: (s.connLongCmd && s.connLongCmd.startedAt) || 0 };
     window.api.logGuard("connection: user pressed Interrupt now on a long command for " + p);
-    window.api.sendInput(p, "\x1b");
+    window.api.sendInput(p, "\x1b", { app: true });
     paint(p, chatThinkingIndicatorEl);
   }
 
@@ -266,7 +266,7 @@
       let holds = false;
       try { holds = await window.api.agentInputHoldsText(p, pending.text); } catch (e) {}
       if (!s.pendingSent.includes(pending)) continue; // matched meanwhile
-      if (holds) { window.api.sendInput(p, "\r"); window.api.logGuard("connection: pressed Enter for a message left in the input box after Esc, " + p); continue; }
+      if (holds) { window.api.sendInput(p, "\r", { app: true }); window.api.logGuard("connection: pressed Enter for a message left in the input box after Esc, " + p); continue; }
       s.pendingSent = s.pendingSent.filter((x) => x !== pending);
       window.api.logGuard("connection: re-sent a message that was not delivered after Esc, " + p);
       submitToAgent(p, pending.text);

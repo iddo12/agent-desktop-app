@@ -5712,9 +5712,9 @@ function logSentInput(agentPath, data) {
   } catch (e) {}
 }
 
-ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp }) => {
+ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp, auto: fromAuto }) => {
   logSentInput(agentPath, data);
-  if (!fromApp) lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it (app-originated input: xterm replies, Keep going, handoffs, does not count)
+  if (!fromApp && !fromAuto) lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it (app-originated input: xterm replies, Keep going, handoffs, does not count)
   const session = ptySessions.get(agentPath);
   if (!session) {
     // No tracked session at all for this agent (as opposed to the "starting"

@@ -99,6 +99,17 @@ t("hop stop is lifted only by ledger events of the two agents of the chain, from
   assert.strictEqual(r.sent.length, 1, "the sender's ledger event lifts it");
 });
 
+t("automated terminal input is marked app/auto so it never counts as a person typing (source wiring)", () => {
+  const rd = (p) => fs.readFileSync(path.join(__dirname, "..", p), "utf-8");
+  const sends = (p) => rd(p).split("\n").filter((l) => /window\.api\.sendInput\(/.test(l));
+  for (const p of ["src/renderer/guards.js", "src/renderer/connection-health.js"]) for (const l of sends(p)) assert.ok(/\{ app: true \}/.test(l), p + ": " + l.trim());
+  // renderer.js: the human paths (xterm onData, the voice keys) stay unmarked; every other sender is marked
+  const human = /sendInput\(agent\.path, data\)|"\/voice|sendInput\(agentPath, " "\)|, 400\)|^  window\.api\.sendInput\(agentPath, "\\r"\);/;
+  for (const l of sends("src/renderer/renderer.js")) if (!human.test(l)) assert.ok(/\{ app: true \}|\{ auto: true \}/.test(l), "renderer.js: " + l.trim());
+  assert.ok(/auto: !!\(opts && opts\.auto\)/.test(rd("src/preload.js")), "preload forwards auto");
+  assert.ok(/if \(!fromApp && !fromAuto\) lastHumanInputAt/.test(rd("src/main.js")), "main excludes app and auto input");
+});
+
 (async () => {
   let fails = 0;
   for (const [n, f] of tests) { try { await f(); console.log("ok   " + n); } catch (e) { fails++; console.log("FAIL " + n + "\n     " + (e && e.stack || e)); } }
