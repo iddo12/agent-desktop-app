@@ -77,12 +77,13 @@ function createWriter(o) {
     } catch (e) { say("research-write log failed: code=" + (e && e.code ? e.code : "unknown")); return false; }
   }
 
-  function appendPending(agentFolder, ref, text) {
+  function appendPending(agentFolder, ref, text, hidden) {
     const f = pendingFileFor(root, agentFolder);
     const d = new Date(clock()), p2 = (x) => String(x).padStart(2, "0");
     const when = d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());   // local time, like the other pending notes
     const block = "\n## " + when + " - from " + (oneLine(ownerNow()).slice(0, 60) || "the user") + " via My Research (" + ref.week + (ref.findingId === WEEK_ID ? "" : ", finding " + ref.findingId) + ")\n" +
-      "Delivered here because " + agentFolder + " was not running. Read it at your next start and answer " + (oneLine(ownerNow()).slice(0, 60) || "the user") + ".\n\n" + messageFor(ref, text, ownerNow()) + "\n";
+      (hidden ? "Delivered here because " + (oneLine(ownerNow()).slice(0, 60) || "the user") + " talks to " + agentFolder + " outside Agent Desktop (hidden there). Read it"   // v1.141.0
+        : "Delivered here because " + agentFolder + " was not running. Read it") + " at your next start and answer " + (oneLine(ownerNow()).slice(0, 60) || "the user") + ".\n\n" + messageFor(ref, text, ownerNow()) + "\n";
     let st = null;
     try { st = fs.lstatSync(f); } catch (e) { /* new file */ }
     if (st && !st.isFile()) throw Object.assign(new Error("not a file"), { code: "ENOTFILE" });
@@ -116,15 +117,19 @@ function createWriter(o) {
       ref.week = week; ref.findingId = fid;
       const base = { time: new Date(t).toISOString(), week, agent: agentFolder, finding: fid, text: oneLine(text).slice(0, LOG_CHARS) };
       let running = false;
-      try { running = typeof o.isRunning === "function" && !!o.isRunning(agentPath); } catch (e) { running = false; }
+      // v1.141.0: an agent in the hiddenAgents setting is talked to OUTSIDE Agent Desktop (the owner uses the Claude desktop app for it), so a
+      // message from here is NEVER delivered into its Agent Desktop session: it always goes to its pending-notes file, like a stopped agent.
+      let hidden = false;
+      try { hidden = typeof o.isHidden === "function" && !!o.isHidden(agentFolder); } catch (e) { hidden = false; }
+      try { running = !hidden && typeof o.isRunning === "function" && !!o.isRunning(agentPath); } catch (e) { running = false; }
       if (!running) {
         let file;
-        try { file = appendPending(agentFolder, ref, text); }
+        try { file = appendPending(agentFolder, ref, text, hidden); }
         catch (e) { say("research-write pending note failed: code=" + (e && e.code ? e.code : "unknown")); logLine(Object.assign(base, { delivery: "failed", why: "not running, pending note not written" })); return { ok: false, delivery: "failed", reason: agentFolder + " is not running, and its pending-notes file could not be written. Nothing was sent." }; }
         recent.push({ at: t, agent: agentFolder.toLowerCase(), text: text.trim() });
-        logLine(Object.assign(base, { delivery: "pending", file }));
-        say("research-write: " + agentFolder + " not running -> pending note");
-        return { ok: true, delivery: "pending", file };
+        logLine(Object.assign(base, { delivery: "pending", file }, hidden ? { hidden: true } : {}));
+        say("research-write: " + agentFolder + (hidden ? " hidden -> pending note" : " not running -> pending note"));
+        return hidden ? { ok: true, delivery: "pending", hidden: true, agentName: agentFolder, file } : { ok: true, delivery: "pending", file };
       }
       let r;
       try { r = await o.deliver(agentPath, messageFor(ref, text, ownerNow())); } catch (e) { r = { delivered: false, error: e && e.message }; }

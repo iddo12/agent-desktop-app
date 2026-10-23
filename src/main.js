@@ -5532,6 +5532,7 @@ try {
     // v1.89.0 "Write to <agent>": the SAME verified delivery and classification as My Daily > Tasks "Write an answer"
     deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Research message", { ttlSec: 600 }),
     classifyDelivery: (r) => require("./daily/decisions-main").classifyDelivery(r),
+    listAgents: () => listAgents({ noAvatar: true }),   // v1.141.0: the Skills & Plugins rotation editor offers and checks names against this (hidden agents included)
     resolveAgent: (name) => {   // an agent NAME from a digest -> its folder in the app's own agent list (folder or display name), else null
       const low = String(name || "").trim().toLowerCase();
       const a = listAgents({ noAvatar: true }).find((x) => x.folderName.toLowerCase() === low || String(x.displayName || "").toLowerCase() === low);

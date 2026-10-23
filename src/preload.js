@@ -249,6 +249,7 @@ contextBridge.exposeInMainWorld("api", {
     recsLoad: (all) => ipcRenderer.invoke("recs-load", { all: !!all }),
     recsWrite: (week, agent, itemId, text) => ipcRenderer.invoke("recs-write", { week, agent, itemId, text }),
     skillsLoad: (week) => ipcRenderer.invoke("skills-load", { week: week || "" }),   // v1.139.0 Skills & Plugins tab (read-only)
+    skillsSetRotation: (agents, expected) => ipcRenderer.invoke("skills-rotation-set", { agents, expected }),   // v1.141.0 who looks this week
     // v1.91.0 magazine view: a finding's cached lead image (main fetches it once, safely; never a remote URL) and the owner's sent thread
     image: (week, agent, findingId) => ipcRenderer.invoke("research-image", { week, agent, findingId }),
     thread: (week, agent, findingId) => ipcRenderer.invoke("research-thread", { week, agent, findingId }),

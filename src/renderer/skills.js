@@ -73,24 +73,63 @@
     const s = section("week", "This week: who looks for new skills and plugins");
     if (!r.agents) { s.appendChild(el("p", "sk-note", r.missing ? "The rotation list (skills_plugins_rotation.json) is not there yet, so no agents are set for the watch." : "The rotation list could not be read.")); return s; }
     const found = new Set((d.agents || []).filter((a) => d.week === r.week).map((a) => norm(a.agent)));
-    s.appendChild(el("p", "sk-lead", plural(r.agents.length, "agent looks", "agents look") + " this week. Each one searches the places in \"Where we look\" for skills, plugins and add-ons that would help its own work, then scores what it finds."));
+    s.appendChild(el("p", "sk-lead", plural(r.agents.length, "agent looks", "agents look") + " this week. Each one searches the places in \"Where we look\" for skills, plugins and add-ons that would help its own work, then scores what it finds. Add or remove agents here; the next run uses this list."));
+    // v1.141.0: the list is editable (x removes, "Add agent" adds); each change is saved at once through skills-rotation-set, with Undo.
+    // The rotation's reason paragraph and the schedule text line are no longer shown (Iddo).
+    const known = Array.isArray(d.knownAgents) ? d.knownAgents : [];
+    const label = (name) => { const k = known.find((x) => norm(x.folderName) === norm(name)); return k && k.displayName && norm(k.displayName) !== norm(name) ? k.displayName : name; };
     const chips = el("div", "sk-agents");
     r.agents.forEach((a) => {
       const has = found.has(norm(a));
-      chips.appendChild(btn(a + (has ? "" : " (no report yet)"), "sk-agent" + (has ? " sk-has" : ""), () => (has ? jump("agent-" + norm(a)) : null), has ? "Jump to what " + a + " found." : a + " has not written a report for this week yet."));
+      const chip = el("span", "sk-agentchip" + (has ? " sk-has" : ""));
+      chip.appendChild(btn(label(a) + (has ? "" : " (no report yet)"), "sk-agent" + (has ? " sk-has" : ""), () => (has ? jump("agent-" + norm(a)) : null), has ? "Jump to what " + label(a) + " found." : label(a) + " has not written a report for this week yet."));
+      const x = btn("\u00d7", "sk-agentx", () => saveRotation(d, r.agents.filter((n) => n !== a), "Removed " + label(a) + "."), r.agents.length > 1 ? "Remove " + label(a) + " from this week's list." : "At least one agent has to look each week.");
+      x.setAttribute("aria-label", "Remove " + label(a));
+      if (r.agents.length <= 1 || S.rotSaving) x.disabled = true;
+      chip.appendChild(x);
+      chips.appendChild(chip);
     });
+    const options = known.filter((k) => !r.agents.some((n) => norm(n) === norm(k.folderName))).sort((p, q) => (p.displayName || p.folderName).localeCompare(q.displayName || q.folderName));
+    if (options.length) {
+      const sel = el("select", "sk-week sk-addagent"); sel.setAttribute("aria-label", "Add an agent to this week's list");
+      const first = el("option", "", "+ Add agent..."); first.value = ""; sel.appendChild(first);
+      options.forEach((k) => { const o = el("option", "", k.displayName || k.folderName); o.value = k.folderName; sel.appendChild(o); });
+      if (S.rotSaving) sel.disabled = true;
+      sel.addEventListener("change", () => { const v = sel.value; if (v) saveRotation(d, r.agents.concat([v]), "Added " + label(v) + "."); });
+      chips.appendChild(sel);
+    }
     s.appendChild(chips);
-    if (r.reason) { const p = el("p", "sk-text"); p.append(el("b", "", "Why these agents: "), document.createTextNode(r.reason)); s.appendChild(auto(p)); }
+    if (S.rotMsg) {
+      const p = el("p", "sk-state " + (S.rotMsg.ok ? "sk-ok" : "sk-bad"), S.rotMsg.text); p.setAttribute("role", "status");
+      if (S.rotMsg.ok && S.rotUndo) p.appendChild(btn("Undo", "sk-btn sk-quietbtn sk-undo", () => { const prev = S.rotUndo; S.rotUndo = null; saveRotation(d, prev, "Back to the previous list.", true); }, "Put the list back as it was before this change."));
+      s.appendChild(p);
+    }
     const when = el("p", "sk-when");
     when.append(el("b", "", "Next run: "), document.createTextNode(r.nextRunAt ? fmtWhen(r.nextRunAt) : (r.schedule || "not set")));
     s.appendChild(when);
-    if (r.schedule) s.appendChild(auto(el("p", "sk-small", "Schedule as written: " + r.schedule)));
     const set = [];
     if (r.week) set.push("List set for week " + r.week);
     if (r.setAt) set.push("on " + fmtDay(r.setAt));
     if (set.length) s.appendChild(el("p", "sk-small", set.join(" ") + "."));
     if (r.week && d.thisWeek && r.week < d.thisWeek) s.appendChild(el("p", "sk-note", "This list was set for week " + r.week + ". The list for this week (" + d.thisWeek + ") has not been written yet, so the next run may use different agents."));
     return s;
+  }
+
+  // v1.141.0 save who looks this week. The tab sends the list it showed (expected), so a change made elsewhere in the meantime is not overwritten.
+  function saveRotation(d, agents, said, isUndo) {
+    if (!api.skillsSetRotation || S.rotSaving) return;
+    const before = d.rotation.agents.slice();
+    S.rotSaving = true; S.rotMsg = { ok: true, text: "Saving..." }; render();
+    api.skillsSetRotation(agents, before).then((r) => {
+      S.rotSaving = false;
+      if (r && r.ok) {
+        d.rotation.agents = r.agents; d.rotation.setAt = r.setAt;
+        if (r.nextRunAt) d.rotation.nextRunAt = r.nextRunAt;
+        S.rotUndo = isUndo ? null : before;
+        S.rotMsg = { ok: true, text: said + " Saved. Next run " + (d.rotation.nextRunAt ? fmtWhen(d.rotation.nextRunAt) : "as scheduled") + "." };
+      } else S.rotMsg = { ok: false, text: "Not saved: " + ((r && r.reason) || "the list could not be written.") };
+      render();
+    }).catch(() => { S.rotSaving = false; S.rotMsg = { ok: false, text: "Not saved: something went wrong." }; render(); });
   }
 
   // ---- (2) found
@@ -197,7 +236,7 @@
     S.sending.add(dk); S.msg.delete(dk); render();
     api.recsWrite(d.week, a.file || a.agent, it.id, text).then((r) => {
       S.sending.delete(dk);
-      if (r && r.ok) { S.boxes.delete(dk); S.msg.set(dk, { ok: true, text: r.delivery === "pending" ? "Saved for " + a.agent + " (not running now: it reads it at its next start)." : "Sent to " + a.agent + "." }); }
+      if (r && r.ok) { S.boxes.delete(dk); S.msg.set(dk, { ok: true, text: r.hidden ? "Saved for " + a.agent + ". " + a.agent + " reads it in the Claude desktop app, not here." : r.delivery === "pending" ? "Saved for " + a.agent + " (not running now: it reads it at its next start)." : "Sent to " + a.agent + "." }); }   // v1.141.0 hidden agents: notes only
       else S.msg.set(dk, { ok: false, text: "Not sent: " + ((r && r.reason) || "the message could not be delivered.") });
       render();
     }).catch(() => { S.sending.delete(dk); S.msg.set(dk, { ok: false, text: "Not sent: something went wrong." }); render(); });
@@ -323,6 +362,6 @@
 
   window.skillsView = {
     mount(h) { host = h; bodyEl = el("div", "sk-root"); host.appendChild(bodyEl); render(); if (!S.data) load(); },   // a re-render of My Research re-mounts: keep what is loaded
-    unmount() { if (bodyEl && bodyEl.parentNode) bodyEl.parentNode.removeChild(bodyEl); bodyEl = null; host = null; S.data = null; S.week = ""; S.closedAgents = new Set(); S.allSources = false; S.loading = false; S.saving = new Set(); S.msg = new Map(); S.boxes = new Map(); S.sending = new Set(); },
+    unmount() { if (bodyEl && bodyEl.parentNode) bodyEl.parentNode.removeChild(bodyEl); bodyEl = null; host = null; S.data = null; S.week = ""; S.closedAgents = new Set(); S.allSources = false; S.loading = false; S.saving = new Set(); S.msg = new Map(); S.boxes = new Map(); S.sending = new Set(); S.rotSaving = false; S.rotMsg = null; S.rotUndo = null; },
   };
 })();
