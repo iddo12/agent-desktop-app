@@ -2014,3 +2014,10 @@ button.danger:not(:disabled):hover { filter: brightness(1.1); }
 .approval-row button { padding: 3px 14px; border-radius: 6px; border: 1px solid #c96442; background: #fff; cursor: pointer; font-weight: 600; }
 .approval-row .approval-yes { background: #c96442; color: #fff; }
 .approval-msg { font-size: 12px; margin-top: 4px; }
+
+/* v1.140.0 hidden agents (hiddenAgents setting): the row exists but is not displayed; one quiet line under the list says how many, with Show */
+#agent-list .agent-item.agent-hidden, #agent-list .group-block[hidden] { display: none !important; }
+.hidden-agents-line { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; font-size: 12px; color: var(--text-muted); }
+.hidden-agents-toggle { font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
+.hidden-agents-toggle:hover { border-color: var(--accent); }
+.hidden-agents-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

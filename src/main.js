@@ -1428,7 +1428,10 @@ process.on("unhandledRejection", (reason) => {
 
 // ---------------------------------------------------------------- agents --
 
-ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return listAgents(); });
+// v1.140.0: each agent carries hidden:true when its name is in the hiddenAgents setting (src/hiddenAgents.js). Only these renderer-facing
+// lists are marked; nothing is dropped, and main's own listAgents() (delivery, wake-up, keep-going, handoff) is unchanged.
+const hiddenAgentsValue = () => { try { return require("./appConfig").get("hiddenAgents"); } catch (e) { return null; } };
+ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return require("./hiddenAgents").mark(listAgents(), hiddenAgentsValue()); });
 
 // Sidebar groups ("folders"). Visual-only - see src/groups.js for the full
 // contract. The renderer sends the whole document back on every change
@@ -4972,7 +4975,7 @@ ipcMain.handle("terminal-blank-check", async (event, { agentPath, blank }) => {
   } catch (e) { return "error"; }
 });
 ipcMain.handle("agent-dialog-open", (event, { agentPath }) => promptLikelyOpen(agentPath)); // v1.65.0: mid-turn send must not type into a permission prompt
-ipcMain.handle("get-agent-overview", () => overview.getAgentOverview(listAgents({ noAvatar: true }), sessionCwdPath, dialogOpenFor));
+ipcMain.handle("get-agent-overview", () => overview.getAgentOverview(require("./hiddenAgents").mark(listAgents({ noAvatar: true }), hiddenAgentsValue()), sessionCwdPath, dialogOpenFor));   // v1.140.0 hidden flag
 // ARGUS / the Bridge (v1.39.0) - see argus-data.js. The workspace root, not
 // AGENTS_ROOT: in the sandbox the agents are fixtures but the report files are
 // real, and they are only ever read here.

@@ -70,6 +70,7 @@ const KEYS = {
   exchangeOutboxName: { kind: "text", segment: true, label: "Mailbox sub-folder for notes FROM you", derive: () => "from_me" },
   leadRole: { kind: "text", label: "Role name of the agent that talks to the other side (for example COO)", derive: () => null },
   ownerName: { kind: "text", label: "Your name", derive: () => null },
+  hiddenAgents: { kind: "text", max: 2000, label: "Agents hidden from the sidebar, pickers and fleet views (folder names, separated by ;). They keep running.", derive: () => null },   // v1.140.0 (src/hiddenAgents.js)
   partnerName: { kind: "text", label: "Partner's name (for the fleet and shared calendar)", derive: () => null },
   memoryStatsFile: { kind: "file", label: "Memory statistics file (memory_stats.json)", derive: () => null },
   memoryBaselineFile: { kind: "file", label: "Starting-context baseline file (baseline_context.json)", derive: () => null },

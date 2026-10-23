@@ -110,6 +110,34 @@ function renderAvatarEl(agent) {
 
 let uiFlags = null; // persistent one-time-note flags from main (ui-flags.json); null until loaded
 
+// v1.140.0 HIDDEN AGENTS: main marks agents named in the hiddenAgents setting with hidden:true (src/hiddenAgents.js). They stay in `agents`
+// (so sending, wake-up, voice and every other flow that looks an agent up by path still works) and keep their sidebar row, which is only
+// not displayed (class agent-hidden + the hidden attribute), so row-based status code keeps working. A small line under the list shows how many
+// are hidden and a "Show" toggle (remembered on this computer only). The agent that is open right now is always shown.
+window.hiddenAgentsView = {
+  shown() { try { return localStorage.getItem("agentDesktop.showHiddenAgents") === "1"; } catch (e) { return false; } },
+  set(on) { try { localStorage.setItem("agentDesktop.showHiddenAgents", on ? "1" : "0"); } catch (e) { /* not remembered */ } renderAgentList(); },
+  isHidden(agent) { return !!(agent && agent.hidden) && !window.hiddenAgentsView.shown() && agent.path !== activeAgentPath; },
+};
+function hiddenToggleLine() {
+  const n = agents.filter((a) => a && a.hidden).length;
+  if (!n) return null;
+  const shown = window.hiddenAgentsView.shown();
+  const line = document.createElement("div");
+  line.className = "hidden-agents-line";
+  const t = document.createElement("span");
+  t.textContent = n === 1 ? "1 hidden agent" : n + " hidden agents";
+  t.title = "Hidden in Setup (hiddenAgents). Hidden agents keep running; they are only not listed here.";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "hidden-agents-toggle";
+  b.textContent = shown ? "Hide again" : "Show";
+  b.title = shown ? "Hide them from the list again." : "Show the hidden agents in the list for now.";
+  b.addEventListener("click", () => window.hiddenAgentsView.set(!shown));
+  line.append(t, b);
+  return line;
+}
+
 async function loadAgents() {
   const [agentList, gDoc, flags] = await Promise.all([window.api.listAgents(), window.api.listGroups(), window.api.getUiFlags().catch(() => ({}))]);
   uiFlags = flags || {};
@@ -189,6 +217,17 @@ function markActiveAgentItem(agent) {
 }
 
 function renderAgentList() {
+  renderAgentListBody();
+  const line = hiddenToggleLine();   // v1.140.0
+  if (line) agentListEl.appendChild(line);
+}
+// v1.140.0: a hidden agent's row is built as before and then not displayed (see window.hiddenAgentsView above)
+function renderAgentRow(agent, groupId) {
+  const row = renderAgentItem(agent, groupId);
+  if (window.hiddenAgentsView.isHidden(agent)) { row.classList.add("agent-hidden"); row.hidden = true; }
+  return row;
+}
+function renderAgentListBody() {
   agentListEl.innerHTML = "";
   closeAgentItemMenu();
   closeGroupMenu();
@@ -226,8 +265,8 @@ function renderAgentList() {
       const agent = byFolder.get(folderName);
       if (!agent) continue; // a member whose folder no longer exists
       claimed.add(folderName);
-      wrap.appendChild(renderAgentItem(agent, group.id));
-      count++;
+      wrap.appendChild(renderAgentRow(agent, group.id));
+      if (!window.hiddenAgentsView.isHidden(agent)) count++;
     }
     header.querySelector(".group-count").textContent = String(count);
 
@@ -252,7 +291,7 @@ function renderAgentList() {
   if (groupsDoc.groups.length === 0) {
     // No groups defined at all - render exactly the pre-feature flat list,
     // with no "Ungrouped" heading.
-    for (const agent of ungrouped) agentListEl.appendChild(renderAgentItem(agent, null));
+    for (const agent of ungrouped) agentListEl.appendChild(renderAgentRow(agent, null));
     return;
   }
 
@@ -272,7 +311,9 @@ function renderAgentList() {
     name.textContent = "Ungrouped";
     const cnt = document.createElement("span");
     cnt.className = "group-count";
-    cnt.textContent = String(ungrouped.length);
+    const ungroupedShown = ungrouped.filter((a) => !window.hiddenAgentsView.isHidden(a)).length;
+    cnt.textContent = String(ungroupedShown);
+    if (!ungroupedShown) block.hidden = true;   // v1.140.0: only hidden agents left ungrouped
     header.append(caret, name, cnt);
     header.addEventListener("click", () => {
       const nowCollapsed = !block.classList.contains("collapsed");
@@ -282,7 +323,7 @@ function renderAgentList() {
 
     const wrap = document.createElement("div");
     wrap.className = "group-agents";
-    for (const agent of ungrouped) wrap.appendChild(renderAgentItem(agent, null));
+    for (const agent of ungrouped) wrap.appendChild(renderAgentRow(agent, null));
 
     block.append(header, wrap);
     wireGroupDropTarget(block, header, null); // dropping here = remove from any group
@@ -4935,7 +4976,7 @@ voiceInputBtn.addEventListener("click", () => {
 // agent" reuses THIS file's send path (the same busy-queue / submitToAgent the compose box uses) and the
 // same local whisper dictation, instead of a second transport. Nothing here runs until the Library calls it.
 window.libraryBridge = {
-  agents: () => agents.map((a) => ({ path: a.path, folderName: a.folderName, displayName: a.displayName, role: a.role || "", paused: !!a.paused })),
+  agents: () => agents.map((a) => ({ path: a.path, folderName: a.folderName, displayName: a.displayName, role: a.role || "", paused: !!a.paused, hidden: !!a.hidden })),   // v1.140.0 hidden flag: pickers leave these out, lookups by name still find them
   warmVoice: () => { try { if (window.api.voiceWarm) window.api.voiceWarm(); } catch (e) {} },
   // Sends `text` to an agent exactly as if typed in its compose box, without changing the visible agent
   // or touching anyone's draft. Starts the agent's session in the background if it has none yet.
@@ -5821,7 +5862,8 @@ function openRestartAllModal() {
   retrySkippedRestartAllBtn.classList.add("hidden");
   retrySkippedRestartAllBtn.disabled = false;
 
-  const sorted = [...agents].sort((a, b) => (a.displayName || "").localeCompare(b.displayName || ""));
+  // v1.140.0: hidden agents are still restartable from here (it is maintenance, not a list to browse); they come last, marked "(hidden)"
+  const sorted = [...agents].sort((a, b) => (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0) || (a.displayName || "").localeCompare(b.displayName || ""));
   for (const agent of sorted) {
     const row = document.createElement("div");
     row.className = "restart-all-row";
@@ -5833,7 +5875,7 @@ function openRestartAllModal() {
 
     const name = document.createElement("span");
     name.className = "restart-all-row-name";
-    name.textContent = agent.displayName || agent.folderName || agent.path;
+    name.textContent = (agent.displayName || agent.folderName || agent.path) + (agent.hidden ? " (hidden)" : "");   // v1.140.0
     if (agent.paused) {
       const note = document.createElement("span");
       note.className = "restart-all-row-note";

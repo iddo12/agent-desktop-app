@@ -51,6 +51,7 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - exchangeOutboxName (text): Mailbox sub-folder for notes FROM you  [env AGENT_DESKTOP_EXCHANGE_OUTBOX_NAME]
 - leadRole (text): Role name of the agent that talks to the other side (for example COO)  [env AGENT_DESKTOP_LEAD_ROLE]
 - ownerName (text): Your name  [env AGENT_DESKTOP_OWNER_NAME]
+- hiddenAgents (text): Agents hidden from the sidebar, pickers and fleet views (folder names, separated by ;). They keep running.  [env AGENT_DESKTOP_HIDDEN_AGENTS]
 - partnerName (text): Partner's name (for the fleet and shared calendar)  [env AGENT_DESKTOP_PARTNER_NAME]
 - memoryStatsFile (file): Memory statistics file (memory_stats.json)  [env AGENT_DESKTOP_MEMORY_STATS_FILE]
 - memoryBaselineFile (file): Starting-context baseline file (baseline_context.json)  [env AGENT_DESKTOP_MEMORY_BASELINE_FILE]

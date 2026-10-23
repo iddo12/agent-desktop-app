@@ -17,7 +17,7 @@ fs.writeFileSync(path.join(res, W, "skills_UI-UX Agent.json"), JSON.stringify({ 
 fs.writeFileSync(path.join(res, W, "skills_Broken.json"), "{not json");
 fs.writeFileSync(path.join(res, W, "digest_Security.json"), JSON.stringify({ items: [item("x", 10)] }));   // not a skills file: ignored
 fs.writeFileSync(path.join(res, P, "skills_Security.json"), JSON.stringify({ items: [item("old1", 6), item("old2", 6)] }));
-fs.writeFileSync(path.join(rec, W, "Security.json"), JSON.stringify({ items: [{ id: "high", decision: { verdict: "approved", at: "2026-10-23T10:00:00Z" } }, { id: "mid", decision: { verdict: "bogus" } }, { id: "low" }] }));
+fs.writeFileSync(path.join(rec, W, "Security.json"), JSON.stringify({ items: [{ id: "high", title: "T high", decision: { verdict: "approved", at: "2026-10-23T10:00:00Z" } }, { id: "mid", title: "T mid", decision: { verdict: "bogus" } }, { id: "low", title: "T low" }] }));
 fs.writeFileSync(path.join(res, "sources", "_skills_plugins.json"), JSON.stringify({ updatedAt: "2026-10-22", sources: [{ name: "B", url: "https://b.example", score: 4, barrenWeeks: 2 }, { name: "A", url: "ftp://nope", score: 10, lastUseful: "2026-10-22", note: "n" }, { name: "" }, 7, { name: "Zero", score: 0 }, { url: "https://github.com/x/nameless", score: 3 }] }));
 fs.writeFileSync(path.join(tools, "pinned", "README.md"), "# Pinned thing (pinned copy)\n\nSource: https://github.com/x/y commit abc\nVetted by Security, 2026-10-24.\n\n    " + "a".repeat(64) + " *a/SKILL.md\n    " + "b".repeat(64) + " *b/SKILL.md\n");
 fs.writeFileSync(path.join(tools, "pinned", "a", "SKILL.md"), "x"); fs.writeFileSync(path.join(tools, "pinned", "b", "SKILL.md"), "x");
@@ -77,10 +77,52 @@ t("oversized file is skipped", async () => {
 });
 const src = (p) => fs.readFileSync(path.join(__dirname, "..", "src", p), "utf8");
 t("service is read-only and async (no sync fs, no writes)", () => { const s = src("skills/service.js"); assert.ok(!/Sync\(/.test(s)); assert.ok(!/writeFile|appendFile|rename|unlink|mkdir/.test(s)); });
-t("renderer: textContent only, no innerHTML, no timers, no localStorage, writes nothing", () => {
+t("renderer: textContent only, no innerHTML, no timers, no localStorage; writes ONLY through ARGUS's decision write and the recs reply path", () => {
   const r = src("renderer/skills.js");
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(r)); assert.ok(!/setInterval|setTimeout/.test(r)); assert.ok(!/localStorage/.test(r));
-  assert.ok(!/recsWrite|research-write|argusSetIdeaDecision/.test(r));
+  assert.ok(/window\.api\.argusSetIdeaDecision\(\{ week: d\.week, agent: a\.file \|\| a\.agent, id: it\.id, verdict \}\)/.test(r));   // v1.140.0 same store as ARGUS
+  assert.ok(/api\.recsWrite\(d\.week, a\.file \|\| a\.agent, it\.id, text\)/.test(r));                                       // v1.140.0 same send path as My Recommendations
+  assert.ok(!/ipcRenderer|research-write"|skills-write|fs\./.test(r));                                                    // no new channel or store
+  assert.ok(!/Answer in ARGUS/.test(r));
+});
+t("renderer: answer buttons (Install it / Use the idea / Park / Don't install), Discuss with the item's agent, plain errors for the empty/error paths", () => {
+  const r = src("renderer/skills.js");
+  ["\"Install it\"", "\"Use the idea\"", "\"Park\"", "\"Don't install\"", "\"Discuss with \" + a.agent", "\"Send to \" + a.agent", "Write your message first.", "Answer taken back.", "ARGUS is not set up", "is not in the agent's ideas file", "Not sent: "].forEach((w) => assert.ok(r.indexOf(w) >= 0, w));
+  assert.ok(/on \? "none" : v/.test(r));   // pressing the chosen answer again takes it back
+});
+t("renderer: fmtDay shows dates for a plain day and for a full time (no code lost behind a comment)", () => {
+  const r = src("renderer/skills.js"), m = /function fmtDay\(v\) \{[\s\S]*?\n  \}/.exec(r);
+  assert.ok(m, "fmtDay found");
+  const fmtDay = new Function("return " + m[0])();
+  assert.ok(/Oct/.test(fmtDay("2026-10-20"))); assert.ok(/Oct/.test(fmtDay("2026-10-23T23:33:43.656Z"))); assert.strictEqual(fmtDay(""), ""); assert.strictEqual(fmtDay("junk"), "");
+});
+t("a decision written the way the tab writes it is what ARGUS reads (and what the tab reads back)", async () => {
+  const argus = require("../src/argus-data");
+  const ctx = { reports: tmp, builder: null, python: null };
+  const a = (await svc.load()).agents.find((x) => x.agent === "Security");
+  assert.strictEqual(a.file, "Security");
+  // the payload the tab sends: { week: d.week, agent: a.file || a.agent, id: it.id, verdict }
+  const r1 = argus.setIdeaDecision(ctx, { week: W, agent: a.file || a.agent, id: "low", verdict: "parked" });
+  assert.strictEqual(r1.ok, true);
+  const ad = await argus.getArgusData(ctx, { refresh: false });
+  const recItem = ad.recommendations.items.find((f) => Array.isArray(f.items) && f.items.some((i) => i.id === "low")).items.find((i) => i.id === "low");
+  assert.strictEqual(recItem.decision.verdict, "parked");                                   // ARGUS sees it
+  assert.strictEqual((await svc.load()).agents.find((x) => x.agent === "Security").items.find((i) => i.id === "low").decision.verdict, "parked");   // the tab sees it
+  assert.strictEqual(argus.setIdeaDecision(ctx, { week: W, agent: "Security", id: "low", verdict: "none" }).ok, true);   // take it back
+  assert.strictEqual((await svc.load()).agents.find((x) => x.agent === "Security").items.find((i) => i.id === "low").decision, null);
+});
+t("error paths the tab turns into plain words: item missing from the ideas file, no ideas file, ARGUS not set up, bad verdict", () => {
+  const argus = require("../src/argus-data");
+  const ctx = { reports: tmp };
+  assert.match(argus.setIdeaDecision(ctx, { week: W, agent: "Security", id: "not-there", verdict: "approved" }).error, /No idea with that id/);
+  assert.match(argus.setIdeaDecision(ctx, { week: W, agent: "UI-UX Agent", id: "u1", verdict: "approved" }).error, /No ideas file/);
+  assert.strictEqual(argus.setIdeaDecision({ reports: null }, { week: W, agent: "Security", id: "low", verdict: "approved" }).needsSetup, true);
+  assert.strictEqual(argus.setIdeaDecision(ctx, { week: W, agent: "Security", id: "low", verdict: "maybe" }).ok, false);
+  assert.strictEqual(argus.setIdeaDecision(ctx, { week: W, agent: "..\\x", id: "low", verdict: "approved" }).ok, false);
+});
+t("Discuss goes through the existing recs reply path: findRef accepts a skills item id from the ideas file, refuses others", async () => {
+  const recs = require("../src/recommendations/service").createService({ recDir: rec, cooDir: path.join(tmp, "coo") });
+  assert.ok(await recs.findRef(W, "Security", "rec:high")); assert.strictEqual(await recs.findRef(W, "Security", "rec:nope"), null);
 });
 t("wiring: tab in research.js, IPC in main-research.js, preload bridge, CSS uses --rs- tokens only", () => {
   assert.ok(/\["skills", "Skills & Plugins"\]/.test(src("renderer/research.js"))); assert.ok(/skills\.js/.test(src("renderer/research.js")));

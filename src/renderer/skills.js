@@ -2,8 +2,13 @@
 // research.js (window.skillsView.mount(host)), never at startup. Shows, in plain words, what the weekly Skills & Plugins watch will look at and what
 // it found: (1) This week - who researches, why, when it runs next; (2) Found - every item of the newest week grouped by agent, best score first,
 // with the owner's answer from ARGUS when there is one; (3) Where we look - the list of places, read-only; (4) Already adopted - pinned copies.
-// READ-ONLY: this tab writes nothing. Answers (Install it / Park / Don't install / Ask a question) stay in ARGUS > Ideas; the button here only
-// opens ARGUS. Every number is a button that opens or jumps to what it counts.
+// v1.140.0 (Iddo: "why not just say implement it or use it or discuss ... inside the tab itself"): each item has its own answer buttons
+// (Install it / Use the idea / Park / Don't install) and a "Discuss with <agent>" box. NO new store and NO new transport:
+//   - answers go through ARGUS's own write (window.api.argusSetIdeaDecision -> argus-data.setIdeaDecision), into the item's "decision" in
+//     recommendations\<week>\<Agent>.json, so ARGUS > Ideas and this tab always show the same answer; pressing the chosen one again clears it.
+//   - Discuss uses the My Recommendations reply path (api.recsWrite -> research-write's writer: verified delivery to the agent that found the
+//     item, or a pending note when it is not running). The box is prefilled; nothing is sent until Send is pressed.
+// Every number is a button that opens or jumps to what it counts.
 // PRIVACY/LIGHT: textContent only, one load on open (and on Refresh / a week change), no timers, nothing kept once the tab closes; the renderer
 // sends only a week name. Links open through research-open (http/https only, checked in main). Look: styles-skills.css (tokens --rs-*, prefix sk-).
 (function () {
@@ -19,10 +24,16 @@
 
   const USE = { use_directly: ["Use it as it is", "The agent thinks we can use this one directly, after Security checks it."], borrow_idea: ["Borrow the idea", "Not worth installing; the agent suggests copying the idea into our own tools."], skip: ["Skip it", "Looked at and judged not worth it."] };
   const VERDICT = { approved: "Install it", parked: "Parked", rejected: "Don't install" };
+  // the answer buttons; "approved" reads "Use the idea" on a borrow-the-idea item (same stored verdict; ARGUS shows it as approved)
+  const yesWord = (it) => (it.use === "borrow_idea" ? "Use the idea" : "Install it");
+  const verdictWord = (it, v) => (v === "approved" ? yesWord(it) : VERDICT[v] || "");
+  const ANSWER_HELP = { approved: "Yes, go ahead (Security still checks it before anything is installed).", parked: "Not now; keep it for later.", rejected: "No, we do not want this." };
+  const MAX_TEXT = 4000, NL = String.fromCharCode(10);
+  const stripHead = (t) => String(t || "").replace(/^> Re: [^\n]*\n\n/, "");
   const SCORE_HELP = "Score out of 10, given by the agent that found it: 10 = must-have, 7 = pretty useful, 5 = meh, 1 = not needed.";
 
   function fmtDay(v) {
-    const d = typeof v === "number" ? new Date(v) : /^\d{4}-\d{2}-\d{2}/.test(String(v || "")) ? new Date(String(v).slice(0, 10) + "T12:00:00") : null;
+    const d = typeof v === "number" || /^\d{4}-\d{2}-\d{2}T\d/.test(String(v || "")) ? new Date(v) : /^\d{4}-\d{2}-\d{2}/.test(String(v || "")) ? new Date(String(v).slice(0, 10) + "T12:00:00") : null;   // v1.140.0: a full time is shown as a local date
     return d && !isNaN(d) ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : "";
   }
   function fmtWhen(ms) {
@@ -32,7 +43,8 @@
     return d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" }) + ", about " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + " (" + rel + ")";
   }
 
-  const S = { data: null, week: "", closedAgents: new Set(), allSources: false, loading: false };
+  const S = { data: null, week: "", closedAgents: new Set(), allSources: false, loading: false, saving: new Set(), msg: new Map(), boxes: new Map(), sending: new Set() };
+  const itemKey = (week, a, it) => week + "|" + norm(a.file || a.agent) + "|" + it.id;
   let host = null, bodyEl = null;
 
   function jump(id) { const t = bodyEl && bodyEl.querySelector('[data-sk="' + id + '"]'); if (t) { t.scrollIntoView({ block: "start" }); const h = t.querySelector("h2, h3"); if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } } }
@@ -48,7 +60,6 @@
     s.appendChild(h);
     return s;
   }
-  function openArgus() { const n = document.querySelector(".argus-nav"); if (n) n.click(); }
   function link(text, url, cls) {
     if (!url) return auto(el("span", cls || "", text));
     const a = btn(text, "sk-link " + (cls || ""), () => api.openLink(url).catch(() => {}), "Open " + url + " in your browser");
@@ -94,8 +105,8 @@
     const u = USE[it.use];
     if (u) { const ch = el("span", "sk-chip sk-use-" + it.use, u[0]); ch.title = u[1]; chips.appendChild(ch); }
     const dec = it.decision && VERDICT[it.decision.verdict];
-    const vc = el("span", "sk-chip " + (dec ? "sk-dec-" + it.decision.verdict : "sk-open"), dec ? "Your answer: " + dec + (it.decision.at ? " (" + fmtDay(it.decision.at) + ")" : "") : "Not answered yet");
-    vc.title = dec ? "You answered this in ARGUS > Ideas." : "Nobody has answered this yet. Answer it in ARGUS > Ideas (Install it / Park / Don't install / Ask a question).";
+    const vc = el("span", "sk-chip " + (dec ? "sk-dec-" + it.decision.verdict : "sk-open"), dec ? "Your answer: " + verdictWord(it, it.decision.verdict) + (it.decision.at ? " (" + fmtDay(it.decision.at) + ")" : "") : "Not answered yet");
+    vc.title = dec ? "Your answer. ARGUS > Ideas shows the same one. Change it with the buttons below." : "Not answered yet. Use the buttons below.";
     chips.appendChild(vc);
     if (it.security === "unvetted") { const ch = el("span", "sk-chip sk-quiet", "Not checked by Security yet"); ch.title = "Nothing is installed before Security has read it."; chips.appendChild(ch); }
     else if (it.security) chips.appendChild(el("span", "sk-chip sk-quiet", "Security: " + it.security));
@@ -108,10 +119,88 @@
       more.forEach(([k, v]) => { const p = el("p", ""); p.append(el("b", "", k + ": "), document.createTextNode(v)); det.appendChild(auto(p)); });
       c.appendChild(det);
     }
-    const row = el("div", "sk-actions");
-    row.appendChild(btn(dec ? "Change your answer in ARGUS" : "Answer in ARGUS", "sk-btn", openArgus, "Opens ARGUS. The same item is in its Ideas list (" + d.week + ", " + a.agent + ") with Install it / Park / Don't install / Ask a question."));
-    c.appendChild(row);
+    c.appendChild(answerBar(d, a, it));
+    c.appendChild(discussBox(d, a, it));
     return c;
+  }
+
+  // ---- v1.140.0 answering inside the tab (ARGUS's own store and write; see the top of this file)
+  function answerBar(d, a, it) {
+    const k = itemKey(d.week, a, it), cur = it.decision ? it.decision.verdict : "none";
+    const wrap = el("div", "sk-answer");
+    const row = el("div", "sk-actions"); row.setAttribute("role", "group"); row.setAttribute("aria-label", "Your answer");
+    [["approved", yesWord(it)], ["parked", "Park"], ["rejected", "Don't install"]].forEach(([v, word]) => {
+      const on = cur === v;
+      const b = btn(on ? "\u2713 " + word : word, "sk-btn sk-ans sk-ans-" + v + (on ? " sk-on" : ""), () => decide(d, a, it, on ? "none" : v),
+        on ? "Your answer. Press again to take it back." : ANSWER_HELP[v]);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      if (S.saving.has(k)) b.disabled = true;
+      row.appendChild(b);
+    });
+    const dk = "d|" + k;
+    if (!S.boxes.has(dk)) row.appendChild(btn("Discuss with " + a.agent, "sk-btn sk-discuss", () => openDiscuss(d, a, it), "Write to " + a.agent + " about this item, here in the tab."));
+    wrap.appendChild(row);
+    const m = S.msg.get(k);
+    if (m) { const p = el("p", "sk-state " + (m.ok ? "sk-ok" : "sk-bad"), m.text); p.setAttribute("role", "status"); wrap.appendChild(p); }
+    return wrap;
+  }
+  function plainError(r) {
+    const e = String((r && (r.error || r.reason)) || "");
+    if (r && r.needsSetup) return "ARGUS is not set up on this computer (Setup, ARGUS).";
+    if (/No idea with that id|No ideas file/i.test(e)) return "this item is not in the agent's ideas file for this week, so it cannot be answered (here or in ARGUS).";
+    return e || "the answer could not be written.";
+  }
+  function decide(d, a, it, verdict) {
+    const k = itemKey(d.week, a, it);
+    if (!window.api.argusSetIdeaDecision) { S.msg.set(k, { ok: false, text: "Answering is not available in this version." }); render(); return; }
+    S.saving.add(k); S.msg.delete(k); render();
+    window.api.argusSetIdeaDecision({ week: d.week, agent: a.file || a.agent, id: it.id, verdict }).then((r) => {
+      S.saving.delete(k);
+      if (r && r.ok) {
+        it.decision = verdict === "none" ? null : { verdict, at: new Date().toISOString() };
+        S.msg.set(k, { ok: true, text: verdict === "none" ? "Answer taken back." : "Saved: " + verdictWord(it, verdict) + ". ARGUS shows the same answer." });
+      } else S.msg.set(k, { ok: false, text: "Not saved: " + plainError(r) });
+      render();
+    }).catch(() => { S.saving.delete(k); S.msg.set(k, { ok: false, text: "Not saved: something went wrong. Try again." }); render(); });
+  }
+  const prefill = (d, it) => "> Re: " + it.title + " (" + d.week + ")" + NL + NL + "About " + it.title + " (" + it.id + "): ";
+  function openDiscuss(d, a, it) {
+    const dk = "d|" + itemKey(d.week, a, it);
+    if (!S.boxes.has(dk)) S.boxes.set(dk, prefill(d, it));
+    S.msg.delete(dk);
+    render();
+    const t = bodyEl && bodyEl.querySelector('textarea[data-k="' + CSS.escape(dk) + '"]');
+    if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  }
+  function discussBox(d, a, it) {
+    const dk = "d|" + itemKey(d.week, a, it);
+    const wrap = el("div", "sk-discussbox");
+    if (S.boxes.has(dk)) {
+      const ta = el("textarea", "sk-ta"); ta.value = S.boxes.get(dk); ta.rows = 4; ta.maxLength = MAX_TEXT; ta.dataset.k = dk; ta.setAttribute("dir", "auto");
+      ta.setAttribute("aria-label", "Message to " + a.agent + " about " + it.title);
+      const cnt = el("span", "sk-count", ta.value.length + " / " + MAX_TEXT);
+      ta.addEventListener("input", () => { S.boxes.set(dk, ta.value); cnt.textContent = ta.value.length + " / " + MAX_TEXT; });
+      const row = el("div", "sk-actions");
+      const send = btn(S.sending.has(dk) ? "Sending..." : "Send to " + a.agent, "sk-btn sk-send", () => doSend(d, a, it, ta.value));
+      if (S.sending.has(dk)) send.disabled = true;
+      row.append(send, btn("Cancel", "sk-btn sk-quietbtn", () => { S.boxes.delete(dk); S.msg.delete(dk); render(); }), cnt);
+      wrap.append(ta, row);
+    }
+    const m = S.msg.get(dk);
+    if (m) { const p = el("p", "sk-state " + (m.ok ? "sk-ok" : "sk-bad"), m.text); p.setAttribute("role", "status"); wrap.appendChild(p); }
+    return wrap;
+  }
+  function doSend(d, a, it, text) {
+    const dk = "d|" + itemKey(d.week, a, it);
+    if (!stripHead(text).trim() || text.trim() === prefill(d, it).trim()) { S.msg.set(dk, { ok: false, text: "Write your message first." }); render(); return; }
+    if (!api.recsWrite) { S.msg.set(dk, { ok: false, text: "Sending is not available in this version." }); render(); return; }
+    S.sending.add(dk); S.msg.delete(dk); render();
+    api.recsWrite(d.week, a.file || a.agent, it.id, text).then((r) => {
+      S.sending.delete(dk);
+      if (r && r.ok) { S.boxes.delete(dk); S.msg.set(dk, { ok: true, text: r.delivery === "pending" ? "Saved for " + a.agent + " (not running now: it reads it at its next start)." : "Sent to " + a.agent + "." }); }
+      else S.msg.set(dk, { ok: false, text: "Not sent: " + ((r && r.reason) || "the message could not be delivered.") });
+      render();
+    }).catch(() => { S.sending.delete(dk); S.msg.set(dk, { ok: false, text: "Not sent: something went wrong." }); render(); });
   }
   function renderFound(d) {
     const s = section("found", "Found" + (d.week ? " in week " + d.week : ""), d.week ? plural(d.total, "item", "items") + " from " + plural(d.agents.length, "agent", "agents") : "");
@@ -234,6 +323,6 @@
 
   window.skillsView = {
     mount(h) { host = h; bodyEl = el("div", "sk-root"); host.appendChild(bodyEl); render(); if (!S.data) load(); },   // a re-render of My Research re-mounts: keep what is loaded
-    unmount() { if (bodyEl && bodyEl.parentNode) bodyEl.parentNode.removeChild(bodyEl); bodyEl = null; host = null; S.data = null; S.week = ""; S.closedAgents = new Set(); S.allSources = false; S.loading = false; },
+    unmount() { if (bodyEl && bodyEl.parentNode) bodyEl.parentNode.removeChild(bodyEl); bodyEl = null; host = null; S.data = null; S.week = ""; S.closedAgents = new Set(); S.allSources = false; S.loading = false; S.saving = new Set(); S.msg = new Map(); S.boxes = new Map(); S.sending = new Set(); },
   };
 })();

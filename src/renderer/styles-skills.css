@@ -68,3 +68,17 @@
 .sk-adopt-t { font-size: 16px; }
 .sk-num:focus-visible, .sk-btn:focus-visible, .sk-ghead:focus-visible, .sk-link:focus-visible, .sk-agent:focus-visible, .sk-more summary:focus-visible, .sk-week:focus-visible { outline: 3px solid var(--rs-accent); outline-offset: 2px; }
 @media (max-width: 860px) { .sk-grid, .sk-srcs { grid-template-columns: 1fr; } }
+/* v1.140.0 answering and discussing inside the tab */
+.sk-answer { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--rs-line); }
+.sk-ans.sk-on { font-weight: 700; }
+.sk-ans-approved.sk-on { background: var(--rs-ok); border-color: var(--rs-ok); color: var(--rs-on-accent); }
+.sk-ans-parked.sk-on { background: var(--rs-no-bg); border-color: var(--rs-no); color: var(--rs-no); }
+.sk-ans-rejected.sk-on { background: var(--rs-surface-2); border-color: var(--rs-muted); color: var(--rs-text); }
+.sk-btn:disabled { opacity: .6; cursor: default; }
+.sk-discuss { border-style: dashed; }
+.sk-send { background: var(--rs-accent); border-color: var(--rs-accent); color: var(--rs-on-accent); }
+.sk-ta { width: 100%; box-sizing: border-box; font: inherit; padding: 8px 10px; margin-top: 6px; border: 1.5px solid var(--rs-line); border-radius: 10px; background: var(--rs-surface); color: var(--rs-text); resize: vertical; }
+.sk-ta:focus-visible { outline: 3px solid var(--rs-accent); outline-offset: 2px; }
+.sk-count { font-size: 13px; color: var(--rs-muted); }
+.sk-state { font-size: 14px; margin: 4px 0 0 !important; }
+.sk-ok { color: var(--rs-ok); } .sk-bad { color: var(--rs-bad); }
