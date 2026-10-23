@@ -371,4 +371,4 @@ function stats() { return { on: ON, timedOut: timedOut.size, cacheEntries: cache
 function clearCache() { cache.clear(); }
 
 function _markTimedOut(p) { timedOut.set(path.resolve(p), Date.now()); }   // test hook
-module.exports = { _markTimedOut, install, start, warmRoot, prefetchDir, takeSlowest, stats, clearCache, _orig: orig };
+module.exports = { _markTimedOut, drop, install, start, warmRoot, prefetchDir, takeSlowest, stats, clearCache, _orig: orig };

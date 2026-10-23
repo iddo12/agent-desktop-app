@@ -24,11 +24,15 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch, setupHin
   });
 
   const storeDir = () => { const r = cfg("sharedReports"); return r ? path.join(r, "tasks") : null; };
-  const runTool = run || ((args) => new Promise((resolve) => {
+  // tasks.py is a separate process: the app's read cache (syncGuard) does not see its writes, so a re-read right after a move returned the OLD order
+  // and the dropped task snapped back (Iddo 2026-10-22). Forget the cached copy of the store that tool run just changed.
+  const forget = (args) => { try { const i = args.indexOf("--agent"), d = storeDir(); if (i >= 0 && d && typeof args[i + 1] === "string") require("../syncGuard").drop(path.join(d, args[i + 1] + ".json")); } catch (e) { /* cache hygiene only */ } };
+  const runRaw = run || ((args) => new Promise((resolve) => {
     const py = cfg("pythonExe"), tool = cfg("tasksTool");
     if (!py || !tool) return resolve({ ok: false, reason: "Python or tasks.py is not set up. " + hint.tool });
     require("child_process").execFile(py, [tool].concat(args), { timeout: 20000, windowsHide: true }, (err, out, errOut) => resolve(err ? { ok: false, reason: "The task tool did not accept that." } : { ok: true, out: String(out || "") }));
   }));
+  const runTool = async (args) => { const r = await runRaw(args); forget(args); return r; };
 
   function agentNames() {
     const d = storeDir(); if (!d) return null;
@@ -76,11 +80,29 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch, setupHin
 
   handle("tasklist-move", async (a) => {
     if (!known(a.agent)) return { ok: false, reason: "Pick one agent first." };
-    if (!["up", "down", "top", "bottom"].includes(a.dir) || typeof a.id !== "string") return { ok: false, reason: "Bad request." };
+    if (!["up", "down", "top", "bottom", "to", "before", "after"].includes(a.dir) || typeof a.id !== "string") return { ok: false, reason: "Bad request." };
     const s = readStore(a.agent); if (!s) return { ok: false, reason: "That task list could not be read." };
     const rows = L.summarize([s], clock()).rows;
-    const args = L.moveArgs(rows, a.id, a.dir); if (!args) return { ok: true, changed: false };
-    const r = await runTool(["--agent", a.agent].concat(args)); return r.ok ? { ok: true, changed: true } : r;
+    const args = L.moveArgs(rows, a.id, a.dir, a.target); if (!args) { say("tasklist-move: no move computed for dir=" + a.dir); return { ok: true, changed: false }; }
+    say("tasklist-move: " + a.dir + " run " + args.slice(2).join(" ").length + "ch");
+    let r = await runTool(["--agent", a.agent].concat(args)); if (!r.ok) say("tasklist-move: tasks.py failed");
+    // Drag and drop must STICK: re-read the store and check the task really sits where it was dropped; if not, say so in the log and run the move once more (Iddo 2026-10-22: the first drop snapped back).
+    if (r.ok && (a.dir === "before" || a.dir === "after") && typeof a.target === "string") {
+      const placed = () => { const s2 = readStore(a.agent); if (!s2) return null; const live = L.summarize([s2], clock()).rows.filter((x) => x.group !== "finished"); const i = live.findIndex((x) => x.id === a.id), t = live.findIndex((x) => x.id === a.target); return i < 0 || t < 0 ? null : (a.dir === "before" ? i + 1 === t : i === t + 1); };
+      let ok = placed();
+      if (ok === false) { try { const s3 = readStore(a.agent), lv = L.summarize([s3], clock()).rows.filter((x) => x.group !== "finished"), i3 = lv.findIndex((x) => x.id === a.id), t3 = lv.findIndex((x) => x.id === a.target); say("tasklist-move: DIAG i=" + i3 + " t=" + t3 + " live=" + lv.length + " around=" + lv.slice(Math.max(0, Math.min(i3, t3) - 1), Math.max(i3, t3) + 2).map((x) => x.id.slice(0, 12) + ":" + x.group[0] + ":" + x.order).join(",")); } catch (e) { say("tasklist-move: DIAG failed"); } say("tasklist-move: NOT applied, retrying once; out=" + String(r.out || "").slice(0, 80)); const rows2 = L.summarize([readStore(a.agent) || s], clock()).rows; const args2 = L.moveArgs(rows2, a.id, a.dir, a.target); if (args2) { r = await runTool(["--agent", a.agent].concat(args2)); ok = placed(); } say("tasklist-move: after retry placed=" + ok); }
+      else say("tasklist-move: placed=" + ok);
+    }
+    return r.ok ? { ok: true, changed: true } : r;
+  });
+  // Remove a task nobody needs any more: tasks.py --cancel moves it to the archive (kept, not counted as done); the batch id lets Undo bring it back.
+  handle("tasklist-cancel", async (a) => {
+    say("tasklist-cancel: called");
+    if (!known(a.agent)) return { ok: false, reason: "That agent has no task list." };
+    if (typeof a.id !== "string" || !L.ID_OK.test(a.id)) return { ok: false, reason: "Bad request." };
+    const s = readStore(a.agent); if (!s || !s.items.some((i) => i && i.id === a.id)) return { ok: false, reason: "That task is not in the list any more." };
+    const batch = require("crypto").randomBytes(8).toString("hex");
+    const r = await runTool(["--agent", a.agent, "--cancel", a.id, "--batch", batch]); say("tasklist-cancel: " + (r.ok ? "ok" : "FAILED")); return r.ok ? { ok: true, batch } : r;
   });
   // Clear tags what it archives with one batch id and reports which agents it really cleared; Undo restores exactly that batch (never an older clear).
   handle("tasklist-clear", async (a) => {

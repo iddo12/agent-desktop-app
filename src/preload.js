@@ -259,7 +259,8 @@ contextBridge.exposeInMainWorld("api", {
   },
   tasklist: {
     load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
-    move: (agent, id, dir) => ipcRenderer.invoke("tasklist-move", { agent, id, dir }),
+    move: (agent, id, dir, target) => ipcRenderer.invoke("tasklist-move", { agent, id, dir, target }),
+    cancel: (agent, id) => ipcRenderer.invoke("tasklist-cancel", { agent, id }),
     clear: (agent) => ipcRenderer.invoke("tasklist-clear", { agent }),
     undo: (batch) => ipcRenderer.invoke("tasklist-undo", { batch }),
     auto: (agent, on) => ipcRenderer.invoke("tasklist-auto", { agent, on: !!on }),   // Iddo switch: continue to the next task after a handoff

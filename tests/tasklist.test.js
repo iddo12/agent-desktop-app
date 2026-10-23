@@ -39,5 +39,19 @@ t("moveArgs: up/down/top/bottom inside one agent, finished never moves", () => {
   assert.strictEqual(L.moveArgs(rows, "f", "up"), null);
   assert.strictEqual(L.moveArgs(rows, "--top", "up"), null);   // an id that starts with "-" never reaches the argument list
 });
+t("moveArgs: drag-and-drop 'to' takes the target's place, same group only", () => {
+  const rows = L.summarize([store], "2026-10-22T12:00:00").rows;
+  assert.deepStrictEqual(L.moveArgs(rows, "e", "to", "d"), ["--move", "e", "--before", "d"]);
+  assert.strictEqual(L.moveArgs(rows, "e", "to", "e"), null);
+  assert.strictEqual(L.moveArgs(rows, "e", "to", "nope"), null);
+  assert.strictEqual(L.moveArgs(rows, "e", "to", "f"), null);   // finished / other group
+});
+t("moveArgs: drag into the gap before/after a row", () => {
+  const rows = L.summarize([store], "2026-10-22T12:00:00").rows;
+  assert.deepStrictEqual(L.moveArgs(rows, "e", "before", "d"), ["--move", "e", "--before", "d"]);
+  assert.strictEqual(L.moveArgs(rows, "e", "before", "e"), null);
+  assert.strictEqual(L.moveArgs(rows, "e", "before", "f"), null);
+  const a = L.moveArgs(rows, "d", "after", "e"); assert.ok(a && a[0] === "--move" && a[1] === "d");
+});
 t("agent names with path characters are refused", () => { assert.ok(L.AGENT_OK.test("Software Engineering Agent")); assert.ok(!L.AGENT_OK.test("..\\x")); assert.ok(!L.AGENT_OK.test("a/b")); });
 console.log("tasklist.test.js: " + n + " passed");
