@@ -5369,7 +5369,7 @@ function startWakeWatcher() {
       settings: secs,
       log: (line) => logStuckWatchdog(line),
       mailDir,
-      projectsDir: () => path.join(path.dirname(mailDir()), "projects"),
+      projectsDir: () => cfgm.path("workspaceRoot", "shared_state", "projects") || path.join(AGENTS_ROOT, "shared_state", "projects"), // from workspaceRoot, independent of a mailDir override
       stateFile: () => path.join(app.getPath("userData"), "wakewatcher.json"),
       testBlocked: () => testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled()),
       // only agents this app has a live attached session for; a stopped agent reads its mail at its next start
@@ -5714,7 +5714,7 @@ function logSentInput(agentPath, data) {
 
 ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp }) => {
   logSentInput(agentPath, data);
-  lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it
+  if (!fromApp) lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it (app-originated input: xterm replies, Keep going, handoffs, does not count)
   const session = ptySessions.get(agentPath);
   if (!session) {
     // No tracked session at all for this agent (as opposed to the "starting"

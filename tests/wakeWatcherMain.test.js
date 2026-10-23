@@ -86,6 +86,19 @@ t("config can tighten but never loosen the caps; unreadable facts count as busy"
   const r3 = rig({ facts: () => { throw new Error("x"); } }); await r3.tick(); r3.marker("SE"); r3.adv(2 * MIN); await r3.tick(); assert.strictEqual(r3.sent.length, 0);
 });
 
+t("hop stop is lifted only by ledger events of the two agents of the chain, from the workspace-derived projects dir", async () => {
+  const r = rig({ settings: () => ({ enabled: true, maxPerAgentHour: 999, maxFleetHour: 999, minFleetGapMs: 0 }) });
+  await r.tick();
+  const proj = path.join(r.dir, "projects", "p1"); fs.mkdirSync(proj, { recursive: true });
+  const ev = (agent, ts) => JSON.stringify({ ts: new Date(ts).toISOString(), agent, kind: "progress", text: "x" }) + String.fromCharCode(10);
+  fs.writeFileSync(path.join(proj, "events.jsonl"), ev("Unrelated Agent", Date.now() + MIN));
+  r.marker("SE", { hop: 4, from: "COO" }); r.adv(2 * MIN); await r.tick();
+  assert.strictEqual(r.sent.length, 0, "an unrelated agent's ledger event does not lift the hop stop");
+  fs.appendFileSync(path.join(proj, "events.jsonl"), ev("COO Agent", Date.now() + 5 * MIN));
+  r.adv(10 * MIN); await r.tick();
+  assert.strictEqual(r.sent.length, 1, "the sender's ledger event lifts it");
+});
+
 (async () => {
   let fails = 0;
   for (const [n, f] of tests) { try { await f(); console.log("ok   " + n); } catch (e) { fails++; console.log("FAIL " + n + "\n     " + (e && e.stack || e)); } }

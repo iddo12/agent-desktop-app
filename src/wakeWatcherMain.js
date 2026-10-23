@@ -82,13 +82,26 @@ function create(deps) {
     }
     return out;
   }
+  // Ledger activity: the newest events.jsonl write fleet-wide (ping-pong detection) and the newest event per agent (hop-stop lifting is
+  // scoped to the two agents of a chain). Event "agent" names are matched to folder names loosely ("Foo Agent" == "Foo").
+  const normAgent = (s) => String(s || "").toLowerCase().replace(/\s+agent$/, "").trim();
   function ledgerProgress() {
-    let best = 0;
+    let best = 0; const byAgent = {};
     try {
-      const root = d.projectsDir && d.projectsDir(); if (!root) return 0;
-      for (const p of fs.readdirSync(root)) { try { best = Math.max(best, fs.statSync(path.join(root, p, "events.jsonl")).mtimeMs); } catch (e) { /* no events file */ } }
+      const root = d.projectsDir && d.projectsDir(); if (!root) return { best: 0, byAgent };
+      for (const p of fs.readdirSync(root)) {
+        const f = path.join(root, p, "events.jsonl");
+        try {
+          best = Math.max(best, fs.statSync(f).mtimeMs);
+          const st = fs.statSync(f), len = Math.min(128 * 1024, st.size), buf = Buffer.alloc(len), fd = fs.openSync(f, "r");
+          try { fs.readSync(fd, buf, 0, len, st.size - len); } finally { fs.closeSync(fd); }
+          for (const line of buf.toString("utf-8").split("\n")) {
+            try { const e = JSON.parse(line), t = Date.parse(e.ts), k = normAgent(e.agent); if (k && t > (byAgent[k] || 0)) byAgent[k] = t; } catch (x) { /* partial / bad line */ }
+          }
+        } catch (e) { /* no events file */ }
+      }
     } catch (e) { /* no projects folder */ }
-    return best;
+    return { best, byAgent };
   }
   // The attached agents and the facts about each. mailName = the sub-folder of the mail dir (the agent's folder name).
   function gather(nowMs, cfgW) {
@@ -136,7 +149,8 @@ function create(deps) {
       const g = gather(t, cfgW);
       baselineNew(g.agents);
       let throttle = "unknown"; try { throttle = String((d.throttle && d.throttle()) || "unknown").toLowerCase(); } catch (e) { /* unknown holds */ }
-      const state = { throttle: throttle === "go" || throttle === "slow" || throttle === "hold" ? throttle : "unknown", cpuHold: !!(d.cpuHold && d.cpuHold()), ledgerProgressAt: ledgerProgress(), recentMarkers: g.recent, agents: g.agents, mem };
+      const lp = ledgerProgress();
+      const state = { throttle: throttle === "go" || throttle === "slow" || throttle === "hold" ? throttle : "unknown", cpuHold: !!(d.cpuHold && d.cpuHold()), ledgerProgressAt: lp.best, ledgerByAgent: lp.byAgent, recentMarkers: g.recent, agents: g.agents, mem };
       const res = WW.decide(state, t, cfgW);
       WW.applyDecision(mem, res, t); dirty = true;
       for (const e of res.events) emit(e);

@@ -7,3 +7,11 @@
 - Not wired yet: heartbeats (no "work that needs nobody" feed), `*_pending_notes.md` input, ledger "ready task" input (project.py already drops a marker for those). Stopped agents (no attached session) are not woken; they read their mail at the next start.
 - Also: `SETUP.md` (generated from `features.js`) gained one paragraph on the `wakeWatcher` section.
 - CLAUDE.md (main tree, not edited by this branch): add this entry when the branch is merged.
+
+## Review fixes (same version)
+- Hook hop limit: `sendmessage_marker.cjs` now walks back past tool results and wrapper entries (task-notification, system-reminder, "[SYSTEM NOTIFICATION", "Another Claude session sent a message") to the real prompt and looks for the `[[WAKE ...]]` line in its first 20 KB (was: newest user entry, first 400 chars), so a chain's hop no longer silently resets to 0.
+- Hook skips `uds:` pipe addresses explicitly (documented in its header): no pipe-to-agent map is built, so sends by address leave no marker from the hook; for those the watcher relies on the `project.py` markers. Only sends by agent name get one.
+- `terminal-input` handler: `lastHumanInputAt` is set only when the input is not app-originated (`!fromApp`); xterm replies, Keep going and handoffs no longer count as a person typing.
+- Hop-stop / pair-pause lifting by ledger events is scoped to the two agents of the chain (receiver and sender; newest event per agent from `events.jsonl`, names matched case-insensitively, "Foo Agent" == "Foo") instead of any ledger event anywhere. The fleet-wide value is kept only for ping-pong detection.
+- `projectsDir` is derived from `workspaceRoot` (`shared_state\projects`, like the mail dir default), no longer from the `wakeWatcher.mailDir` override.
+- Tests: wakeWatcher 31 (hop-lift case extended), wakeWatcherMain 10 (+1), hook 7 (+2).

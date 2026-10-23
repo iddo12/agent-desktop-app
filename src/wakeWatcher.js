@@ -8,7 +8,7 @@
 //   applyDecision(mem, result, now)          record the wakes as in flight + the events (call right after decide)
 //   applyDelivery(mem, wake, result, now)    close the wake with the result of HandoffDelivery.deliver; returns events
 //
-// state = { throttle: "go"|"slow"|"hold"|"unknown", cpuHold: bool, ledgerProgressAt: ms|null, recentMarkers: [{from,to,ts}],
+// state = { throttle: "go"|"slow"|"hold"|"unknown", cpuHold: bool, ledgerProgressAt: ms|null (fleet-wide, used only by ping-pong detection; hop stops use ledgerByAgent: { <agent name, lower-case, no ' agent' suffix>: ms of its newest ledger event }), recentMarkers: [{from,to,ts}],
 //           agents: { <folder name>: { idle, idleForMs?, working, dialogOpen, inputBoxNonEmpty, handoffActive, lastHumanTypedAt, paused,
 //                    neverWake, markers: [{id,ts,from,project,kind,hop}], notesMtimeMs, readyTasks: [{project,id}],
 //                    openWorkNeedsNobody, nothingLeft, progressAt, ledgerProgressAt } } }
@@ -72,9 +72,11 @@
     const out = { markers: [], ready: [], notes: false };
     const inflight = new Set((am.inFlight && am.inFlight.markerIds) || []);
     const humanAt = a.lastHumanTypedAt || 0;
-    const ledgerAt = Math.max(a.ledgerProgressAt || 0, state.ledgerProgressAt || 0);
+    const lb = (state && state.ledgerByAgent) || {}, nrm = (x) => String(x || "").toLowerCase().replace(/\s+agent$/, "").trim();
     for (const m of a.markers || []) {
       if (!m || !m.id || mem.handled[m.id] || inflight.has(m.id)) continue;
+      // ledger progress that lifts a hop stop / pair pause is scoped to the two agents of THIS chain (receiver + sender), never the whole fleet
+      const ledgerAt = Math.max(a.ledgerProgressAt || 0, lb[nrm(name)] || 0, lb[nrm(m.from)] || 0);
       const t = tsMs(m);
       if (t <= am.consumedUntil || now - t > c.markerMaxAgeMs) continue;
       if ((m.hop || 0) >= c.maxHop && !(humanAt > t) && !(ledgerAt > t)) {

@@ -146,8 +146,12 @@ t("hop-4 loop stop: no wake and exactly one hop-stop event; a human message or l
   const st2 = world({ A: agentFacts({ markers: [mk("B", "A", T0 - MIN, { hop: 4 })], lastHumanTypedAt: T0 - 5 * MIN }) });
   st2.agents.A.markers[0].ts = T0 - 10 * MIN;
   assert.strictEqual(step(st2, T0).wakes.length, 1, "a human message after the marker lifts the stop");
-  const st3 = world({ A: agentFacts({ markers: [mk("B", "A", T0 - 10 * MIN, { hop: 5 })] }) }, { ledgerProgressAt: T0 - 5 * MIN });
-  assert.strictEqual(step(st3, T0).wakes.length, 1, "a ledger event after the marker lifts the stop");
+  const st3 = world({ A: agentFacts({ markers: [mk("B", "A", T0 - 10 * MIN, { hop: 5 })] }), B: agentFacts() }, { ledgerByAgent: { b: T0 - 5 * MIN } });
+  assert.strictEqual(step(st3, T0).wakes.length, 1, "a ledger event by the sender after the marker lifts the stop");
+  const st3b = world({ A: agentFacts({ markers: [mk("B", "A", T0 - 10 * MIN, { hop: 5 })] }), B: agentFacts() }, { ledgerByAgent: { a: T0 - 5 * MIN } });
+  assert.strictEqual(step(st3b, T0).wakes.length, 1, "a ledger event by the receiver lifts it too");
+  const st3c = world({ A: agentFacts({ markers: [mk("B", "A", T0 - 10 * MIN, { hop: 5 })] }), B: agentFacts(), C: agentFacts() }, { ledgerProgressAt: T0 - 5 * MIN, ledgerByAgent: { c: T0 - 5 * MIN } });
+  assert.strictEqual(step(st3c, T0).wakes.length, 0, "ledger progress of an unrelated agent / project does not lift this chain's stop");
 });
 t("ping-pong: more than 6 exchanges in 30 min with no ledger progress pauses both and raises one event", () => {
   const rec = [];
