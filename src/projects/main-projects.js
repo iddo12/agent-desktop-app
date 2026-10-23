@@ -22,7 +22,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, run, now, watch, setupHin
     try { return await fn(arg || {}); } catch (x) { say(channel + " failed: code=" + (x && x.code ? x.code : "unknown")); return { ok: false, reason: "That did not work." }; }
   });
 
-  // Optional overrides projectsDir / projectsTool; defaults come from the workspace folder (nothing hard-coded to a drive).
+  // Paths come from the workspace folder and shared-tools settings (nothing hard-coded to a drive); no separate overrides exist.
   const projectsDir = () => get("projectsDir") || (get("workspaceRoot") ? path.join(get("workspaceRoot"), "shared_state", "projects") : null);
   const projectsTool = () => get("projectsTool") || (get("sharedTools") ? path.join(get("sharedTools"), "projects", "project.py") : null);
   const runTool = run || ((args) => new Promise((resolve) => {

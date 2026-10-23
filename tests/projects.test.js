@@ -276,7 +276,10 @@ t("renderer: list, detail, answer, Green light and close, on a fake DOM", async 
   root.byClass("pj-back")[0].click(); await tick();
   const draft = root.byClass("pj-card").find((c) => c.textContent.includes("Draft one")); draft.click(); await tick();
   assert.ok(root.textContent.includes("Waiting for your Green light") && root.textContent.includes("chat so far"));
-  root.all((n) => n.tag === "button" && n.textContent === "Green light")[0].click(); await tick();
+  const glb = root.all((n) => n.tag === "button" && n.textContent === "Green light")[0];
+  glb.click(); await tick();   // first press only arms it
+  assert.ok(!calls.some((c) => c[0] === "green") && /confirm/.test(glb.textContent), "one click must not start the project");
+  glb.click(); await tick();
   assert.deepStrictEqual(calls.find((c) => c[0] === "green"), ["green", "dr"]);
   win.projectsView.close(); assert.ok(!win.projectsView.isOpen() && !doc.body.classList.contains("projects-open") && changed === null);
   fs.rmSync(dir, { recursive: true, force: true });

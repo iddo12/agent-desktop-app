@@ -1,5 +1,5 @@
-// Projects sidebar entry (Project Autopilot). Startup cost: one button. The red number (projects blocked, waiting for you) is checked every 60 s while
-// the window is visible. The view (projects.js) and its stylesheet load on the first click.
+// Projects sidebar entry (Project Autopilot). Startup cost: one button. The red number (projects blocked, waiting for you) is checked at start, whenever the ledger folder changes,
+// and every 5 min as a safety net while the window is visible. The view (projects.js) and its stylesheet load on the first click.
 (function () {
   "use strict";
   if (!window.api || !window.api.projects) return;
@@ -30,7 +30,9 @@
     window.api.projects.list().then((r) => { if (r && r.ok && r.counts) setCount(r.counts.red); }).catch(() => {});
   }
   pollCount();
-  setInterval(pollCount, 60000);
+  // the folder watcher (started by the first list) pushes "projects-changed"; the slow timer is only a safety net
+  try { if (window.api.projects.onChanged) window.api.projects.onChanged(pollCount); } catch (e) { /* no push channel */ }
+  setInterval(pollCount, 300000);
 
   let loading = null;
   function ensure() {

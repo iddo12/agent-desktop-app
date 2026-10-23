@@ -161,7 +161,8 @@
       const sec = el("section", "pj-sec"); sec.append(el("h3", "pj-h", "Waiting for your Green light"));
       sec.append(el("p", "", p.budget.signed ? "The budget (" + (p.budget.pct != null ? p.budget.pct + "% of the week" : "no figure") + ") was signed by " + p.budget.signedBy + "." : "The budget is not signed yet. System Optimization has to sign it before you can press Green light."));
       const gl = el("button", "pj-btn pj-primary", "Green light"); gl.type = "button"; gl.disabled = !p.canGreenLight || S.busy || !S.detail.canWrite;
-      gl.addEventListener("click", () => { S.busy = true; render(); api.greenLight(p.slug).then((r) => { S.busy = false; say(r && r.ok ? "Green light given." : (r && r.reason) || "That did not work."); refresh(); }).catch(() => { S.busy = false; refresh(); }); });
+      let armed = false;   // starting a project is attributed to Iddo: first click arms, second click confirms
+      gl.addEventListener("click", () => { if (!armed) { armed = true; gl.textContent = "Press again to confirm Green light"; setTimeout(() => { armed = false; gl.textContent = "Green light"; }, 6000); return; } S.busy = true; render(); api.greenLight(p.slug).then((r) => { S.busy = false; say(r && r.ok ? "Green light given." : (r && r.reason) || "That did not work."); refresh(); }).catch(() => { S.busy = false; refresh(); }); });
       sec.append(gl);
       if (S.detail.intake) sec.append(el("h3", "pj-h", "The conversation so far"), auto(el("div", "pj-pre", S.detail.intake)));
       body.append(sec);
