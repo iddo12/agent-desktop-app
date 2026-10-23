@@ -441,7 +441,7 @@ function world(opts) {
 }
 t("ipc: the allow-list now has research-image and research-thread; both refuse other frames and bad arguments", async () => {
   const w = world();
-  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["recs-load", "recs-write", "research-badge", "research-export", "research-idea", "research-image", "research-image-cancel", "research-load", "research-mark", "research-open", "research-prefs-get", "research-prefs-set", "research-seen", "research-seen-all", "research-thread", "research-write"]);
+  assert.deepStrictEqual(Object.keys(w.handlers).sort(), ["recs-load", "recs-write", "research-badge", "research-export", "research-idea", "research-image", "research-image-cancel", "research-load", "research-mark", "research-open", "research-prefs-get", "research-prefs-set", "research-seen", "research-seen-all", "research-thread", "research-write", "skills-load"]);
   for (const ch of ["research-image", "research-thread"]) {
     assert.strictEqual((await w.handlers[ch]({ sender: {}, senderFrame: {} }, { week: "2026-W41", agent: "Alpha Agent", findingId: "a-high" })).ok, false, ch + " other sender");
     for (const bad of [null, {}, { week: "bad", agent: "Alpha Agent", findingId: "a-high" }, { week: "2026-W41", agent: "", findingId: "a-high" }, { week: "2026-W41", agent: "Alpha Agent", findingId: "" }, { week: "2026-W41", agent: "Alpha Agent", findingId: "x".repeat(3000) }])

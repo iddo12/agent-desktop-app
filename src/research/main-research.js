@@ -229,6 +229,13 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
     const x = a && typeof a === "object" ? a : {};
     return getWriter().write({ week: x.week, agent: x.agent, findingId: typeof x.itemId === "string" ? "rec:" + x.itemId.slice(0, 116) : "", text: x.text });
   }, MAX_WRITE_ARG_CHARS);
+  // v1.139.0 SKILLS & PLUGINS (inside My Research): read-only async load of the weekly skills watch (rotation, findings, places, pinned copies).
+  // Verdicts are only READ here (recommendations\<week>\<agent>.json, written by ARGUS's buttons); this tab writes nothing.
+  let skills = null;
+  const skillsSvc = () => (skills || (skills = require("../skills/service").createService({
+    researchDir: researchDir(), recDir: path.join(reportsDir(), "recommendations"), now,
+    skillsDir: (() => { const t = require("../testGuard").workspaceDir("sharedTools", e); return t ? path.join(t, "skills") : null; })(), log: say })));
+  handle("skills-load", async (a) => (needsSetup() ? { ok: false, reason: "needs-setup", needsSetup: true } : skillsSvc().load({ week: a && typeof a.week === "string" ? a.week.slice(0, 10) : "" })));
   // flushImages: called from main.js on before-quit so a fetch just before quitting keeps its index entry
   return { service, writer: getWriter, images: getImages, flushImages: () => { if (images) images.close(); } };   // sweep + write at quit
 }
