@@ -19,6 +19,8 @@
 const RESET_IDEMPOTENCY_MS = 90 * 1000; // a second reset of the same agent inside this window after a good one is ignored
 const RESET_SETTLE_MS = 30 * 1000;      // after a reset, attach/sweep paths keep off the agent this long (stale listings)
 const STOP_CONFIRM_TIMEOUT_MS = 30 * 1000;
+const RESET_WAIT_CAP_MS = 45 * 1000;    // an agent-tab open waits at most this long for a running reset before giving up (throws)
+const RESET_PRUNE_MS = 10 * 60 * 1000;  // finished-reset records older than this are dropped
 const STOP_POLL_MS = 500;
 const STOP_STABLE_GAP_MS = 1000;        // "gone" must hold on two listings at least this far apart (a respawn lands ~150 ms after a kill)
 
@@ -27,49 +29,83 @@ function create(opts) {
   const now = o.now || (() => Date.now());
   const windowMs = o.idempotencyMs != null ? o.idempotencyMs : RESET_IDEMPOTENCY_MS;
   const settleMs = o.settleMs != null ? o.settleMs : RESET_SETTLE_MS;
-  const state = new Map(); // key -> { trigger, startedAt, promise, doneAt, result }
+  const pruneMs = o.pruneMs != null ? o.pruneMs : RESET_PRUNE_MS;
+  const inflight = new Map();  // key -> { kind: "reset"|"serial", trigger, startedAt, promise }
+  const lastReset = new Map(); // key -> { trigger, doneAt, result } of the last SUCCESSFUL reset
 
-  // Runs fn() as THE reset of `key`, unless one is in flight or finished well within the window.
-  // Resolves { ...fn result, deduped:false } or, for an ignored second reset, { ...first result, deduped:true, firstTrigger }.
-  function run(key, trigger, fn, log) {
-    const say = (m) => { try { if (log) log(m); } catch (e) { /* logging never breaks a reset */ } };
-    const cur = state.get(key);
+  function prune() {
     const t = now();
-    if (cur && cur.promise) {
-      say(`IGNORED second reset (trigger=${trigger}): a reset (trigger=${cur.trigger}) started ${Math.round((t - cur.startedAt) / 1000)} s ago is still running - joining it`);
-      return cur.promise.then((r) => ({ ...r, deduped: true, firstTrigger: cur.trigger }));
+    for (const [k, v] of lastReset) if (t - v.doneAt > pruneMs) lastReset.delete(k);
+  }
+
+  // kind "reset" (default): runs fn() as THE reset of `key`, unless a reset is in flight (join it) or one finished within the
+  //   window (reuse its copy). Resolves { ...fn result, deduped:false } or { ...first result, deduped:true, firstTrigger }.
+  // kind "serial" (Restart Session's resume switch): never deduped, but waits for whatever runs on this key first, so a restart
+  //   and a reset of one agent never overlap. A reset arriving while a serial job runs waits for it too, then decides.
+  function run(key, trigger, fn, log, runOpts) {
+    const kind = (runOpts && runOpts.kind) || "reset";
+    const say = (m) => { try { if (log) log(m); } catch (e) { /* logging never breaks a reset */ } };
+    prune();
+    const cur = inflight.get(key);
+    const t = now();
+    if (cur) {
+      if (kind === "reset" && cur.kind === "reset") {
+        say(`IGNORED second reset (trigger=${trigger}): a reset (trigger=${cur.trigger}) started ${Math.round((t - cur.startedAt) / 1000)} s ago is still running - joining it`);
+        return cur.promise.then((r) => ({ ...r, deduped: true, firstTrigger: cur.trigger }));
+      }
+      say(`WAITING (${kind}, trigger=${trigger}): a ${cur.kind} (trigger=${cur.trigger}) is still running on this agent`);
+      return cur.promise.catch(() => {}).then(() => run(key, trigger, fn, log, runOpts));
     }
-    if (cur && cur.doneAt && t - cur.doneAt < windowMs) {
-      say(`IGNORED second reset (trigger=${trigger}): a reset (trigger=${cur.trigger}) finished ${Math.round((t - cur.doneAt) / 1000)} s ago (window ${Math.round(windowMs / 1000)} s) - reusing its copy ${cur.result && cur.result.agentId}`);
-      return Promise.resolve({ ...(cur.result || {}), deduped: true, firstTrigger: cur.trigger });
+    const last = lastReset.get(key);
+    if (kind === "reset" && last && t - last.doneAt < windowMs) {
+      say(`IGNORED second reset (trigger=${trigger}): a reset (trigger=${last.trigger}) finished ${Math.round((t - last.doneAt) / 1000)} s ago (window ${Math.round(windowMs / 1000)} s) - reusing its copy ${last.result && last.result.agentId}`);
+      return Promise.resolve({ ...(last.result || {}), deduped: true, firstTrigger: last.trigger });
     }
-    const entry = { trigger, startedAt: t, promise: null, doneAt: 0, result: null };
-    say(`START (trigger=${trigger})`);
+    const entry = { kind, trigger, startedAt: t, promise: null };
+    say(`START (${kind === "reset" ? "" : kind + ", "}trigger=${trigger})`);
     entry.promise = Promise.resolve()
       .then(fn)
       .then((r) => {
-        entry.promise = null; entry.doneAt = now(); entry.result = r || {};
-        say(`DONE (trigger=${trigger}) new copy ${entry.result.agentId || "?"} after ${Math.round((entry.doneAt - t) / 1000)} s`);
-        return { ...entry.result, deduped: false };
+        if (inflight.get(key) === entry) inflight.delete(key);
+        const res = r || {};
+        if (kind === "reset") lastReset.set(key, { trigger, doneAt: now(), result: res });
+        say(`DONE (${kind === "reset" ? "" : kind + ", "}trigger=${trigger}) copy ${res.agentId || "?"} after ${Math.round((now() - t) / 1000)} s`);
+        return kind === "reset" ? { ...res, deduped: false } : r;
       }, (e) => {
-        if (state.get(key) === entry) state.delete(key); // a failed reset never blocks the next try
-        say(`FAILED (trigger=${trigger}): ${e && e.message}`);
+        if (inflight.get(key) === entry) inflight.delete(key); // a failed reset never blocks the next try
+        say(`FAILED (${kind === "reset" ? "" : kind + ", "}trigger=${trigger}): ${e && e.message}`);
         throw e;
       });
-    state.set(key, entry);
+    inflight.set(key, entry);
     return entry.promise;
   }
 
-  // true while a reset of `key` runs and for settleMs after it finished
+  // a reset / restart is running on `key` right now (not counting the settle window)
+  function isRunning(key) { return inflight.has(key); }
+  // true while something runs on `key` and for settleMs after a reset finished (attach paths: stale listings)
   function isBusy(key) {
-    const cur = state.get(key);
-    if (!cur) return false;
-    if (cur.promise) return true;
-    return !!cur.doneAt && now() - cur.doneAt < settleMs;
+    if (inflight.has(key)) return true;
+    const last = lastReset.get(key);
+    return !!last && now() - last.doneAt < settleMs;
   }
-  function busyKeys() { return Array.from(state.keys()).filter(isBusy); }
+  function busyKeys() { prune(); return Array.from(new Set([...inflight.keys(), ...lastReset.keys()])).filter(isBusy); }
+  function size() { return lastReset.size + inflight.size; } // tests: pruning
 
-  return { run, isBusy, busyKeys };
+  return { run, isRunning, isBusy, busyKeys, size };
+}
+
+// Waits while isRunning() is true (poll pollMs, cap capMs). Resolves true once it cleared, false if still running at the cap.
+async function waitWhileRunning(deps, opts) {
+  const o = opts || {};
+  const capMs = o.capMs != null ? o.capMs : RESET_WAIT_CAP_MS;
+  const pollMs = o.pollMs != null ? o.pollMs : 1000;
+  const now = deps.now || (() => Date.now());
+  const t0 = now();
+  while (deps.isRunning()) {
+    if (now() - t0 >= capMs) return false;
+    await deps.sleep(pollMs);
+  }
+  return true;
 }
 
 // deps: listCopies() -> Promise<[{id}]> (FRESH listing of the live copies of this one folder), stop(id) -> Promise,
@@ -119,4 +155,4 @@ async function stopAllAndConfirmGone(deps, opts) {
   }
 }
 
-module.exports = { create, stopAllAndConfirmGone, RESET_IDEMPOTENCY_MS, RESET_SETTLE_MS, STOP_CONFIRM_TIMEOUT_MS };
+module.exports = { create, stopAllAndConfirmGone, waitWhileRunning, RESET_IDEMPOTENCY_MS, RESET_SETTLE_MS, STOP_CONFIRM_TIMEOUT_MS, RESET_WAIT_CAP_MS, RESET_PRUNE_MS };

@@ -23,3 +23,10 @@
 
 ## Sandbox
 Test mode, own userData (`AGENT_DESKTOP_TEST_SUFFIX=dupfix`), CDP 9341, a read-only `fake-agent-copies.json` copy that cannot be stopped. Two concurrent `switch-conversation` resets: log shows `START (trigger=sandbox-A)`, `IGNORED second reset (trigger=sandbox-B) ... joining it`, re-stops, then `NOT starting a new copy: old copy ... still running 30 s after stop`; both calls rejected at 30.2 s; no dispatch. App booted as v1.141.1 with no main-process errors.
+
+## SE review fixes (same version)
+- (A, must) `findOrDispatchBackgroundAgent` (opening an agent's tab) waited only 5x2 s for a recent dispatch. Mid-reset it could find the dying old copy (attach = relaunch) or nothing (dispatch = second copy). Now: while a reset/restart of that agent is RUNNING (`resetLock.isRunning`, no settle window) it waits, polling 1 s, up to `RESET_WAIT_CAP_MS` (45 s), then re-finds with a fresh listing (fresh also during the 30 s settle window); still running at the cap = throws, never dispatches. `resetGuard.waitWhileRunning()`.
+- (B, should) Resume switches (Restart Session button, `restartAgentSession` placeholder path, trigger `restart-agent-session` / `resume-switch`) take the same per-agent lock as "serial" jobs: never deduped, but a restart waits for a running reset and a reset waits for a running restart (then applies its normal window rule; a restart never records a reset or opens the 90 s window).
+- (C) `escalateStuckAgentCore` uses `stopAllAndConfirmGone` instead of its own 10x500 ms loop; `stuckEscalation.js` logs "joined existing reset copy" when its escalation was deduped. `tests/stuckEscalation.test.js` source check updated accordingly.
+- (D) Known behaviour: a deduped reset drops the SECOND caller's `initialPrompt`. Only the first reset's first prompt reaches the new copy; the second handoff flow's `pendingResume` then verifies/sends its own resume text into the reused copy (tickResume). Finished-reset records older than 10 minutes (`RESET_PRUNE_MS`) are pruned.
+- Tests: resetGuard.test.js now 19 (the 5 new ones fail on ce037ec). Full suite 129/129.

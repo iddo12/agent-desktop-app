@@ -146,7 +146,7 @@ t("main.js: switch-conversation (new conversation) goes through the reset lock a
   const m = src("main.js");
   const impl = fnBody(m, "function switchConversationImpl(");
   assert.ok(/resetLock\.run\(/.test(impl));
-  assert.ok(/args\.trigger/.test(impl));
+  assert.ok(/a\.trigger/.test(impl));
 });
 t("main.js: the switch waits for the old copy (stopAllAndConfirmGone), never the 5 s-race stopBackgroundAgentForCwd", () => {
   const m = src("main.js");
@@ -171,6 +171,79 @@ t("renderer: every reset passes a trigger; one handoff flow tick at a time; runR
   assert.ok(/startFlow\(a\.path, false, "auto-handoff/.test(g));
   assert.ok(/trigger: opts\.trigger \|\| "unspecified"/.test(r));
   assert.ok(/performSessionReset\(activeAgentPath, \{ trigger: "reset-session-button" \}\)/.test(r));
+});
+
+// ---- SE review fixes (same version) ----
+t("serial (restart) waits for a running reset and is never deduped; a reset waits for a running restart, then runs", async () => {
+  const c = clock(); const logs = [];
+  const g = RG.create({ now: c.now });
+  const order = [];
+  let rel1; const gate1 = new Promise((r) => { rel1 = r; });
+  const pReset = g.run("k", "auto-handoff", async () => { order.push("reset-start"); await gate1; order.push("reset-end"); return { agentId: "new" }; }, (m) => logs.push(m));
+  const pRestart = g.run("k", "restart", async () => { order.push("restart"); return { ok: true, agentId: "resumed" }; }, (m) => logs.push(m), { kind: "serial" });
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepStrictEqual(order, ["reset-start"], "the restart started while the reset ran");
+  rel1();
+  const [r1, r2] = await Promise.all([pReset, pRestart]);
+  assert.deepStrictEqual(order, ["reset-start", "reset-end", "restart"]);
+  assert.strictEqual(r1.agentId, "new"); assert.strictEqual(r2.agentId, "resumed"); assert.ok(!r2.deduped);
+  assert.ok(logs.some((l) => /WAITING \(serial, trigger=restart\)/.test(l)), logs.join("\n"));
+  // a reset arriving while a restart runs waits for it, and is not "joined" to the restart
+  let rel2; const gate2 = new Promise((r) => { rel2 = r; });
+  c.advance(RG.RESET_IDEMPOTENCY_MS + 1);
+  const pR2 = g.run("k", "restart2", async () => { await gate2; return { agentId: "resumed2" }; }, null, { kind: "serial" });
+  let resetRan = false;
+  const pX = g.run("k", "button", async () => { resetRan = true; return { agentId: "fresh2" }; });
+  await Promise.resolve();
+  assert.strictEqual(resetRan, false);
+  rel2();
+  const [, rx] = await Promise.all([pR2, pX]);
+  assert.strictEqual(resetRan, true); assert.strictEqual(rx.agentId, "fresh2"); assert.strictEqual(rx.deduped, false);
+});
+
+t("isRunning is only the in-flight part (no settle window); waitWhileRunning clears or gives up at the cap", async () => {
+  const c = clock();
+  const g = RG.create({ now: c.now });
+  let rel; const gate = new Promise((r) => { rel = r; });
+  const p = g.run("k", "a", async () => { await gate; return { agentId: "x" }; });
+  assert.strictEqual(g.isRunning("k"), true);
+  assert.strictEqual(await RG.waitWhileRunning({ isRunning: () => g.isRunning("k"), sleep: c.sleep, now: c.now }, { capMs: 5 * S }), false);
+  rel(); await p;
+  assert.strictEqual(g.isRunning("k"), false); assert.strictEqual(g.isBusy("k"), true);
+  let polls = 0;
+  const ok = await RG.waitWhileRunning({ isRunning: () => ++polls < 3, sleep: c.sleep, now: c.now });
+  assert.strictEqual(ok, true); assert.strictEqual(polls, 3);
+});
+
+t("finished-reset records older than 10 minutes are pruned", async () => {
+  const c = clock();
+  const g = RG.create({ now: c.now });
+  await g.run("a", "t", async () => ({ agentId: "1" }));
+  await g.run("b", "t", async () => ({ agentId: "2" }));
+  assert.strictEqual(g.size(), 2);
+  c.advance(RG.RESET_PRUNE_MS + 1);
+  g.busyKeys();
+  assert.strictEqual(g.size(), 0);
+});
+
+t("main.js (SE review A): opening an agent mid-reset waits for the reset, re-finds fresh, throws instead of dispatching", () => {
+  const m = src("main.js");
+  const f = fnBody(m, "async function findOrDispatchBackgroundAgent(");
+  const iWait = f.indexOf("resetGuard.waitWhileRunning(");
+  assert.ok(/if \(resetRunning\(sessionCwd\)\)/.test(f) && iWait > 0, "no wait for a running reset");
+  assert.ok(/if \(!cleared\) throw new Error/.test(f));
+  assert.ok(iWait < f.indexOf("findAliveBackgroundAgent("), "must wait BEFORE the first find (else it finds the dying old copy)");
+  assert.ok(iWait < f.indexOf("dispatchBackgroundAgent(shell"));
+  assert.ok(/findAliveBackgroundAgent\(shell, spawnEnv, sessionCwd, \{ fresh: resetBusy\(sessionCwd\) \}\)/.test(f));
+});
+t("main.js (SE review B/C): resume switches take the lock as serial jobs; escalation uses the confirmed stop; deduped escalation logged", () => {
+  const m = src("main.js");
+  assert.ok(/\{ kind: a\.newConversation \? "reset" : "serial" \}/.test(fnBody(m, "function switchConversationImpl(")));
+  assert.ok(!/if \(!args \|\| !args\.newConversation\) return switchConversationCore/.test(m));
+  const esc = fnBody(m, "async function escalateStuckAgentCore(");
+  assert.ok(/resetGuard\.stopAllAndConfirmGone\(/.test(esc));
+  assert.ok(!/i < 10; i\+\+\) \{ await new Promise/.test(esc));
+  assert.ok(/joined existing reset copy/.test(src("stuckEscalation.js")));
 });
 
 (async () => {

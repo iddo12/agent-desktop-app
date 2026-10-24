@@ -241,7 +241,8 @@ function create(deps) {
           log(`STUCK-FAILING ${agentPath}: escalating - closing the doomed session and starting a FRESH one (no --resume), handoff ${handoff || "none found"}`);
           try {
             const r = await deps.escalate(agentPath, freshPrompt(st.name, handoff));
-            log(`STUCK-FAILING ${agentPath}: fresh session started ${r && r.agentId ? "(id " + r.agentId + ")" : ""}`);
+            if (r && r.deduped) log(`STUCK-FAILING ${agentPath}: joined existing reset copy ${r.agentId ? "(id " + r.agentId + ")" : ""} (first trigger ${r.firstTrigger || "?"})`);
+            else log(`STUCK-FAILING ${agentPath}: fresh session started ${r && r.agentId ? "(id " + r.agentId + ")" : ""}`);
           } catch (e) {
             st.freshFailed = true;
             log(`STUCK-FAILING ${agentPath}: escalation aborted/FAILED: ${e.message} - not retrying, alert stays up`);

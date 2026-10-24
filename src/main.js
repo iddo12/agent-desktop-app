@@ -2317,6 +2317,7 @@ const resetGuard = require("./resetGuard");
 const resetLock = resetGuard.create();
 const resetAgentPaths = new Map(); // dispatchKey -> agent path (original case, as ptySessions / keep-going use it)
 function resetBusy(sessionCwd) { return resetLock.isBusy(dispatchKey(sessionCwd)); }
+function resetRunning(sessionCwd) { return resetLock.isRunning(dispatchKey(sessionCwd)); }
 function resetBusyAgentPaths() { return resetLock.busyKeys().map((k) => resetAgentPaths.get(k)).filter(Boolean); }
 // v1.66.1: starts that are queued or running (the limiter can hold a start for minutes), per agent.
 const startsInFlight = new Map(); // dispatchKey -> { p: Promise<id>, urgent }
@@ -2909,7 +2910,15 @@ async function enforceTestTokenBudget() {
 // registerRemoteControl(), below) or one it's simply reattaching to (already
 // registered, if it ever was, back when IT was first dispatched).
 async function findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwd) {
-  let existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+  // v1.141.1 (SE review A): a reset/restart of this agent is stopping the old copy and starting the new one. Finding now would
+  // return the dying old copy (attach = it gets relaunched) or nothing (dispatch = a second copy): wait until it is over (cap 45 s),
+  // then look again with a fresh listing; still running at the cap = throw, never dispatch.
+  if (resetRunning(sessionCwd)) {
+    logStuckWatchdog(`find-or-dispatch: ${path.basename(path.dirname(sessionCwd))} waits for a running reset before attaching`);
+    const cleared = await resetGuard.waitWhileRunning({ isRunning: () => resetRunning(sessionCwd), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+    if (!cleared) throw new Error("a reset of this agent is still running after 45 s - not starting or attaching a copy now");
+  }
+  let existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd, { fresh: resetBusy(sessionCwd) });
   // v1.54.4: launched moments ago by something else but not listed yet - give
   // it up to ~10 s to show up before launching a second copy.
   for (let i = 0; !existing && i < 5 && dispatchedRecently(sessionCwd); i++) {
@@ -3314,7 +3323,7 @@ async function restartAgentSession(agentPath) {
   if (!cur || !cur.sessionId) throw new Error("no conversation to resume");
   const old = ptySessions.get(agentPath);
   const size = { cols: old && old.cols, rows: old && old.rows };
-  const r = await switchConversationImpl(agentPath, { resumeSessionId: cur.sessionId, placeholder: true });
+  const r = await switchConversationImpl(agentPath, { resumeSessionId: cur.sessionId, placeholder: true, trigger: "restart-agent-session" });
   try {
     await startTerminalSession(agentPath, sessionCwd, size.cols, size.rows, r.agentId, false, false, "restart-session");
   } catch (e) {
@@ -3968,13 +3977,14 @@ async function escalateStuckAgentCore(agentPath, prompt) {
   try {
     const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
     const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
-    const target = path.resolve(sessionCwd);
-    const liveCopies = async () => (await listBackgroundAgents(shell, spawnEnv, { fresh: true })).filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
-    // stop EVERY live copy for this folder (a copy left running would keep the doomed conversation alive next to the fresh one)
-    for (const c of await liveCopies()) await stopClaudeAgent(shell, c.id, spawnEnv);
-    let remaining = await liveCopies();
-    for (let i = 0; remaining.length && i < 10; i++) { await new Promise((r) => setTimeout(r, 500)); remaining = await liveCopies(); }
-    if (remaining.length) throw new Error(`${remaining.length} live copy(ies) still running after stop - not starting a fresh session`);
+    // stop EVERY live copy for this folder (a copy left running would keep the doomed conversation alive next to the fresh one);
+    // v1.141.1 (SE review C): the same confirmed stop as a reset (fresh listings, re-stop, stable-gone check, 30 s then throw)
+    await resetGuard.stopAllAndConfirmGone({
+      listCopies: () => listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true }),
+      stop: (id) => stopCopy(shell, id, spawnEnv),
+      sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      log: (m) => logStuckWatchdog(`escalation: ${path.basename(agentPath)} ${m}`),
+    });
     // NOT urgent: the fresh start respects the CPU-guard start limiter like any other start
     newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { forceFresh: true, initialPrompt: prompt });
     logStuckWatchdog(`escalation: closed all live sessions of ${agentPath}, started fresh session ${newId}`);
@@ -5666,14 +5676,16 @@ ipcMain.handle("switch-conversation", (event, args) => switchConversationImpl(ar
 // v1.141.1: one reset = one live copy (src/resetGuard.js has the incident and the rules). A NEW-conversation switch (Reset Session,
 // handoff reset) goes through the per-agent reset lock: a second one while the first runs, or within RESET_IDEMPOTENCY_MS after it,
 // is logged and handed the first one's result instead of starting another copy. Every reset logs its trigger to the watchdog log.
+// A resume switch (Restart Session, restartAgentSession) takes the same lock as a "serial" job: never deduped, but a restart and a
+// reset of one agent never overlap (SE review B).
 function switchConversationImpl(agentPath, args) {
-  if (!args || !args.newConversation) return switchConversationCore(agentPath, args || {});
+  const a = args || {};
   const sessionCwd = sessionCwdFor(agentPath);
-  const trigger = String(args.trigger || "unspecified").slice(0, 60);
+  const trigger = String(a.trigger || (a.newConversation ? "unspecified" : "resume-switch")).slice(0, 60);
   const name = path.basename(agentPath);
   resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
-  return resetLock.run(dispatchKey(sessionCwd), trigger, () => switchConversationCore(agentPath, args),
-    (m) => logStuckWatchdog(`reset: ${name} ${m}`));
+  return resetLock.run(dispatchKey(sessionCwd), trigger, () => switchConversationCore(agentPath, a),
+    (m) => logStuckWatchdog(`reset: ${name} ${m}`), { kind: a.newConversation ? "reset" : "serial" });
 }
 async function switchConversationCore(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
   const sessionCwd = sessionCwdFor(agentPath);
