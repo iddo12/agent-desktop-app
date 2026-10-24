@@ -30,6 +30,7 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - financeFeedPath (file): Finance feed file (finance_feed.json)  [env AGENT_DESKTOP_FINANCE_FEED_PATH]
 - financeLoginLinks (text): Finance: login links per source (id=https://...;id=https://...)  [env AGENT_DESKTOP_FINANCE_LOGIN_LINKS]
 - intakeDir (folder): Intake folder (holds intake_index.jsonl)  [env AGENT_DESKTOP_INTAKE_DIR]
+- contactsDir (folder): Contacts folder (holds contacts.json from the Personal Assistant agent)  [env AGENT_DESKTOP_CONTACTS_DIR]
 - intakeDefaultAgent (text): Intake: folder name of the agent the watcher delivers approved items to by default  [env AGENT_DESKTOP_INTAKE_DEFAULT_AGENT]
 - intakeRequireVerified (text): Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)  [env AGENT_DESKTOP_INTAKE_REQUIRE_VERIFIED]
 - healthParent (folder): Health folder  [env AGENT_DESKTOP_HEALTH_PARENT]

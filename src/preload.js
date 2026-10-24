@@ -266,6 +266,18 @@ contextBridge.exposeInMainWorld("api", {
     greenLight: (slug) => ipcRenderer.invoke("projects-green-light", { slug }),
     onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("projects-changed", h); return () => ipcRenderer.removeListener("projects-changed", h); },
   },
+  contacts: {
+    list: (o) => ipcRenderer.invoke("contacts-list", o || {}),
+    company: (id) => ipcRenderer.invoke("contacts-company", { id }),
+    person: (id) => ipcRenderer.invoke("contacts-person", { id }),
+    setNote: (kind, id, text) => ipcRenderer.invoke("contacts-set-note", { kind, id, text }),
+    setCategories: (id, categories) => ipcRenderer.invoke("contacts-set-categories", { id, categories }),
+    setLink: (id, kind, value) => ipcRenderer.invoke("contacts-set-link", { id, kind, value }),
+    snooze: (id, mode, days) => ipcRenderer.invoke("contacts-snooze", { id, mode, days }),
+    suggestions: () => ipcRenderer.invoke("contacts-suggestions", {}),
+    resolveSuggestion: (id, action, categories) => ipcRenderer.invoke("contacts-suggestion-resolve", { id, action, categories }),
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("contacts-changed", h); return () => ipcRenderer.removeListener("contacts-changed", h); },
+  },
   tasklist: {
     load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
     move: (agent, id, dir, target) => ipcRenderer.invoke("tasklist-move", { agent, id, dir, target }),

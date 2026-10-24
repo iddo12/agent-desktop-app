@@ -5624,6 +5624,20 @@ if (!demo.ON) {
   }
 }
 
+// CONTACTS (basic CRM over the Personal Assistant agent's contacts.json): handlers only, IPC only (no port). Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./contacts/main-contacts").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never names, mails or notes
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("contacts failed to load:", e && e.code);
+  }
+}
+
 // PROJECTS (Project Autopilot ledger view): handlers only. Not in demo mode.
 if (!demo.ON) {
   try {
