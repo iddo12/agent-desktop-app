@@ -28,4 +28,21 @@ function mark(list, value) {
   return (Array.isArray(list) ? list : []).map((a) => (a && typeof a === "object" ? Object.assign({}, a, { hidden: isHidden(a, set) }) : a));
 }
 
-module.exports = { parse, isHidden, mark };
+// v1.141.0 (SE review): the ONE place that reads the setting, used by both the list marking (main.js) and the research writer
+// (research/main-research.js). appConfig.get already applies the order environment (AGENT_DESKTOP_HIDDEN_AGENTS) > app-config.json, so both
+// paths honour the env override the same way. cfg is injectable for tests.
+function configured(cfg) {
+  try { const v = (cfg || require("./appConfig")).get("hiddenAgents"); return typeof v === "string" ? v : null; } catch (e) { return null; }
+}
+// for a writer that only knows an agent's FOLDER: find its display name in the agent list, so a display name in the setting also hides it
+function makeIsHidden({ listAgents, cfg } = {}) {
+  return (folder) => {
+    const set = parse(configured(cfg));
+    if (!set.size || typeof folder !== "string") return false;
+    let displayName = "";
+    try { const a = (typeof listAgents === "function" ? listAgents() : []).find((x) => x && typeof x.folderName === "string" && x.folderName.toLowerCase() === folder.toLowerCase()); displayName = a && typeof a.displayName === "string" ? a.displayName : ""; } catch (e) { displayName = ""; }
+    return isHidden({ folderName: folder, displayName }, set);
+  };
+}
+
+module.exports = { parse, isHidden, mark, configured, makeIsHidden };

@@ -1430,7 +1430,7 @@ process.on("unhandledRejection", (reason) => {
 
 // v1.140.0: each agent carries hidden:true when its name is in the hiddenAgents setting (src/hiddenAgents.js). Only these renderer-facing
 // lists are marked; nothing is dropped, and main's own listAgents() (delivery, wake-up, keep-going, handoff) is unchanged.
-const hiddenAgentsValue = () => { try { return require("./appConfig").get("hiddenAgents"); } catch (e) { return null; } };
+const hiddenAgentsValue = () => require("./hiddenAgents").configured();   // v1.141.0: the one shared reader (env override > app-config.json)
 ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return require("./hiddenAgents").mark(listAgents(), hiddenAgentsValue()); });
 
 // Sidebar groups ("folders"). Visual-only - see src/groups.js for the full

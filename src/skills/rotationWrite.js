@@ -61,7 +61,12 @@ async function setAgents(o) {
   const tmp = file + "." + process.pid + "." + now + ".tmp";
   try {
     await fsp.writeFile(tmp, JSON.stringify(next, null, 2) + "\n", "utf8");
-    await fsp.rename(tmp, file);
+    try { await (o.rename || fsp.rename)(tmp, file); }
+    catch (e) {   // (SE review) Dropbox or a scanner can hold the file for a moment: wait ~300 ms and try once more
+      if (!e || !/^(EPERM|EBUSY|EACCES)$/.test(e.code || "")) throw e;
+      await new Promise((res) => setTimeout(res, typeof o.retryMs === "number" ? o.retryMs : 300));
+      await (o.rename || fsp.rename)(tmp, file);
+    }
   } catch (e) { try { await fsp.unlink(tmp); } catch (x) { /* nothing to clean */ } return { ok: false, reason: "The rotation file could not be saved." }; }
   return { ok: true, agents: out, previous: current, setAt: today, schedule: typeof r.json.schedule === "string" ? r.json.schedule.slice(0, 400) : "" };
 }

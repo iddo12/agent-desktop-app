@@ -11,3 +11,8 @@
 
 ## Tests
 `tests/skillsRotation.test.js` (16, new: write path in temp folders, field preservation, daily backup, unknown-agent/empty/path/stale refusals, display-name mapping, hidden agents allowed, undo; hidden agent never calls the delivery path and gets the pending note; non-hidden unchanged; wiring). research/research-mag allow-lists include `skills-rotation-set`.
+
+## Review fixes (SE, same version)
+- (required) The research writer's hidden check now matches the folder AND the display name (the folder's display name is looked up in the app's agent list), so a display name in `hiddenAgents` also routes "Discuss"/replies to the pending note. The setting is read by ONE function, `hiddenAgents.configured()` (appConfig.get: env `AGENT_DESKTOP_HIDDEN_AGENTS` > app-config.json), used by both the list marking in main.js and the writer (`hiddenAgents.makeIsHidden({ listAgents })`); main-research no longer reads the env var itself.
+- (optional, done) `rotationWrite.js` retries the rename once after ~300 ms on EPERM/EBUSY/EACCES (Dropbox sync lock); a second failure is reported in plain words and the temp file is removed.
+- Tests: skillsRotation.test.js now 21 (display-name entry hides and routes to the pending note; env override honoured by both paths; rename retry and second-failure cleanup).

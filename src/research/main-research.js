@@ -206,7 +206,8 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
     findRef: (week, agent, fid) => (typeof fid === "string" && fid.startsWith("rec:") ? recsSvc().findRef(week, agent, fid) : service().findRef(week, agent, fid)),   // v1.133.0: one writer (one rate limit + duplicate check) for findings and recommendations
     resolveAgent, isRunning: isAgentRunning,
     // v1.141.0: hiddenAgents setting (src/hiddenAgents.js); a hidden agent never gets a live delivery from here, only its pending notes
-    isHidden: (folder) => { try { return require("../hiddenAgents").isHidden({ folderName: folder }, require("../hiddenAgents").parse(e.AGENT_DESKTOP_HIDDEN_AGENTS || cfg.get("hiddenAgents"))); } catch (x) { return false; } },
+    // (SE review) folder AND display name are checked; the setting is read by the same function the list marking uses
+    isHidden: require("../hiddenAgents").makeIsHidden({ listAgents }),
     // no delivery function (should not happen in the app): report a dry result, which classifies as "failed" with a plain reason
     deliver: typeof deliverToAgent === "function" ? deliverToAgent : () => Promise.resolve({ delivered: false, dry: true }),
     classify: typeof classifyDelivery === "function" ? classifyDelivery : null,

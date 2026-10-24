@@ -124,8 +124,50 @@ t("non-hidden agent behaves as before (live delivery when running)", async () =>
 });
 t("main-research gives the writer an isHidden from the hiddenAgents setting; the tab and My Recommendations say 'reads it in the Claude desktop app'", () => {
   const rd = (p) => fs.readFileSync(path.join(__dirname, "..", "src", p), "utf8");
-  assert.ok(/isHidden: \(folder\) =>[^\n]*hiddenAgents/.test(rd("research/main-research.js")));
+  assert.ok(/isHidden: require\("\.\.\/hiddenAgents"\)\.makeIsHidden\(\{ listAgents \}\)/.test(rd("research/main-research.js")));
+  assert.ok(!/AGENT_DESKTOP_HIDDEN_AGENTS/.test(rd("research/main-research.js")));   // no second reader of the setting
   assert.ok(/reads it in the Claude desktop app, not here/.test(rd("renderer/skills.js"))); assert.ok(/reads it in the Claude desktop app, not here/.test(rd("renderer/recs.js")));
+});
+
+// ---- SE review (c): one shared reader for the setting; display names hide too; the env override is honoured by BOTH paths
+const H = require("../src/hiddenAgents");
+const { createAppConfig } = require("../src/appConfig");
+const cfgWith = (env, fileValue) => { const d = tmpDir(); const c = createAppConfig({ userDataDir: d, env: env || {} }); if (fileValue) c.set("hiddenAgents", fileValue); return c; };
+const AGENTS = [{ folderName: "Hidden One", displayName: "The Watcher" }, { folderName: "Alpha", displayName: "Alpha" }];
+t("configured(): app-config value, and the AGENT_DESKTOP_HIDDEN_AGENTS env override wins", () => {
+  assert.strictEqual(H.configured(cfgWith({}, "Alpha")), "Alpha");
+  assert.strictEqual(H.configured(cfgWith({ AGENT_DESKTOP_HIDDEN_AGENTS: "The Watcher" }, "Alpha")), "The Watcher");
+  assert.strictEqual(H.configured(cfgWith({}, null)), null);
+  assert.strictEqual(H.configured({ get: () => { throw new Error("x"); } }), null);
+});
+t("a DISPLAY name in the setting hides the agent for the research writer (folder looked up in the agent list)", () => {
+  const isHidden = H.makeIsHidden({ listAgents: () => AGENTS, cfg: cfgWith({}, "The Watcher") });
+  assert.strictEqual(isHidden("Hidden One"), true); assert.strictEqual(isHidden("hidden one"), true); assert.strictEqual(isHidden("Alpha"), false);
+  assert.strictEqual(H.makeIsHidden({ listAgents: () => { throw new Error("x"); }, cfg: cfgWith({}, "Hidden One") })("Hidden One"), true);   // folder still matches
+});
+t("env override is honoured by both paths: list marking (mark + configured) and the writer (makeIsHidden)", () => {
+  const c = cfgWith({ AGENT_DESKTOP_HIDDEN_AGENTS: "The Watcher" }, null);
+  assert.deepStrictEqual(H.mark(AGENTS, H.configured(c)).map((a) => a.hidden), [true, false]);
+  assert.strictEqual(H.makeIsHidden({ listAgents: () => AGENTS, cfg: c })("Hidden One"), true);
+  const m = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  assert.ok(/const hiddenAgentsValue = \(\) => require\("\.\/hiddenAgents"\)\.configured\(\)/.test(m));
+});
+t("display-name entry: the writer routes to the pending note and never calls delivery", async () => {
+  const isHidden = H.makeIsHidden({ listAgents: () => AGENTS, cfg: cfgWith({}, "The Watcher") });
+  const x = writer({ isHidden });
+  const r = await x.w.write({ week: "2026-W43", agent: "Hidden One", findingId: "rec:abc", text: "About T: by display name" });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.hidden, true); assert.strictEqual(x.calls.length, 0);
+  assert.ok(/by display name/.test(fs.readFileSync(path.join(x.root, r.file), "utf8")));
+});
+t("rename is retried once after a Dropbox-style lock (EPERM), and a second failure is reported, not thrown", async () => {
+  const s = setup(); let n1 = 0;
+  const flaky = async (a, b) => { n1++; if (n1 === 1) throw Object.assign(new Error("locked"), { code: "EPERM" }); return require("fs").promises.rename(a, b); };
+  const r = await RW.setAgents({ file: s.f, agents: ["Alpha"], known: KNOWN, now: NOW, rename: flaky, retryMs: 5 });
+  assert.strictEqual(r.ok, true); assert.strictEqual(n1, 2); assert.deepStrictEqual(s.read().agents, ["Alpha"]);
+  const s2 = setup(); let n2 = 0;
+  const r2 = await RW.setAgents({ file: s2.f, agents: ["Alpha"], known: KNOWN, now: NOW, rename: async () => { n2++; throw Object.assign(new Error("locked"), { code: "EBUSY" }); }, retryMs: 5 });
+  assert.strictEqual(r2.ok, false); assert.strictEqual(n2, 2); assert.deepStrictEqual(s2.read().agents, ["Alpha", "Beta"]);
+  assert.deepStrictEqual(fs.readdirSync(s2.d).filter((x) => /\.tmp$/.test(x)), []);
 });
 (async () => {
   for (const [name, fn] of queue) { n++; try { await fn(); console.log("ok   " + name); } catch (e) { fails++; console.log("FAIL " + name + ": " + e.message); } }
