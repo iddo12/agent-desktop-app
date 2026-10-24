@@ -5657,7 +5657,7 @@ resetSessionBtn.addEventListener("click", async () => {
   );
   if (!confirmed) return;
   try {
-    await performSessionReset(activeAgentPath);
+    await performSessionReset(activeAgentPath, { trigger: "reset-session-button" });
   } catch (e) {
     alert("Reset failed: " + (e.message || String(e)));
   }
@@ -5685,6 +5685,7 @@ async function performSessionReset(agentPath, opts = {}) {
     if (!conversationsViewEl.classList.contains("hidden")) setConversationsMode(false);
     resetSessionBtn.disabled = true;
   }
+  let result = null;
   const tickStartedAt = Date.now();
   const tick = setInterval(() => {
     if (!isActive) return;
@@ -5693,7 +5694,8 @@ async function performSessionReset(agentPath, opts = {}) {
       Date.now() - tickStartedAt > RESET_SESSION_SLOW_HINT_MS ? `Resetting… ${elapsedSec}s (longer than usual)` : `Resetting… ${elapsedSec}s`;
   }, 100);
   try {
-    const result = await window.api.switchConversation(agentPath, { newConversation: true, initialPrompt: opts.initialPrompt });
+    // v1.141.1: the trigger is logged by main; a duplicate reset (one already ran within 90 s) comes back deduped, no new copy
+    result = await window.api.switchConversation(agentPath, { newConversation: true, initialPrompt: opts.initialPrompt, trigger: opts.trigger || "unspecified" });
     if (result && result.agentId) pendingKnownAgentIdByPath.set(agentPath, result.agentId);
     // Same teardown the Chats panel uses: drop the cached terminal so the next
     // showTerminalFor() builds a fresh one and attaches to the new bg process.
@@ -5701,7 +5703,7 @@ async function performSessionReset(agentPath, opts = {}) {
     const agent = agents.find((a) => a.path === agentPath);
     if (agent && activeAgentPath === agentPath) selectAgent(agent);
     // Not the active agent: it re-attaches to the new process the next time it is opened.
-    if (isActive) resetSessionBtn.textContent = "✓ Reset";
+    if (isActive) resetSessionBtn.textContent = result && result.deduped ? "✓ Already reset" : "✓ Reset";
   } finally {
     clearInterval(tick);
     switchingConversation = false;
@@ -5711,6 +5713,7 @@ async function performSessionReset(agentPath, opts = {}) {
     }, 1200);
   }
   if (activeAgentPath === agentPath) chatInputEl.focus();
+  return result;
 }
 
 // Restart Session: kill and re-dispatch this agent's `claude --bg` process,

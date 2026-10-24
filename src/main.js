@@ -2312,11 +2312,18 @@ const lastDispatchAt = new Map(); // path.resolve(sessionCwd).toLowerCase() -> m
 function dispatchKey(sessionCwd) {
   return path.resolve(sessionCwd).toLowerCase();
 }
+// v1.141.1 per-agent reset lock (src/resetGuard.js); used by switchConversationImpl, dispatchedRecently and keepgoing-attach
+const resetGuard = require("./resetGuard");
+const resetLock = resetGuard.create();
+const resetAgentPaths = new Map(); // dispatchKey -> agent path (original case, as ptySessions / keep-going use it)
+function resetBusy(sessionCwd) { return resetLock.isBusy(dispatchKey(sessionCwd)); }
+function resetBusyAgentPaths() { return resetLock.busyKeys().map((k) => resetAgentPaths.get(k)).filter(Boolean); }
 // v1.66.1: starts that are queued or running (the limiter can hold a start for minutes), per agent.
 const startsInFlight = new Map(); // dispatchKey -> { p: Promise<id>, urgent }
 function dispatchedRecently(sessionCwd) {
   const k = dispatchKey(sessionCwd);
   if (startsInFlight.has(k)) return true;
+  if (resetLock.isBusy(k)) return true; // v1.141.1: a reset is stopping the old copy / starting the new one
   const at = lastDispatchAt.get(k);
   return !!at && Date.now() - at < DISPATCH_GRACE_MS;
 }
@@ -3788,7 +3795,9 @@ try {
     relentlessAgents: () => { const s = keepGoing && keepGoing.getSettings(); return (s && s.relentless && s.relentless.agents) || []; },
     listed: () => listAgents().map((a) => a.path),
     attachedSet: () => new Set(ptySessions.keys()),
-    spawningSet: () => new Set(attachSpawning.keys()),
+    // v1.141.1: an agent in the middle of (or just after) a reset counts as spawning - keepgoing-attach attaching to the OLD copy
+    // during a reset is what resurrected it on 2026-10-24 ("bg spawned b2991d0f (fleet)" right after its kill).
+    spawningSet: () => new Set([...attachSpawning.keys(), ...resetBusyAgentPaths()]),
     blocked: () => {
       if (!keepGoing) return true;
       if (testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled())) return true;
@@ -3931,7 +3940,14 @@ if (testMode.TEST_MODE) {
 
 // Closes the doomed session and starts a FRESH one (no --resume) whose first prompt points at handoff_latest.md. Same teardown order as
 // switchConversationImpl(): drop the entry first so the pty exit does not trigger an auto-reattach to the conversation being left.
-async function escalateStuckAgent(agentPath, prompt) {
+// v1.141.1: a stuck escalation is a fresh-session reset too, so it takes the same per-agent reset lock (one reset at a time).
+function escalateStuckAgent(agentPath, prompt) {
+  const sessionCwd = sessionCwdFor(agentPath);
+  resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
+  return resetLock.run(dispatchKey(sessionCwd), "stuck-escalation", () => escalateStuckAgentCore(agentPath, prompt),
+    (m) => logStuckWatchdog(`reset: ${path.basename(agentPath)} ${m}`));
+}
+async function escalateStuckAgentCore(agentPath, prompt) {
   const sessionCwd = sessionCwdFor(agentPath);
   if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) throw new Error("test mode: live agents are not permitted - escalation refused");
   if (!fs.existsSync(agentPath)) throw new Error("the agent folder no longer exists");
@@ -5647,7 +5663,19 @@ ipcMain.handle("rename-conversation", (event, { agentPath, sessionId, title }) =
 // that. Tear down the attach pty, stop the bg daemon, dispatch a new one;
 // the renderer then re-attaches through its normal start-terminal path.
 ipcMain.handle("switch-conversation", (event, args) => switchConversationImpl(args.agentPath, args));
-async function switchConversationImpl(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
+// v1.141.1: one reset = one live copy (src/resetGuard.js has the incident and the rules). A NEW-conversation switch (Reset Session,
+// handoff reset) goes through the per-agent reset lock: a second one while the first runs, or within RESET_IDEMPOTENCY_MS after it,
+// is logged and handed the first one's result instead of starting another copy. Every reset logs its trigger to the watchdog log.
+function switchConversationImpl(agentPath, args) {
+  if (!args || !args.newConversation) return switchConversationCore(agentPath, args || {});
+  const sessionCwd = sessionCwdFor(agentPath);
+  const trigger = String(args.trigger || "unspecified").slice(0, 60);
+  const name = path.basename(agentPath);
+  resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
+  return resetLock.run(dispatchKey(sessionCwd), trigger, () => switchConversationCore(agentPath, args),
+    (m) => logStuckWatchdog(`reset: ${name} ${m}`));
+}
+async function switchConversationCore(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
   const sessionCwd = sessionCwdFor(agentPath);
   // Drop the ptySessions entry BEFORE killing the pty: proc.onExit ->
   // handlePtyExit checks `if (!session) return` first, so removing it now
@@ -5666,16 +5694,25 @@ async function switchConversationImpl(agentPath, { resumeSessionId, newConversat
   }
   // review M1: claim the slot BEFORE the (slow) stop so input arriving meanwhile queues instead of being dropped
   if (placeholder) ptySessions.set(agentPath, { starting: true, pendingInput: [] });
-  // Stops the underlying `claude --bg` daemon for this cwd and polls until
-  // its pid is actually gone (same helper delete-agent uses).
-  try {
-    await stopBackgroundAgentForCwd(sessionCwd);
-  } catch (e) {
-    if (placeholder) dropPlaceholder(agentPath);
-    throw e;
-  }
+  // Stop the underlying `claude --bg` copies for this cwd.
+  // v1.141.1: was the stopBackgroundAgentForCwd helper, whose hard 5 s race returned with the old copy still alive on a loaded PC, so the
+  // new copy was dispatched next to it (2026-10-24 06:13). Now: stop EVERY live copy of this folder and continue only once two
+  // fresh listings in a row show none; still alive at the deadline = throw, never a second copy.
   const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
   const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+  try {
+    const r = await resetGuard.stopAllAndConfirmGone({
+      listCopies: () => listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true }),
+      stop: (id) => stopCopy(shell, id, spawnEnv),
+      sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      log: (m) => logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} ${m}`),
+    });
+    if (r.stopped.length) logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} old copy ${r.stopped.join(", ")} confirmed gone after ${Math.round(r.waitedMs / 1000)} s`);
+  } catch (e) {
+    if (placeholder) dropPlaceholder(agentPath);
+    logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} NOT starting a new copy: ${e.message}`);
+    throw e;
+  }
   const opts = newConversation ? { forceFresh: true, initialPrompt, urgent: true } : { resumeSessionId, urgent: true };
   let newId;
   try {
