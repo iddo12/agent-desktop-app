@@ -164,13 +164,13 @@ body.argus-open:not(.argus-sidebar-wide) #systems-group .memory-nav-title, body.
    Mixed case, medium weight, no wide tracking. ARGUS / MEMORY / IRIS are typed in capitals by their modules, so they are
    shown as Argus / Memory / Iris with lowercase + capital first letter (the others are already mixed case). Sizes stay per layout. */
 body.lp-on #systems-group .lp-tile .argus-nav-title, body.lp-on #systems-group .lp-tile .memory-nav-title, body.lp-on #systems-group .lp-tile .iris-nav-title,
-body.lp-on #systems-group .lp-tile .daily-nav-name, body.lp-on #systems-group .lp-tile .health-nav-name, body.lp-on #systems-group .lp-tile .tools-nav-name, body.lp-on #systems-group .lp-tile .research-nav-name, body.lp-on #systems-group .lp-tile .tasklist-nav-name, body.lp-on #systems-group .lp-tile .intake-nav-name, body.lp-on #systems-group .lp-tile .finance-nav-name, body.lp-on #systems-group .lp-tile .designs-nav-name,
+body.lp-on #systems-group .lp-tile .daily-nav-name, body.lp-on #systems-group .lp-tile .health-nav-name, body.lp-on #systems-group .lp-tile .tools-nav-name, body.lp-on #systems-group .lp-tile .research-nav-name, body.lp-on #systems-group .lp-tile .tasklist-nav-name, body.lp-on #systems-group .lp-tile .intake-nav-name, body.lp-on #systems-group .lp-tile .finance-nav-name, body.lp-on #systems-group .lp-tile .designs-nav-name, body.lp-on #systems-group .lp-tile .contacts-nav-name, body.lp-on #systems-group .lp-tile .setup-nav-name,
 body.lp-on #systems-group .lp-tile .library-nav-title, body.lp-on #systems-group .lp-tile .lp-soon-name, body.lp-c #systems-group #library-nav::after {
   font-weight: 500; letter-spacing: .01em; text-transform: none; }
 body.lp-on #systems-group .lp-tile .argus-nav-title, body.lp-on #systems-group .lp-tile .memory-nav-title, body.lp-on #systems-group .lp-tile .iris-nav-title { text-transform: lowercase; }
 body.lp-on #systems-group .lp-tile .argus-nav-title::first-letter, body.lp-on #systems-group .lp-tile .memory-nav-title::first-letter, body.lp-on #systems-group .lp-tile .iris-nav-title::first-letter { text-transform: uppercase; }
 body.lp-f #systems-group .lp-tile .argus-nav-title, body.lp-f #systems-group .lp-tile .memory-nav-title, body.lp-f #systems-group .lp-tile .iris-nav-title,
-body.lp-f #systems-group .lp-tile .daily-nav-name, body.lp-f #systems-group .lp-tile .health-nav-name, body.lp-f #systems-group .lp-tile .tools-nav-name, body.lp-f #systems-group .lp-tile .research-nav-name, body.lp-f #systems-group .lp-tile .tasklist-nav-name, body.lp-f #systems-group .lp-tile .intake-nav-name, body.lp-f #systems-group .lp-tile .finance-nav-name, body.lp-f #systems-group .lp-tile .designs-nav-name,
+body.lp-f #systems-group .lp-tile .daily-nav-name, body.lp-f #systems-group .lp-tile .health-nav-name, body.lp-f #systems-group .lp-tile .tools-nav-name, body.lp-f #systems-group .lp-tile .research-nav-name, body.lp-f #systems-group .lp-tile .tasklist-nav-name, body.lp-f #systems-group .lp-tile .intake-nav-name, body.lp-f #systems-group .lp-tile .finance-nav-name, body.lp-f #systems-group .lp-tile .designs-nav-name, body.lp-f #systems-group .lp-tile .contacts-nav-name, body.lp-f #systems-group .lp-tile .setup-nav-name,
 body.lp-f #systems-group .lp-tile .library-nav-title, body.lp-f #systems-group .lp-tile .lp-soon-name { font-size: 12px; }
 
 /* ================= v1.83.2: shapes on the agent row's health dot (colour is not the only signal), F and C only ================= */
@@ -206,7 +206,7 @@ body.lp-f:not(.argus-open) #systems-group .argus-nav .argus-nav-lamps { grid-col
 body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile { container-type: inline-size; flex-wrap: wrap; gap: 2px 8px; align-content: center; min-height: 44px; }
 
 /* labels: size follows the tile, at most 2 lines, then an ellipsis (the full text is the tile's tooltip) */
-body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-title, .iris-nav-title, .memory-nav-title, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name, .library-nav-title, .fleet-nav-title, .lp-soon-name) {
+body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-title, .iris-nav-title, .memory-nav-title, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name, .contacts-nav-name, .setup-nav-name, .library-nav-title, .fleet-nav-title, .lp-soon-name) {
   font-size: clamp(11.5px, 8px + 3cqw, 14.5px); letter-spacing: .01em; line-height: 1.2; min-width: 0; max-width: 100%;
   white-space: normal; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -215,7 +215,7 @@ body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav
   white-space: normal; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 /* the name block takes what is left but never forces the badge out of the tile */
-body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-name, .iris-nav-name, .fleet-nav-name, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name) { flex: 1 1 56px; min-width: 0; }
+body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .lp-tile :is(.argus-nav-name, .iris-nav-name, .fleet-nav-name, .daily-nav-name, .health-nav-name, .tools-nav-name, .research-nav-name, .tasklist-nav-name, .intake-nav-name, .finance-nav-name, .designs-nav-name, .contacts-nav-name, .setup-nav-name) { flex: 1 1 56px; min-width: 0; }
 body.lp-f:not(.argus-open) #systems-group:not(.lp-strip) .fleet-nav { padding: 8px 10px; }
 
 /* badges: one size rule for all, wrap under the name when short of room, any number of digits */
