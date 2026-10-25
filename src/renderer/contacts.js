@@ -158,6 +158,36 @@
     if (p.automated) card.append(el("span", "ct-tag ct-t-quiet", "Automated"));
     card.addEventListener("click", () => openPerson(p.id)); return card;
   }
+  // Last mails with a person from Betterbird (live, read-only). Click one to read it here; Reply opens it in Betterbird (we never send).
+  function liveMails(em, id, p) {
+    const fallback = (why) => { if (why) em.append(el("p", "ct-rs ct-warn", why + " Showing the list from the contacts file."));
+      if (!p.mails.length) em.append(el("p", "ct-rs", "No emails yet."));
+      p.mails.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.date), el("span", "", m.dir === "in" ? "they wrote" : "I wrote"), el("span", "", m.subject)); em.append(row); }); };
+    const list5 = el("div", "ct-mails"), pane = el("div", "ct-mailpane"); em.append(list5, pane);
+    list5.append(el("p", "ct-rs", "Loading mail..."));
+    api.personMails(id).then((r) => {
+      if (S.sel !== id || S.selKind !== "person") return; list5.textContent = "";
+      if (!r || !r.ok) { fallback((r && r.reason) || "Mail could not load."); return; }
+      if (!r.rows.length) { list5.append(el("p", "ct-rs", "No mail found for this person.")); return; }
+      r.rows.forEach((m) => {
+        const b = el("button", "ct-mail ct-mailbtn"); b.type = "button"; b.append(el("span", "", m.date), el("span", "", m.person), el("span", "", m.subject + (m.att ? "  [att]" : "")));
+        b.addEventListener("click", () => {
+          pane.textContent = ""; pane.append(el("p", "ct-rs", "Opening..."));
+          api.mailRead(m.id).then((x) => {
+            pane.textContent = "";
+            if (!x || !x.ok) { pane.append(el("p", "ct-rs ct-warn", (x && x.reason) || "Could not read it.")); return; }
+            const k = x.mail; pane.append(el("div", "ct-rn", k.subject || "(no subject)"), el("div", "ct-rs", "From " + k.from + " · " + k.date), el("div", "ct-rs", "To " + k.to + (k.cc ? " · Cc " + k.cc : "")));
+            if (k.attachments.length) pane.append(el("div", "ct-rs", "Attachments: " + k.attachments.join(", ")));
+            const st = el("div", "ct-btns"), note = el("span", "ct-rs");
+            st.append(btn("Reply in Betterbird", "pri", () => api.mailOpen(m.id).then((o) => { note.textContent = o && o.ok ? "Opened in Betterbird: press Reply there." : (o && o.reason) || "Could not open."; })), note);
+            const body = el("pre", "ct-mailtext"); body.textContent = k.text + (k.truncated ? "\n\n[cut: open it in Betterbird for the rest]" : "");
+            pane.append(st, body);
+          }).catch(() => { pane.textContent = ""; pane.append(el("p", "ct-rs ct-warn", "Could not read it.")); });
+        });
+        list5.append(b);
+      });
+    }).catch(() => {});
+  }
   function openPerson(id) {
     S.sel = id; S.selKind = "person";
     api.person(id).then((r) => {
@@ -174,9 +204,7 @@
       if (p.noReply || p.snoozeUntil) st.append(btn("Clear", "", () => api.snooze(id, "clear").then(() => { refresh(); load(); })));
       detail.append(st);
       const em = el("div", "ct-sec"); em.append(el("div", "ct-sh", "Recent emails (" + p.mails.length + (p.mailsTotal > p.mails.length ? " of " + p.mailsTotal : "") + ")"));
-      if (!p.mails.length) em.append(el("p", "ct-rs", "No emails yet."));
-      p.mails.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.date), el("span", "", m.dir === "in" ? "they wrote" : "I wrote"), el("span", "", m.subject)); em.append(row); });
-      detail.append(em); noteBox(detail, "Note", "person", id, p.note);
+      detail.append(em); liveMails(em, id, p); noteBox(detail, "Note", "person", id, p.note);
       view.classList.add("ct-showdetail");
     }).catch(() => {});
   }

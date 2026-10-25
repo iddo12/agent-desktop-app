@@ -51,6 +51,8 @@ const KEYS = {
   intakeDir: { kind: "folder", label: "Intake folder (holds intake_index.jsonl)", derive: (c) => c.sub("workDir", "intake") },
   // Contacts tab: the folder holding the Personal Assistant agent's contacts.json. Keep it outside cloud-synced folders (the tab refuses a synced folder).
   contactsDir: { kind: "folder", label: "Contacts folder (holds contacts.json from the Personal Assistant agent)", derive: (c) => c.sub("workDir", "contacts") },
+  // Contacts mail: the Betterbird Super Search token file. Empty = the service default (LOCALAPPDATA/BetterbirdSuperSearch/token).
+  superSearchTokenFile: { kind: "file", label: "Betterbird Super Search token file (empty = default location)", derive: () => null },
   intakeDefaultAgent: { kind: "text", max: 80, label: "Intake: folder name of the agent the watcher delivers approved items to by default", derive: () => null },
   intakeRequireVerified: { kind: "text", max: 3, label: "Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)", derive: () => null },
   healthParent: { kind: "folder", autoCreate: true, label: "Health folder", derive: (c) => c.userSub("health") },

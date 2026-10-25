@@ -275,6 +275,8 @@ contextBridge.exposeInMainWorld("api", {
     setLink: (id, kind, value) => ipcRenderer.invoke("contacts-set-link", { id, kind, value }),
     snooze: (id, mode, days) => ipcRenderer.invoke("contacts-snooze", { id, mode, days }),
     mailSearch: (id, keywords, withAtt, withoutAtt) => ipcRenderer.invoke("contacts-mail-search", { id, keywords, withAtt: !!withAtt, withoutAtt: !!withoutAtt }),
+    personMails: (id) => ipcRenderer.invoke("contacts-person-mails", { id }),
+    mailRead: (id) => ipcRenderer.invoke("contacts-mail-read", { id }),
     mailOpen: (id) => ipcRenderer.invoke("contacts-mail-open", { id }),
     suggestions: () => ipcRenderer.invoke("contacts-suggestions", {}),
     resolveSuggestion: (id, action, categories) => ipcRenderer.invoke("contacts-suggestion-resolve", { id, action, categories }),

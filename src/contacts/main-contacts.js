@@ -165,14 +165,25 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
   });
   // Mail search inside one company via the local Super Search service (read-only). The renderer sends a company id + keywords, never a URL or token.
   const MS = require("./mailsearch");
+  // Token file: the setting "superSearchTokenFile" if set, else the service default (LOCALAPPDATA/BetterbirdSuperSearch/token).
+  const mailEnvNow = () => { if (mailEnv) return mailEnv; let f = null; try { f = typeof cfg === "function" ? cfg("superSearchTokenFile") : null; } catch (e) { f = null; } return f ? { tokenFile: f } : undefined; };
   handle("contacts-mail-search", async (a) => {
     const r = load(); if (r.err) return { ok: false, reason: r.err };
     if (!Number.isInteger(a.id) || (a.keywords != null && typeof a.keywords !== "string")) return { ok: false, reason: "Bad request." };
     const v = L.companyView(st.index, { companies: st.ui.companies }, st.ui.snooze, a.id, clock());
     if (!v) return { ok: false, reason: "That company is not in the list any more." };
-    return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnv);
+    return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnvNow());
   });
-  handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnv, mailLaunch));
+  // Newest mails with one person + reading one mail. Same rules: ids and short strings in, text out, no URL or token in the renderer.
+  handle("contacts-person-mails", async (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.id)) return { ok: false, reason: "Bad request." };
+    const v = L.personView(st.index, { person: {} }, st.ui.snooze, a.id, clock());
+    if (!v) return { ok: false, reason: "That person is not in the list any more." };
+    return MS.personMails({ emails: v.emails, limit: 5 }, mailEnvNow());
+  });
+  handle("contacts-mail-read", async (a) => MS.readMail(a.id, mailEnvNow()));
+  handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnvNow(), mailLaunch));
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; }, _state: () => st };
 }
 
