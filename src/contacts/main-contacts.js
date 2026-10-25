@@ -166,12 +166,16 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
   // Mail search inside one company via the local Super Search service (read-only). The renderer sends a company id + keywords, never a URL or token.
   const MS = require("./mailsearch");
   // Token file: the setting "superSearchTokenFile" if set, else the service default (LOCALAPPDATA/BetterbirdSuperSearch/token).
+  // Start the Super Search service ourselves when it is not answering (settings superSearchDir + superSearchDb + Python). Not when a test supplies mailEnv.
+  const svc = require("./ssService").createService(cfg);
+  const ready = async () => { if (!mailEnv) { try { await svc.ensure(); } catch (e) { /* the search reports "not running" */ } } };
   const mailEnvNow = () => { if (mailEnv) return mailEnv; let f = null; try { f = typeof cfg === "function" ? cfg("superSearchTokenFile") : null; } catch (e) { f = null; } return f ? { tokenFile: f } : undefined; };
   handle("contacts-mail-search", async (a) => {
     const r = load(); if (r.err) return { ok: false, reason: r.err };
     if (!Number.isInteger(a.id) || (a.keywords != null && typeof a.keywords !== "string")) return { ok: false, reason: "Bad request." };
     const v = L.companyView(st.index, { companies: st.ui.companies }, st.ui.snooze, a.id, clock());
     if (!v) return { ok: false, reason: "That company is not in the list any more." };
+    await ready();
     return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnvNow());
   });
   // Newest mails with one person + reading one mail. Same rules: ids and short strings in, text out, no URL or token in the renderer.
@@ -180,20 +184,21 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     if (!Number.isInteger(a.id)) return { ok: false, reason: "Bad request." };
     const v = L.personView(st.index, { person: {} }, st.ui.snooze, a.id, clock());
     if (!v) return { ok: false, reason: "That person is not in the list any more." };
+    await ready();
     return MS.personMails({ emails: v.emails, limit: 5 }, mailEnvNow());
   });
-  // Company logo: main fetches/caches the company's own icon and returns a data: URL (or null). Setting contactsLogos = "no" turns it off.
+  // Company logo: main fetches/caches the company's own icon and returns a data: URL (or null). Off unless the setting contactsLogos is "yes" (it contacts each company's own website).
   let logos = null;
   handle("contacts-logo", async (a) => {
     const r = load(); if (r.err) return { ok: true, url: null };
-    if (!Number.isInteger(a.id) || String(cfg("contactsLogos") || "").trim().toLowerCase() === "no") return { ok: true, url: null };
+    if (!Number.isInteger(a.id) || String(cfg("contactsLogos") || "").trim().toLowerCase() !== "yes") return { ok: true, url: null };
     const c = st.index.byId.get(a.id); if (!c) return { ok: true, url: null };
     let host = c.domain; if (!host && c.website) { try { host = new URL(c.website).hostname; } catch (e) { host = null; } }
     if (!logos) logos = require("./logos").createLogos(path.join(r.d, "logos"));
     return { ok: true, url: await logos.get(host) };
   });
-  handle("contacts-mail-read", async (a) => MS.readMail(a.id, mailEnvNow()));
-  handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnvNow(), mailLaunch));
+  handle("contacts-mail-read", async (a) => { await ready(); return MS.readMail(a.id, mailEnvNow()); });
+  handle("contacts-mail-open", async (a) => { await ready(); return MS.openMail(a.id, mailEnvNow(), mailLaunch); });
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; }, _state: () => st };
 }
 

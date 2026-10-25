@@ -9,6 +9,7 @@ for (const a of ["8.8.8.8", "93.184.216.34", "2606:4700::1111"]) assert.ok(!L.pr
 assert.strictEqual(L.cleanHost("WWW.Aperture.com"), "aperture.com");
 for (const bad of ["127.0.0.1", "localhost", "a b.com", "http://x.com", "x.com/path", "", null, "-x.com"]) assert.strictEqual(L.cleanHost(bad), null, String(bad));
 
+assert.strictEqual(L.siteOf("shop.aperture.com"), "aperture.com"); assert.strictEqual(L.siteOf("www.firm.co.uk"), "firm.co.uk"); assert.notStrictEqual(L.siteOf("cdn.evil.net"), L.siteOf("aperture.com"));
 const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(20)]);
 assert.strictEqual(L.sniff(png), "image/png");
 assert.strictEqual(L.sniff(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>")), null, "svg refused");

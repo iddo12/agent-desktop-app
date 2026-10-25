@@ -31,15 +31,18 @@ const HOST_OK = /^(?=.{4,120}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,
 function cleanHost(d) { const h = String(d == null ? "" : d).trim().toLowerCase().replace(/^www\./, ""); return HOST_OK.test(h) && !net.isIP(h) ? h : null; }
 
 /** GET an https URL (follows up to 3 redirects, each checked again). Resolves { code, headers, body:Buffer, url } or null. */
-function fetchUrl(url, max, lookup) {
+/** Same site = same last two labels (three under co.uk / com.au style endings). Redirects and icon links may not leave the company's own site. */
+function siteOf(h) { const p = String(h).toLowerCase().split("."); const n = p.length >= 3 && p[p.length - 2].length <= 3 && p[p.length - 1].length === 2 ? 3 : 2; return p.slice(-n).join("."); }
+function fetchUrl(url, max, lookup, site) {
   return new Promise((resolve) => {
     const step = (u, left) => {
       let p; try { p = new URL(u); } catch (e) { return resolve(null); }
+      if (site && siteOf(p.hostname) !== site) return resolve(null);
       if (p.protocol !== "https:" || p.username || p.password || (p.port && p.port !== "443") || net.isIP(p.hostname) || !HOST_OK.test(p.hostname)) return resolve(null);
       let done = false, req = null;
       const finish = (v, again) => { if (done) return; done = true; clearTimeout(t); try { if (req) req.destroy(); } catch (e) { /* gone */ } again ? step(again, left - 1) : resolve(v); };
       const t = setTimeout(() => finish(null), TIMEOUT_MS + 2000);
-      req = https.get({ host: p.hostname, path: p.pathname + p.search, lookup: lookup || safeLookup, timeout: TIMEOUT_MS, headers: { "User-Agent": "Mozilla/5.0 (compatible; LensVidContacts)", Accept: "image/*,text/html;q=0.8" } }, (res) => {
+      req = https.get({ host: p.hostname, path: p.pathname + p.search, lookup: lookup || safeLookup, timeout: TIMEOUT_MS, headers: { Accept: "image/*,text/html;q=0.8" } }, (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
           res.resume(); if (left <= 0) return finish(null);
           let next; try { next = new URL(res.headers.location, p).toString(); } catch (e) { return finish(null); }
@@ -82,11 +85,11 @@ function iconLinks(html, base) {
 
 async function fetchIcon(host, lookup) {
   const cands = [];
-  const page = await fetchUrl("https://" + host + "/", MAX_HTML, lookup);
+  const page = await fetchUrl("https://" + host + "/", MAX_HTML, lookup, siteOf(host));
   if (page && page.code === 200) { try { for (const u of iconLinks(page.body.toString("utf8"), page.url)) cands.push(u); } catch (e) { /* no links */ } }
   cands.push("https://" + host + "/favicon.ico");
   for (const u of cands) {
-    const r = await fetchUrl(u, MAX_IMG, lookup);
+    const r = await fetchUrl(u, MAX_IMG, lookup, siteOf(host));
     if (r && r.code === 200 && sniff(r.body)) return r.body;
   }
   return null;
@@ -121,4 +124,4 @@ function createLogos(dir, opts) {
   return { get };
 }
 
-module.exports = { createLogos, cleanHost, privateAddr, sniff, iconLinks, safeLookup };
+module.exports = { siteOf, createLogos, cleanHost, privateAddr, sniff, iconLinks, safeLookup };
