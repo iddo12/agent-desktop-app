@@ -23,7 +23,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch }) {
   });
 
   const dirPath = () => { const d = cfg("contactsDir"); return d ? path.resolve(d) : null; };
-  const synced = (d) => /(^|[\\/])(dropbox|onedrive|google drive|icloud)([\\/]|$)/i.test(d);
+  const synced = (d) => { let r = d; try { r = fs.realpathSync(d); } catch (e) { /* not there yet: judge the given path */ } const re = /(^|[\\/])(dropbox|onedrive|google drive|icloud)([\\/]|$)/i; return re.test(d) || re.test(r); };
   const readJson = (f, max) => { try { const st = fs.statSync(f); if (!st.isFile() || st.size > (max || MAX_BYTES)) return null; return JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, "")); } catch (e) { return null; } };
   function writeJsonAtomic(f, obj) {
     const tmp = f + "." + process.pid + ".tmp";
@@ -61,7 +61,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch }) {
     const ready = load(); if (ready.err) return;
     const t = clock();
     const companies = st.raw.companies.map((c) => L.lookupRecord(st.index, { companies: st.ui.companies }, st.ui.snooze, c, t));
-    writeJsonAtomic(path.join(d, EXPORT_FILE), { schema: 1, generated: new Date(t).toISOString(), source_generated: st.raw.generatedAt, note: "Read-only export for agents. Written by Agent Desktop's Contacts tab; do not edit.", companies });
+    writeJsonAtomic(path.join(d, EXPORT_FILE), { schema: 1, generated: new Date(t).toISOString(), source_generated: st.raw.generatedAt, note: "Read-only export for agents. Written by Agent Desktop's Contacts tab; do not edit.", _notice: L.EXPORT_NOTICE, companies });
   }
 
   // First open, or a new PA export: refresh the agent export when it is missing or older than contacts.json

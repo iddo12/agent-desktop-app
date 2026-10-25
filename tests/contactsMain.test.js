@@ -82,6 +82,14 @@ const call = (c, a, e) => h[c](e || ev, a);
   // synced / missing folder refused
   cfgDir = path.join(root, "Dropbox", "contacts"); fs.mkdirSync(cfgDir, { recursive: true });
   r = await call("contacts-list", {}); assert.strictEqual(r.ok, false); assert.ok(/synced/.test(r.reason));
+  // a junction that resolves into a synced folder is refused too (realpath check)
+  const real = path.join(root, "Dropbox", "real"); fs.mkdirSync(real, { recursive: true });
+  const link = path.join(root, "innocent");
+  let linked = false; try { fs.symlinkSync(real, link, "junction"); linked = true; } catch (e) { /* no link rights: skip */ }
+  if (linked) { cfgDir = link; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false); assert.ok(/synced/.test(r.reason), "link into a synced folder refused"); }
+  // export carries the data-not-instructions notice and capped fields
+  assert.ok(/untrusted data/.test(ej._notice), "export has _notice");
+  assert.ok(ej.companies.every((c) => (c.note || "").length <= 4000 && c.current_contacts.every((p) => (p.role || "").length <= 160)));
   cfgDir = null; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false);
   cfgDir = path.join(root, "nope"); r = await call("contacts-list", {}); assert.strictEqual(r.ok, false);
   assert.ok(!logs.some((l) => /SECRET|Lena|Godox/.test(l)), "logs carry no names or subjects");
