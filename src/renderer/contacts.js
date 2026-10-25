@@ -30,13 +30,16 @@
     }).catch(() => { S.err = "Contacts could not load."; render(); });
   }
 
+  // The search box and sort select are built once and kept in the DOM: re-creating them on each render stole focus mid-typing.
+  const headTitle = el("h2", "ct-title", "Contacts"), sortSel = el("select", "ct-inp"); sortSel.setAttribute("aria-label", "Sort");
+  [["latest", "Latest contact"], ["az", "A to Z"], ["category", "Category"]].forEach(([v, l]) => { const o = el("option", "", l); o.value = v; sortSel.append(o); });
+  sortSel.addEventListener("change", () => { S.sort = sortSel.value; load(); });
+  let sugBtn = null;
+  head.append(headTitle, search, sortSel);
   function renderHead() {
-    head.textContent = ""; const t = el("h2", "ct-title", "Contacts");
-    const sort = el("select", "ct-inp"); sort.setAttribute("aria-label", "Sort");
-    [["latest", "Latest contact"], ["az", "A to Z"], ["category", "Category"]].forEach(([v, l]) => { const o = el("option", "", l); o.value = v; if (S.sort === v) o.selected = true; sort.append(o); });
-    sort.addEventListener("change", () => { S.sort = sort.value; load(); });
-    head.append(t, search, sort);
-    if (S.chips && S.chips.uncategorised) head.append(btn("Review suggestions (" + S.chips.uncategorised + " without a category)", "pri", openSuggestions));
+    sortSel.value = S.sort;
+    if (sugBtn) { sugBtn.remove(); sugBtn = null; }
+    if (S.chips && S.chips.uncategorised) { sugBtn = btn("Review suggestions (" + S.chips.uncategorised + " without a category)", "pri", openSuggestions); head.append(sugBtn); }
   }
   function chip(label, n, on, fn) { const b = el("button", "ct-chip" + (on ? " on" : ""), label); b.type = "button"; if (n != null) b.append(el("b", "", String(n))); b.setAttribute("aria-pressed", on ? "true" : "false"); b.addEventListener("click", fn); return b; }
   function renderChips() {
