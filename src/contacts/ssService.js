@@ -36,7 +36,7 @@ function createService(cfg, opts) {
     if (!isDir(path.join(dir, "supersearch")) || !isFile(db)) return { running: false, started: false, reason: "The Super Search folder or its index file was not found." };
     if (!py || !isFile(py)) return { running: false, started: false, reason: "Python was not found for Super Search (Setup: Python)." };
     try {
-      const c = spawnFn(py, ["-m", "supersearch", "serve", "--db", db], { cwd: dir, detached: true, stdio: "ignore", windowsHide: true });
+      const c = spawnFn(py, ["-m", "supersearch", "serve", "--db", db], { cwd: dir, detached: true, stdio: "ignore", windowsHide: true, shell: /\.(cmd|bat)$/i.test(py) });
       if (c && c.on) c.on("error", () => { /* reported by the probe below */ });
       if (c && c.unref) c.unref();
     } catch (e) { lastFail = Date.now(); return { running: false, started: false, reason: "Super Search could not be started." }; }

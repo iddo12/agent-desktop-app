@@ -32,10 +32,10 @@ t("off by default: nothing is read or sent", async () => {
 t("first sight records old markers as seen: no wake; a new marker afterwards wakes once, with a fixed line", async () => {
   const r = rig(); r.marker("SE"); r.marker("SE");
   await r.tick(); assert.strictEqual(r.sent.length, 0);
-  r.marker("SE", { from: "Security" }); r.adv(2 * MIN);
+  r.marker("SE", { from: "Health" }); r.adv(2 * MIN);
   const res = await r.tick();
   assert.strictEqual(res.wakes, 1); assert.strictEqual(r.sent.length, 1);
-  assert.ok(/^\[\[WAKE w-[0-9a-z]{4}\]\] 1 new message \(from Security\)\. Read them, act, end with DONE:\/BLOCKED:\.$/.test(r.sent[0].line), r.sent[0].line);
+  assert.ok(/^\[\[WAKE w-[0-9a-z]{4}\]\] 1 new message \(from Health\)\. Read them, act, end with DONE:\/BLOCKED:\.$/.test(r.sent[0].line), r.sent[0].line);
   assert.ok(!/IGNORE/.test(r.sent[0].line));
   r.adv(5 * MIN); await r.tick(); assert.strictEqual(r.sent.length, 1, "the same marker never wakes twice");
 });
