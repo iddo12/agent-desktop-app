@@ -364,7 +364,7 @@ t("getLastRealProgressMs: tail read, 1 MB -> 8 MB fallback, cut first line, queu
 t("main.js escalateStuckAgent has the guards and does not use urgent / single-copy stop", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf-8");
   const body = src.slice(src.indexOf("async function escalateStuckAgent"), src.indexOf("async function recoverStuckSession"));
-  for (const re of [/liveAgentsPermitted\(\)/, /existsSync\(agentPath\)/, /rec\.paused/, /live\.starting/, /fresh: true/, /remaining\.length/]) assert.ok(re.test(body), String(re));
+  for (const re of [/liveAgentsPermitted\(\)/, /existsSync\(agentPath\)/, /rec\.paused/, /live\.starting/, /fresh: true/, /stopAllAndConfirmGone\(/]) assert.ok(re.test(body), String(re)); // v1.141.1: the confirmed all-copies stop replaced the remaining.length loop
   assert.ok(!/urgent:\s*true/.test(body), "escalation dispatch must not be urgent");
   assert.ok(!/stopBackgroundAgentForCwd/.test(body), "must stop ALL live copies, not just the first");
   assert.ok(/stillExists/.test(src) && /canEscalate/.test(src) && /approvalBlockedSince\.has\(agentPath\)/.test(src));

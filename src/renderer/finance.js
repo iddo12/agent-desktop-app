@@ -784,7 +784,7 @@
   function loadPage(tab) {
     const my = ++pageSeq, q = S.pq[tab] || {};
     if (!api.feed) { S.pages[tab] = { ok: false, reason: "The finance feed is not available." }; return Promise.resolve(); }
-    return api.feed(S.scope, tab.slice(1), q.offset || 0, q.filter || null).then((r) => { if (!open || my !== pageSeq) return; S.pages[tab] = r || { ok: false, reason: "No answer." }; if (S.tab === tab) render(); })
+    return api.feed(S.scope, tab.slice(1), q.offset || 0, q.filter || null, S.period ? S.period.from : null, S.period ? S.period.to : null).then((r) => { if (!open || my !== pageSeq) return; S.pages[tab] = r || { ok: false, reason: "No answer." }; if (S.tab === tab) render(); })
       .catch(() => { if (open && my === pageSeq) { S.pages[tab] = { ok: false, reason: "The finance feed could not be read." }; if (S.tab === tab) render(); } });
   }
   const loadCurrent = () => (S.tab === "home" ? loadFeed() : FTABS[S.tab] ? loadPage(S.tab) : null);
@@ -797,6 +797,9 @@
   };
   S.onPage = (tab, offset, filter) => { S.pq[tab] = { offset: offset || 0, filter: filter || null }; loadPage(tab); };
   S.onFilterLocal = (tab, v) => { S.pf[tab] = v; render(); };
+  // Period chosen on the money pages (YYYY-MM both ends); null = the page default (last 2 months). Kept for the session, shared by all period pages.
+  S.period = null;
+  S.onPeriod = (from, to) => { S.period = from && to ? { from, to } : null; for (const t of Object.keys(S.pq)) S.pq[t] = { offset: 0, filter: (S.pq[t] || {}).filter || null }; S.pages = {}; render(); loadCurrent(); };
   const DATA_TABS = { overview: 1, accounts: 1, transactions: 1, categories: 1, receipts: 1 };
 
   function render() {

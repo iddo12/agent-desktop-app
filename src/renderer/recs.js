@@ -114,7 +114,7 @@
     api.recsWrite(week, agent, itemId, text).then((r) => {
       S.sending.delete(k);
       if (r && r.ok) {
-        S.msg.set(k, { ok: true, text: r.delivery === "pending" ? "Saved for " + agent + " (not running: they read it at their next start)." : "Sent to " + agent + "." });
+        S.msg.set(k, { ok: true, text: r.hidden ? "Saved for " + agent + ". " + agent + " reads it in the Claude desktop app, not here." : r.delivery === "pending" ? "Saved for " + agent + " (not running: they read it at their next start)." : "Sent to " + agent + "." });   // v1.141.0 hidden agents: notes only
         S.repliedNow[key(week, agent, itemId)] = new Date().toISOString().slice(0, 10);
         S.boxes.delete(k);
       } else S.msg.set(k, { ok: false, text: (r && r.reason) || "Not sent." });

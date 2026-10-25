@@ -110,6 +110,34 @@ function renderAvatarEl(agent) {
 
 let uiFlags = null; // persistent one-time-note flags from main (ui-flags.json); null until loaded
 
+// v1.140.0 HIDDEN AGENTS: main marks agents named in the hiddenAgents setting with hidden:true (src/hiddenAgents.js). They stay in `agents`
+// (so sending, wake-up, voice and every other flow that looks an agent up by path still works) and keep their sidebar row, which is only
+// not displayed (class agent-hidden + the hidden attribute), so row-based status code keeps working. A small line under the list shows how many
+// are hidden and a "Show" toggle (remembered on this computer only). The agent that is open right now is always shown.
+window.hiddenAgentsView = {
+  shown() { try { return localStorage.getItem("agentDesktop.showHiddenAgents") === "1"; } catch (e) { return false; } },
+  set(on) { try { localStorage.setItem("agentDesktop.showHiddenAgents", on ? "1" : "0"); } catch (e) { /* not remembered */ } renderAgentList(); },
+  isHidden(agent) { return !!(agent && agent.hidden) && !window.hiddenAgentsView.shown() && agent.path !== activeAgentPath; },
+};
+function hiddenToggleLine() {
+  const n = agents.filter((a) => a && a.hidden).length;
+  if (!n) return null;
+  const shown = window.hiddenAgentsView.shown();
+  const line = document.createElement("div");
+  line.className = "hidden-agents-line";
+  const t = document.createElement("span");
+  t.textContent = n === 1 ? "1 hidden agent" : n + " hidden agents";
+  t.title = "Hidden in Setup (hiddenAgents). Hidden agents keep running; they are only not listed here.";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "hidden-agents-toggle";
+  b.textContent = shown ? "Hide again" : "Show";
+  b.title = shown ? "Hide them from the list again." : "Show the hidden agents in the list for now.";
+  b.addEventListener("click", () => window.hiddenAgentsView.set(!shown));
+  line.append(t, b);
+  return line;
+}
+
 async function loadAgents() {
   const [agentList, gDoc, flags] = await Promise.all([window.api.listAgents(), window.api.listGroups(), window.api.getUiFlags().catch(() => ({}))]);
   uiFlags = flags || {};
@@ -189,6 +217,17 @@ function markActiveAgentItem(agent) {
 }
 
 function renderAgentList() {
+  renderAgentListBody();
+  const line = hiddenToggleLine();   // v1.140.0
+  if (line) agentListEl.appendChild(line);
+}
+// v1.140.0: a hidden agent's row is built as before and then not displayed (see window.hiddenAgentsView above)
+function renderAgentRow(agent, groupId) {
+  const row = renderAgentItem(agent, groupId);
+  if (window.hiddenAgentsView.isHidden(agent)) { row.classList.add("agent-hidden"); row.hidden = true; }
+  return row;
+}
+function renderAgentListBody() {
   agentListEl.innerHTML = "";
   closeAgentItemMenu();
   closeGroupMenu();
@@ -226,8 +265,8 @@ function renderAgentList() {
       const agent = byFolder.get(folderName);
       if (!agent) continue; // a member whose folder no longer exists
       claimed.add(folderName);
-      wrap.appendChild(renderAgentItem(agent, group.id));
-      count++;
+      wrap.appendChild(renderAgentRow(agent, group.id));
+      if (!window.hiddenAgentsView.isHidden(agent)) count++;
     }
     header.querySelector(".group-count").textContent = String(count);
 
@@ -252,7 +291,7 @@ function renderAgentList() {
   if (groupsDoc.groups.length === 0) {
     // No groups defined at all - render exactly the pre-feature flat list,
     // with no "Ungrouped" heading.
-    for (const agent of ungrouped) agentListEl.appendChild(renderAgentItem(agent, null));
+    for (const agent of ungrouped) agentListEl.appendChild(renderAgentRow(agent, null));
     return;
   }
 
@@ -272,7 +311,9 @@ function renderAgentList() {
     name.textContent = "Ungrouped";
     const cnt = document.createElement("span");
     cnt.className = "group-count";
-    cnt.textContent = String(ungrouped.length);
+    const ungroupedShown = ungrouped.filter((a) => !window.hiddenAgentsView.isHidden(a)).length;
+    cnt.textContent = String(ungroupedShown);
+    if (!ungroupedShown) block.hidden = true;   // v1.140.0: only hidden agents left ungrouped
     header.append(caret, name, cnt);
     header.addEventListener("click", () => {
       const nowCollapsed = !block.classList.contains("collapsed");
@@ -282,7 +323,7 @@ function renderAgentList() {
 
     const wrap = document.createElement("div");
     wrap.className = "group-agents";
-    for (const agent of ungrouped) wrap.appendChild(renderAgentItem(agent, null));
+    for (const agent of ungrouped) wrap.appendChild(renderAgentRow(agent, null));
 
     block.append(header, wrap);
     wireGroupDropTarget(block, header, null); // dropping here = remove from any group
@@ -2279,7 +2320,7 @@ async function rebuildChatView(agentPath, opts = {}) {
         pending.enterNudges = stepN + 1;
         pending.nudgeAt = now;
         window.api.agentInputHoldsText(agentPath, pending.text).then((holds) => {
-          if (holds) writeQueued(session, () => window.api.sendInput(agentPath, "\r"));
+          if (holds) writeQueued(session, () => window.api.sendInput(agentPath, "\r", { app: true }));
         }).catch(() => {});
       }
     }
@@ -3911,9 +3952,9 @@ function submitToAgent(agentPath, text, opts) {
     // v1.69.4: text ending in a backslash + Enter inserts a newline instead of submitting: one trailing space avoids it
     window.api.sendInput(agentPath, "\x1b[200~" + (/\\$/.test(text) ? text + " " : text), { app: true }); // app: a message from this send path (arms the stuck-Enter check), not keystrokes typed in the Terminal tab
     setTimeout(() => {
-      window.api.sendInput(agentPath, "\x1b[201~");
+      window.api.sendInput(agentPath, "\x1b[201~", { app: true });
       setTimeout(() => {
-        window.api.sendInput(agentPath, "\r");
+        window.api.sendInput(agentPath, "\r", { app: true });
         // v1.68.0: "sent" tick on the pending bubble (static, no animation)
         if (entryRef && entryRef.text === text && session && session.pendingSent.includes(entryRef)) {
           entryRef.written = true;
@@ -3930,7 +3971,7 @@ function submitToAgent(agentPath, text, opts) {
 try {
   window.api.onPressEnter(({ agentPath }) => {
     const s = terminals.get(agentPath);
-    if (s) writeQueued(s, () => window.api.sendInput(agentPath, "\r"));
+    if (s) writeQueued(s, () => window.api.sendInput(agentPath, "\r", { app: true }));
   });
 } catch (e) { /* older preload */ }
 
@@ -3943,7 +3984,7 @@ try {
       for (const st of steps) {
         // v1.69.4: Ctrl+C is asked from main right before it is typed (agent idle, text in the box, none in the last 10 s)
         if (st.guard === "ctrlc") { let ok = false; try { ok = await window.api.canSendCtrlC(agentPath, st.snippet); } catch (e) {} if (!ok) break; }
-        window.api.sendInput(agentPath, String(st.data));
+        window.api.sendInput(agentPath, String(st.data), String(st.data).indexOf("\x1b[200~") === 0 ? { auto: true } : { app: true }); // v1.137.0: the ladder re-typed message is auto (must not arm noteWrite); its keys are app input
         if (st.wait > 0) await new Promise((r) => setTimeout(r, st.wait));
       }
     });
@@ -4389,9 +4430,22 @@ async function deliverChatMessage(agentPath, session, toSend, entry) {
   // (compose box clearing and scroll-to-bottom moved in front of the awaits in sendChatInput, v1.68.0)
 }
 
+// Pasted or injected text (text copied from a web page, a dictation tool typing for us) can carry line breaks that arrive as Enter key
+// presses a few ms after the text. A human never presses Enter that fast after typing/pasting, so such an Enter becomes a new line
+// instead of sending the half-composed message (Iddo, 2026-10-22: a pasted web text was posted at once).
+let lastComposeInputAt = 0, lastComposePasteAt = 0;
+chatInputEl.addEventListener("paste", () => { lastComposePasteAt = Date.now(); });
+chatInputEl.addEventListener("input", () => { lastComposeInputAt = Date.now(); });
 chatInputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    const now = Date.now();
+    // 2026-10-23: the "< 120 ms after any input event" rule was dropped - something kept firing input events in the box
+    // and every Enter became a new line (Iddo). Only the paste rule remains; lastComposeInputAt is kept for diagnostics.
+    if (!e.isComposing && now - lastComposePasteAt < 400) {
+      document.execCommand("insertText", false, "\n");   // keeps undo history; fires "input" so auto-grow and draft parking still run
+      return;
+    }
     sendChatInput();
   }
 });
@@ -4922,7 +4976,7 @@ voiceInputBtn.addEventListener("click", () => {
 // agent" reuses THIS file's send path (the same busy-queue / submitToAgent the compose box uses) and the
 // same local whisper dictation, instead of a second transport. Nothing here runs until the Library calls it.
 window.libraryBridge = {
-  agents: () => agents.map((a) => ({ path: a.path, folderName: a.folderName, displayName: a.displayName, role: a.role || "", paused: !!a.paused })),
+  agents: () => agents.map((a) => ({ path: a.path, folderName: a.folderName, displayName: a.displayName, role: a.role || "", paused: !!a.paused, hidden: !!a.hidden })),   // v1.140.0 hidden flag: pickers leave these out, lookups by name still find them
   warmVoice: () => { try { if (window.api.voiceWarm) window.api.voiceWarm(); } catch (e) {} },
   // Sends `text` to an agent exactly as if typed in its compose box, without changing the visible agent
   // or touching anyone's draft. Starts the agent's session in the background if it has none yet.
@@ -5603,7 +5657,7 @@ resetSessionBtn.addEventListener("click", async () => {
   );
   if (!confirmed) return;
   try {
-    await performSessionReset(activeAgentPath);
+    await performSessionReset(activeAgentPath, { trigger: "reset-session-button" });
   } catch (e) {
     alert("Reset failed: " + (e.message || String(e)));
   }
@@ -5631,6 +5685,7 @@ async function performSessionReset(agentPath, opts = {}) {
     if (!conversationsViewEl.classList.contains("hidden")) setConversationsMode(false);
     resetSessionBtn.disabled = true;
   }
+  let result = null;
   const tickStartedAt = Date.now();
   const tick = setInterval(() => {
     if (!isActive) return;
@@ -5639,7 +5694,8 @@ async function performSessionReset(agentPath, opts = {}) {
       Date.now() - tickStartedAt > RESET_SESSION_SLOW_HINT_MS ? `Resetting… ${elapsedSec}s (longer than usual)` : `Resetting… ${elapsedSec}s`;
   }, 100);
   try {
-    const result = await window.api.switchConversation(agentPath, { newConversation: true, initialPrompt: opts.initialPrompt });
+    // v1.141.1: the trigger is logged by main; a duplicate reset (one already ran within 90 s) comes back deduped, no new copy
+    result = await window.api.switchConversation(agentPath, { newConversation: true, initialPrompt: opts.initialPrompt, trigger: opts.trigger || "unspecified" });
     if (result && result.agentId) pendingKnownAgentIdByPath.set(agentPath, result.agentId);
     // Same teardown the Chats panel uses: drop the cached terminal so the next
     // showTerminalFor() builds a fresh one and attaches to the new bg process.
@@ -5647,7 +5703,7 @@ async function performSessionReset(agentPath, opts = {}) {
     const agent = agents.find((a) => a.path === agentPath);
     if (agent && activeAgentPath === agentPath) selectAgent(agent);
     // Not the active agent: it re-attaches to the new process the next time it is opened.
-    if (isActive) resetSessionBtn.textContent = "✓ Reset";
+    if (isActive) resetSessionBtn.textContent = result && result.deduped ? "✓ Already reset" : "✓ Reset";
   } finally {
     clearInterval(tick);
     switchingConversation = false;
@@ -5657,6 +5713,7 @@ async function performSessionReset(agentPath, opts = {}) {
     }, 1200);
   }
   if (activeAgentPath === agentPath) chatInputEl.focus();
+  return result;
 }
 
 // Restart Session: kill and re-dispatch this agent's `claude --bg` process,
@@ -5808,7 +5865,8 @@ function openRestartAllModal() {
   retrySkippedRestartAllBtn.classList.add("hidden");
   retrySkippedRestartAllBtn.disabled = false;
 
-  const sorted = [...agents].sort((a, b) => (a.displayName || "").localeCompare(b.displayName || ""));
+  // v1.140.0: hidden agents are still restartable from here (it is maintenance, not a list to browse); they come last, marked "(hidden)"
+  const sorted = [...agents].sort((a, b) => (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0) || (a.displayName || "").localeCompare(b.displayName || ""));
   for (const agent of sorted) {
     const row = document.createElement("div");
     row.className = "restart-all-row";
@@ -5820,7 +5878,7 @@ function openRestartAllModal() {
 
     const name = document.createElement("span");
     name.className = "restart-all-row-name";
-    name.textContent = agent.displayName || agent.folderName || agent.path;
+    name.textContent = (agent.displayName || agent.folderName || agent.path) + (agent.hidden ? " (hidden)" : "");   // v1.140.0
     if (agent.paused) {
       const note = document.createElement("span");
       note.className = "restart-all-row-note";

@@ -529,14 +529,16 @@
     } else {
       const waiting = [];
       overview.unassigned.forEach((t) => waiting.push({ text: "Unassigned - " + t.body }));
-      overview.agents.forEach((a) => a.telegram.filter((t) => t.status === "pending")
+      // v1.140.0: agents in the hiddenAgents setting are left out of the all-agents view (unless "Show hidden agents" is on)
+      const shownA = overview.agents.filter((a) => !a.hidden || (window.hiddenAgentsView && window.hiddenAgentsView.shown()));
+      shownA.forEach((a) => a.telegram.filter((t) => t.status === "pending")
         .forEach((t) => waiting.push({ text: `${a.displayName} - approve: ${t.body}`, taskId: t.id })));
       const attention = [];
-      overview.agents.forEach((a) => {
+      shownA.forEach((a) => {
         const ctx = contextAttention(a);
         a.attention.concat(ctx ? [ctx] : []).forEach((x) => attention.push({ text: `${a.displayName} - ${x}` }));
       });
-      const inprog = overview.agents.map((a) => ({
+      const inprog = shownA.map((a) => ({
         text: `${a.displayName} - ${stateLabel(a)} - ${a.openItems.length} on its list`,
       }));
       body.appendChild(section("Waiting on you", "Telegram approvals and unplaced tasks, across every agent.",

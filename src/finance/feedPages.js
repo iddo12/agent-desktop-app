@@ -26,7 +26,15 @@ function pageView(feed, page, scopeIn, o) {
   const offset = Number.isInteger(opts.offset) && opts.offset > 0 ? Math.min(opts.offset, 100000) : 0;
   const filter = FILTERS[page] && FILTERS[page].includes(opts.filter) ? opts.filter : null;
   const generated = String(feed.generated_at).slice(0, 10);
-  const base = { page, scope, today, synthetic: !!feed.synthetic, generated };
+  // Period (YYYY-MM, inclusive both ends); a missing/bad one falls back to the last 2 months ending this month. Applies to income, invoices, accounts.
+  const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+  const shiftMonth = (ym, d) => { const t = (+ym.slice(0, 4)) * 12 + (+ym.slice(5, 7) - 1) + d; return Math.floor(t / 12) + "-" + String((t % 12) + 1).padStart(2, "0"); };
+  let pFrom = typeof opts.from === "string" && MONTH.test(opts.from) ? opts.from : null;
+  let pTo = typeof opts.to === "string" && MONTH.test(opts.to) ? opts.to : null;
+  if (!pFrom || !pTo) { pTo = today.slice(0, 7); pFrom = shiftMonth(pTo, -1); }
+  if (pFrom > pTo) { const x = pFrom; pFrom = pTo; pTo = x; }
+  const inPeriod = (ym) => typeof ym === "string" && ym.slice(0, 7) >= pFrom && ym.slice(0, 7) <= pTo;
+  const base = { page, scope, today, synthetic: !!feed.synthetic, generated, range: { from: pFrom, to: pTo } };
   const srcById = new Map(feed.sources.map((s) => [s.id, s]));
   const srcRow = (s) => {
     const age = dayNum(today) - dayNum(s.last_import_date);
@@ -49,22 +57,21 @@ function pageView(feed, page, scopeIn, o) {
     case "invoices": {
       const iv = feed.invoices;
       if (!iv) return Object.assign(base, { empty: true });
-      const all = (iv.rows || []).filter((r) => inScope(r.scope, scope));
+      // Open invoices (unpaid / overdue) are not period facts: they count at ANY date. The period applies to paid ones only.
+      const all = (iv.rows || []).filter((r) => inScope(r.scope, scope) && (r.status !== "paid" || inPeriod(r.date)));
       const pick = (st) => { const a = all.filter((x) => x.status === st); return { count: a.length, nis: sum(a.map((x) => x.money.nis)) }; };
-      const summary = scope === "all" && iv.unpaid && iv.overdue
-        ? { unpaid: { count: iv.unpaid.count, nis: iv.unpaid.amount.nis }, overdue: { count: iv.overdue.count, nis: iv.overdue.amount.nis }, paid: pick("paid") }
-        : { unpaid: pick("unpaid"), overdue: pick("overdue"), paid: pick("paid") };
+      const summary = { unpaid: pick("unpaid"), overdue: pick("overdue"), paid: pick("paid") };
       const rows = all.filter((x) => !filter || x.status === filter).sort(desc("date"));
       return Object.assign(base, { filter, summary, total: rows.length, offset, limit: PAGE_SIZE, as_of: maxStr(all.map((x) => x.money.as_of)) || (iv.unpaid && iv.unpaid.amount.as_of) || null,
-        rows: rows.slice(offset, offset + PAGE_SIZE).map((x) => ({ id: x.id, direction: x.direction, party: x.party_masked, date: x.date, due: x.due, status: x.status, cur: x.money.currency, amt: x.money.amount, nis: x.money.nis })) });
+        rows: rows.slice(offset, offset + PAGE_SIZE).map((x) => ({ id: x.id, direction: x.direction, party: x.party || x.party_masked, date: x.date, due: x.due, status: x.status, cur: x.money.currency, amt: x.money.amount, nis: x.money.nis })) });
     }
     case "income": {
       const inc = feed.income || {};
-      const rows = (inc.by_client || []).filter((r) => inScope(r.scope, scope));
+      const rows = (inc.by_client || []).filter((r) => inScope(r.scope, scope) && inPeriod(r.month));
       const g = new Map();
       for (const r of rows) {
-        const k = r.party_masked + "|" + r.kind + "|" + r.month;
-        const x = g.get(k) || { party: r.party_masked, kind: r.kind, month: r.month, nis: 0, currencies: new Set(), as_of: r.money.as_of };
+        const pn = r.party || r.party_masked; const k = pn + "|" + r.kind + "|" + r.month;
+        const x = g.get(k) || { party: pn, kind: r.kind, month: r.month, nis: 0, currencies: new Set(), as_of: r.money.as_of };
         x.nis += r.money.nis; x.currencies.add(r.currency); if (r.money.as_of > x.as_of) x.as_of = r.money.as_of; g.set(k, x);
       }
       const by = Array.from(g.values()).sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : b.nis - a.nis));
@@ -72,23 +79,30 @@ function pageView(feed, page, scopeIn, o) {
       const cur = new Map();
       for (const r of rows) { const x = cur.get(r.currency) || { currency: r.currency, amt: 0, nis: 0 }; x.amt += r.money.amount; x.nis += r.money.nis; cur.set(r.currency, x); }
       const evr = new Map();
-      for (const r of (inc.expected_vs_received || []).filter((r) => inScope(r.scope, scope))) {
+      for (const r of (inc.expected_vs_received || []).filter((r) => inScope(r.scope, scope) && inPeriod(r.period))) {
         const x = evr.get(r.period) || { period: r.period, expected: 0, received: 0, as_of: r.received.as_of };
         x.expected += r.expected.nis; x.received += r.received.nis; if (r.received.as_of > x.as_of) x.as_of = r.received.as_of; evr.set(r.period, x);
       }
       const ev = Array.from(evr.values()).sort(desc("period")).slice(0, 2);
       return Object.assign(base, {
         total, by_client: by.slice(0, MAX_CLIENT_ROWS).map((x) => ({ party: x.party, kind: x.kind, month: x.month, nis: x.nis, share: total ? Math.round((x.nis / total) * 100) : 0, currencies: Array.from(x.currencies), as_of: x.as_of })),
+        by_year: (Array.isArray(inc.by_year) ? inc.by_year : []).filter((y) => y && /^\d{4}$/.test(String(y.year)) && typeof y.nis === "number" && inScope(y.scope, scope)).slice(0, 20).map((y) => ({ year: String(y.year), nis: y.nis })).sort(desc("year")),
         by_client_total: by.length, by_currency: Array.from(cur.values()), expected_vs_received: ev, as_of: maxStr(by.map((x) => x.as_of).concat(ev.map((x) => x.as_of))) });
     }
     case "expenses": {
       const rows = ((feed.expenses && feed.expenses.by_category) || []).filter((r) => inScope(r.scope, scope));
       const ids = Array.from(new Set(rows.map((r) => r.period))).sort().reverse();
       const thisId = ids[0] || null, lastId = ids[1] || null;
-      const cat = new Map();
-      for (const r of rows) { const x = cat.get(r.category) || { category: r.category, this: 0, last: 0 }; if (r.period === thisId) x.this += r.money.nis; else if (r.period === lastId) x.last += r.money.nis; cat.set(r.category, x); }
-      const list = Array.from(cat.values()).sort((a, b) => b.this - a.this).map((x) => Object.assign(x, { change: x.last ? Math.round(((x.this - x.last) / x.last) * 100) : null }));
-      return Object.assign(base, { period: thisId, previous: lastId, categories: list.slice(0, 100), total: { this: sum(list.map((x) => x.this)), last: sum(list.map((x) => x.last)) }, as_of: maxStr(rows.map((r) => r.money.as_of)) });
+      // spend:false rows (transfers, card settlements, VAT refunds) are listed apart and never counted in the totals; to_review:true marks the ones Iddo must look at.
+      const isSpend = (r) => r.spend !== false;
+      const agg = (rs) => {
+        const cat = new Map();
+        for (const r of rs) { const x = cat.get(r.category) || { category: r.category, this: 0, last: 0, to_review: false }; if (r.period === thisId) x.this += r.money.nis; else if (r.period === lastId) x.last += r.money.nis; if (r.to_review === true) x.to_review = true; cat.set(r.category, x); }
+        return Array.from(cat.values());
+      };
+      const list = agg(rows.filter(isSpend)).sort((a, b) => b.this - a.this).map((x) => Object.assign(x, { change: x.last ? Math.round(((x.this - x.last) / x.last) * 100) : null }));
+      const apart = agg(rows.filter((r) => !isSpend(r))).sort((a, b) => b.this - a.this);
+      return Object.assign(base, { period: thisId, previous: lastId, categories: list.slice(0, 100), not_spend: apart.slice(0, 50), total: { this: sum(list.map((x) => x.this)), last: sum(list.map((x) => x.last)) }, as_of: maxStr(rows.map((r) => r.money.as_of)) });
     }
     case "vat": {
       const v = feed.vat;
@@ -100,7 +114,7 @@ function pageView(feed, page, scopeIn, o) {
       const sources = feed.sources.filter((s) => inScope(s.scope, scope)).map(srcRow);
       const sById = new Map(sources.map((s) => [s.id, s]));
       const balances = feed.balances.filter((b) => sById.has(b.source)).map((b) => ({ source: b.source, label: sById.get(b.source).label, currency: b.currency, amount: b.amount, nis: b.nis, as_of: b.as_of }));
-      const tx = (feed.transactions || []).filter((t) => sById.has(t.source));
+      const tx = (feed.transactions || []).filter((t) => sById.has(t.source) && inPeriod(t.date));
       const counts = { matched: 0, unmatched: 0, needs_check: 0 };
       for (const t of tx) counts[t.match_status]++;
       const rows = tx.filter((t) => !filter || t.match_status === filter).sort(desc("date"));

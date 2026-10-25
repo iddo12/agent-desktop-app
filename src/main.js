@@ -1428,7 +1428,10 @@ process.on("unhandledRejection", (reason) => {
 
 // ---------------------------------------------------------------- agents --
 
-ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return listAgents(); });
+// v1.140.0: each agent carries hidden:true when its name is in the hiddenAgents setting (src/hiddenAgents.js). Only these renderer-facing
+// lists are marked; nothing is dropped, and main's own listAgents() (delivery, wake-up, keep-going, handoff) is unchanged.
+const hiddenAgentsValue = () => require("./hiddenAgents").configured();   // v1.141.0: the one shared reader (env override > app-config.json)
+ipcMain.handle("list-agents", () => { startupMark("first agent list answered"); return require("./hiddenAgents").mark(listAgents(), hiddenAgentsValue()); });
 
 // Sidebar groups ("folders"). Visual-only - see src/groups.js for the full
 // contract. The renderer sends the whole document back on every change
@@ -2309,11 +2312,19 @@ const lastDispatchAt = new Map(); // path.resolve(sessionCwd).toLowerCase() -> m
 function dispatchKey(sessionCwd) {
   return path.resolve(sessionCwd).toLowerCase();
 }
+// v1.141.1 per-agent reset lock (src/resetGuard.js); used by switchConversationImpl, dispatchedRecently and keepgoing-attach
+const resetGuard = require("./resetGuard");
+const resetLock = resetGuard.create();
+const resetAgentPaths = new Map(); // dispatchKey -> agent path (original case, as ptySessions / keep-going use it)
+function resetBusy(sessionCwd) { return resetLock.isBusy(dispatchKey(sessionCwd)); }
+function resetRunning(sessionCwd) { return resetLock.isRunning(dispatchKey(sessionCwd)); }
+function resetBusyAgentPaths() { return resetLock.busyKeys().map((k) => resetAgentPaths.get(k)).filter(Boolean); }
 // v1.66.1: starts that are queued or running (the limiter can hold a start for minutes), per agent.
 const startsInFlight = new Map(); // dispatchKey -> { p: Promise<id>, urgent }
 function dispatchedRecently(sessionCwd) {
   const k = dispatchKey(sessionCwd);
   if (startsInFlight.has(k)) return true;
+  if (resetLock.isBusy(k)) return true; // v1.141.1: a reset is stopping the old copy / starting the new one
   const at = lastDispatchAt.get(k);
   return !!at && Date.now() - at < DISPATCH_GRACE_MS;
 }
@@ -2899,7 +2910,15 @@ async function enforceTestTokenBudget() {
 // registerRemoteControl(), below) or one it's simply reattaching to (already
 // registered, if it ever was, back when IT was first dispatched).
 async function findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwd) {
-  let existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd);
+  // v1.141.1 (SE review A): a reset/restart of this agent is stopping the old copy and starting the new one. Finding now would
+  // return the dying old copy (attach = it gets relaunched) or nothing (dispatch = a second copy): wait until it is over (cap 45 s),
+  // then look again with a fresh listing; still running at the cap = throw, never dispatch.
+  if (resetRunning(sessionCwd)) {
+    logStuckWatchdog(`find-or-dispatch: ${path.basename(path.dirname(sessionCwd))} waits for a running reset before attaching`);
+    const cleared = await resetGuard.waitWhileRunning({ isRunning: () => resetRunning(sessionCwd), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
+    if (!cleared) throw new Error("a reset of this agent is still running after 45 s - not starting or attaching a copy now");
+  }
+  let existing = await findAliveBackgroundAgent(shell, spawnEnv, sessionCwd, { fresh: resetBusy(sessionCwd) });
   // v1.54.4: launched moments ago by something else but not listed yet - give
   // it up to ~10 s to show up before launching a second copy.
   for (let i = 0; !existing && i < 5 && dispatchedRecently(sessionCwd); i++) {
@@ -3304,7 +3323,7 @@ async function restartAgentSession(agentPath) {
   if (!cur || !cur.sessionId) throw new Error("no conversation to resume");
   const old = ptySessions.get(agentPath);
   const size = { cols: old && old.cols, rows: old && old.rows };
-  const r = await switchConversationImpl(agentPath, { resumeSessionId: cur.sessionId, placeholder: true });
+  const r = await switchConversationImpl(agentPath, { resumeSessionId: cur.sessionId, placeholder: true, trigger: "restart-agent-session" });
   try {
     await startTerminalSession(agentPath, sessionCwd, size.cols, size.rows, r.agentId, false, false, "restart-session");
   } catch (e) {
@@ -3662,6 +3681,8 @@ try {
   keepGoing = require("./keepGoingGlue").create({
     log: (line) => logStuckWatchdog(line),
     ctx: () => featureCtx.keepGoing(), // owner name + task tool for the texts agents are sent
+    // v1.136.1-pre: the Task List's "always continue to the next task" switch (global or this agent's) counts as relentless mode; the agent's FOLDER name names its store
+    taskAutoContinue: (agentPath) => { const c = featureCtx.keepGoing(); return !!(c && c.tasksTool) && require("./taskAutoContinue").autoContinueFor({ tasksTool: c.tasksTool, agentName: agentPath }); },
     emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("keepgoing-state", snap); },
     agents: () => {
       const out = [];
@@ -3783,7 +3804,9 @@ try {
     relentlessAgents: () => { const s = keepGoing && keepGoing.getSettings(); return (s && s.relentless && s.relentless.agents) || []; },
     listed: () => listAgents().map((a) => a.path),
     attachedSet: () => new Set(ptySessions.keys()),
-    spawningSet: () => new Set(attachSpawning.keys()),
+    // v1.141.1: an agent in the middle of (or just after) a reset counts as spawning - keepgoing-attach attaching to the OLD copy
+    // during a reset is what resurrected it on 2026-10-24 ("bg spawned b2991d0f (fleet)" right after its kill).
+    spawningSet: () => new Set([...attachSpawning.keys(), ...resetBusyAgentPaths()]),
     blocked: () => {
       if (!keepGoing) return true;
       if (testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled())) return true;
@@ -3926,7 +3949,14 @@ if (testMode.TEST_MODE) {
 
 // Closes the doomed session and starts a FRESH one (no --resume) whose first prompt points at handoff_latest.md. Same teardown order as
 // switchConversationImpl(): drop the entry first so the pty exit does not trigger an auto-reattach to the conversation being left.
-async function escalateStuckAgent(agentPath, prompt) {
+// v1.141.1: a stuck escalation is a fresh-session reset too, so it takes the same per-agent reset lock (one reset at a time).
+function escalateStuckAgent(agentPath, prompt) {
+  const sessionCwd = sessionCwdFor(agentPath);
+  resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
+  return resetLock.run(dispatchKey(sessionCwd), "stuck-escalation", () => escalateStuckAgentCore(agentPath, prompt),
+    (m) => logStuckWatchdog(`reset: ${path.basename(agentPath)} ${m}`));
+}
+async function escalateStuckAgentCore(agentPath, prompt) {
   const sessionCwd = sessionCwdFor(agentPath);
   if (testMode.TEST_MODE && !testMode.liveAgentsPermitted()) throw new Error("test mode: live agents are not permitted - escalation refused");
   if (!fs.existsSync(agentPath)) throw new Error("the agent folder no longer exists");
@@ -3947,13 +3977,14 @@ async function escalateStuckAgent(agentPath, prompt) {
   try {
     const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
     const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
-    const target = path.resolve(sessionCwd);
-    const liveCopies = async () => (await listBackgroundAgents(shell, spawnEnv, { fresh: true })).filter((a) => a.kind === "background" && a.pid && path.resolve(a.cwd || "") === target);
-    // stop EVERY live copy for this folder (a copy left running would keep the doomed conversation alive next to the fresh one)
-    for (const c of await liveCopies()) await stopClaudeAgent(shell, c.id, spawnEnv);
-    let remaining = await liveCopies();
-    for (let i = 0; remaining.length && i < 10; i++) { await new Promise((r) => setTimeout(r, 500)); remaining = await liveCopies(); }
-    if (remaining.length) throw new Error(`${remaining.length} live copy(ies) still running after stop - not starting a fresh session`);
+    // stop EVERY live copy for this folder (a copy left running would keep the doomed conversation alive next to the fresh one);
+    // v1.141.1 (SE review C): the same confirmed stop as a reset (fresh listings, re-stop, stable-gone check, 30 s then throw)
+    await resetGuard.stopAllAndConfirmGone({
+      listCopies: () => listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true }),
+      stop: (id) => stopCopy(shell, id, spawnEnv),
+      sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      log: (m) => logStuckWatchdog(`escalation: ${path.basename(agentPath)} ${m}`),
+    });
     // NOT urgent: the fresh start respects the CPU-guard start limiter like any other start
     newId = await dispatchBackgroundAgent(shell, spawnEnv, sessionCwd, { forceFresh: true, initialPrompt: prompt });
     logStuckWatchdog(`escalation: closed all live sessions of ${agentPath}, started fresh session ${newId}`);
@@ -4970,7 +5001,7 @@ ipcMain.handle("terminal-blank-check", async (event, { agentPath, blank }) => {
   } catch (e) { return "error"; }
 });
 ipcMain.handle("agent-dialog-open", (event, { agentPath }) => promptLikelyOpen(agentPath)); // v1.65.0: mid-turn send must not type into a permission prompt
-ipcMain.handle("get-agent-overview", () => overview.getAgentOverview(listAgents({ noAvatar: true }), sessionCwdPath, dialogOpenFor));
+ipcMain.handle("get-agent-overview", () => overview.getAgentOverview(require("./hiddenAgents").mark(listAgents({ noAvatar: true }), hiddenAgentsValue()), sessionCwdPath, dialogOpenFor));   // v1.140.0 hidden flag
 // ARGUS / the Bridge (v1.39.0) - see argus-data.js. The workspace root, not
 // AGENTS_ROOT: in the sandbox the agents are fixtures but the report files are
 // real, and they are only ever read here.
@@ -5348,6 +5379,77 @@ app.whenReady().then(() => {
   }
 });
 
+// v1.137.0 wake-up watcher (Project Autopilot): wakes an IDLE attached agent when a mail marker addresses it. OFF unless app-config.json
+// has "wakeWatcher": { "enabled": true } ("dryRun": true = log only). Logic: src/wakeWatcher.js (pure) + src/wakeWatcherMain.js (I/O);
+// delivery is the same verified path as Keep going. Isolated: a fault here only disables the watcher.
+const lastHumanInputAt = new Map(); // agentPath -> ms of the last terminal-input from the person (set in the terminal-input handler)
+let wakeWatcherInst = null;
+function startWakeWatcher() {
+  if (demo.ON || wakeWatcherInst) return;
+  try {
+    const cfgm = require("./appConfig"), WA = require("./wakeAgent");
+    const secs = () => { try { return cfgm.section("wakeWatcher"); } catch (e) { return {}; } };
+    const mailDir = () => {
+      const s = secs();
+      if (typeof s.mailDir === "string" && path.isAbsolute(s.mailDir)) return s.mailDir;
+      return cfgm.path("workspaceRoot", "shared_state", "mail") || path.join(AGENTS_ROOT, "shared_state", "mail");
+    };
+    wakeWatcherInst = require("./wakeWatcherMain").create({
+      settings: secs,
+      log: (line) => logStuckWatchdog(line),
+      mailDir,
+      projectsDir: () => cfgm.path("workspaceRoot", "shared_state", "projects") || path.join(AGENTS_ROOT, "shared_state", "projects"), // from workspaceRoot, independent of a mailDir override
+      stateFile: () => path.join(app.getPath("userData"), "wakewatcher.json"),
+      testBlocked: () => testMode.TEST_MODE && (!testMode.liveAgentsPermitted() || !testGuard.flowsEnabled()),
+      // only agents this app has a live attached session for; a stopped agent reads its mail at its next start
+      agents: () => {
+        const out = [];
+        for (const [p, s] of ptySessions) if (s && !s.starting && s.proc) out.push({ name: path.basename(p), path: p });
+        return out;
+      },
+      neverWake: (a, extra) => {
+        let cfg = null; try { cfg = readJsonFile(path.join(a.path, "agent_config.json")); } catch (e) { cfg = null; }
+        const disp = cfg && (cfg.name || cfg.displayName) ? String(cfg.name || cfg.displayName) : a.name;
+        return !!WA.isNeverWake(extra, { displayName: disp, folderName: a.name }) || WA.flaggedPersonal(cfg);
+      },
+      facts: (a) => {
+        const sc = sessionCwdPath(a.path), act = getSessionActivity(sc), nt = require("./archive").newestTranscript(sc);
+        const tail = dialogTails.get(a.path) || "";
+        let paused = false; try { paused = !!readJsonFile(path.join(a.path, "agent_config.json")).paused; } catch (e) { /* no config */ }
+        return {
+          working: !!(act && act.working), unknown: !tail.trim(),   // nothing known about the screen = never wake blind
+          idleForMs: nt ? Math.max(0, Date.now() - nt.mtimeMs) : null,
+          dialogOpen: promptLikelyOpen(a.path),
+          inputBoxNonEmpty: require("./handoffLogic").draftInInputBox(tail.slice(-600)),
+          handoffActive: (() => { const at = kgHandoffActive.get(norm_kg(a.path)); return !!at && Date.now() - at < 50 * 60 * 1000; })(),
+          lastHumanTypedAt: lastHumanInputAt.get(a.path) || 0, paused,
+        };
+      },
+      throttle: () => {
+        const tf = testGuard.usageNowPath(); if (!tf) return null;
+        const j = readJsonFile(tf); return j && j.fleetThrottle && j.fleetThrottle.state;
+      },
+      cpuHold: () => {
+        try { if (loadGovernor && loadGovernor.nudgeBlock()) return true; } catch (e) { /* governor optional */ }
+        try {
+          const SL = require("./startLimiter");
+          const info = SL.readHoldFile(path.join(require("./cpuGuardInstall").defaultStateDir(), "state", "fleet_hold.json"));
+          return !!(info && SL.holdIsActive(info, Date.now(), undefined, info.mtimeMs));
+        } catch (e) { return false; }
+      },
+      deliver: (agentInfo, line) => deliverToAgentVerified(agentInfo.path, line, "a wake-up line", { ttlSec: 180 }),
+      notify: () => {},   // events are in the app log; the stall detector reads that, nobody is messaged from here
+    });
+    wakeWatcherInst.start();
+    app.on("before-quit", () => { try { wakeWatcherInst.stop(); } catch (e) { /* closing */ } });
+  } catch (e) {
+    console.error("wake watcher failed to load:", e);
+    try { logStuckWatchdog(`wake watcher failed to load: ${e.message}`); } catch (e2) {}
+    wakeWatcherInst = null;
+  }
+}
+app.whenReady().then(() => { setTimeout(startWakeWatcher, 20000); }); // after the first agents are attached
+
 // v1.113.0 voice inbox: a dictation is addressed to the agent that was selected when the key was pressed (active-agent.json) and
 // dropped into <userData>\voice-inbox; the renderer delivers it to THAT agent through the outbox, whatever tab is open.
 app.whenReady().then(() => {
@@ -5456,6 +5558,7 @@ try {
     // v1.89.0 "Write to <agent>": the SAME verified delivery and classification as My Daily > Tasks "Write an answer"
     deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Research message", { ttlSec: 600 }),
     classifyDelivery: (r) => require("./daily/decisions-main").classifyDelivery(r),
+    listAgents: () => listAgents({ noAvatar: true }),   // v1.141.0: the Skills & Plugins rotation editor offers and checks names against this (hidden agents included)
     resolveAgent: (name) => {   // an agent NAME from a digest -> its folder in the app's own agent list (folder or display name), else null
       const low = String(name || "").trim().toLowerCase();
       const a = listAgents({ noAvatar: true }).find((x) => x.folderName.toLowerCase() === low || String(x.displayName || "").toLowerCase() === low);
@@ -5486,6 +5589,66 @@ if (!demo.ON) {
     });
   } catch (e) {
     console.error("finance failed to load:", e && e.code);
+  }
+}
+
+// INTAKE (phone app, PC side): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./intake/main-intake").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never item text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+      sentLogPath: path.join(app.getPath("userData"), "intake_ad_sent.jsonl"),
+      agentPathFor: (name) => { const n = String(name || ""); return n && !/[\\/:*?"<>|]/.test(n) && n !== "." && n !== ".." && fs.existsSync(path.join(AGENTS_ROOT, n)) ? path.join(AGENTS_ROOT, n) : null; },
+      deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "an approved Intake item", { ttlSec: 600 }),
+      listAgentNames: () => listAgents({ noAvatar: true }).map((a) => a.folderName),
+    });
+  } catch (e) {
+    console.error("intake failed to load:", e && e.code);
+  }
+}
+
+// TASK LIST (plain-language view of the fleet task stores): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./tasklist/main-tasklist").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never task text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("tasklist failed to load:", e && e.code);
+  }
+}
+
+// CONTACTS (basic CRM over the Personal Assistant agent's contacts.json): handlers only, IPC only (no port). Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./contacts/main-contacts").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never names, mails or notes
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("contacts failed to load:", e && e.code);
+  }
+}
+
+// PROJECTS (Project Autopilot ledger view): handlers only. Not in demo mode.
+if (!demo.ON) {
+  try {
+    require("./projects/main-projects").init({
+      ipcMain,
+      getMainWindow: () => mainWindow,
+      log: (line) => logStuckWatchdog(line),   // channel names and codes only, never project text
+      cfg: (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } },
+    });
+  } catch (e) {
+    console.error("projects failed to load:", e && e.code);
   }
 }
 
@@ -5524,7 +5687,21 @@ ipcMain.handle("rename-conversation", (event, { agentPath, sessionId, title }) =
 // that. Tear down the attach pty, stop the bg daemon, dispatch a new one;
 // the renderer then re-attaches through its normal start-terminal path.
 ipcMain.handle("switch-conversation", (event, args) => switchConversationImpl(args.agentPath, args));
-async function switchConversationImpl(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
+// v1.141.1: one reset = one live copy (src/resetGuard.js has the incident and the rules). A NEW-conversation switch (Reset Session,
+// handoff reset) goes through the per-agent reset lock: a second one while the first runs, or within RESET_IDEMPOTENCY_MS after it,
+// is logged and handed the first one's result instead of starting another copy. Every reset logs its trigger to the watchdog log.
+// A resume switch (Restart Session, restartAgentSession) takes the same lock as a "serial" job: never deduped, but a restart and a
+// reset of one agent never overlap (SE review B).
+function switchConversationImpl(agentPath, args) {
+  const a = args || {};
+  const sessionCwd = sessionCwdFor(agentPath);
+  const trigger = String(a.trigger || (a.newConversation ? "unspecified" : "resume-switch")).slice(0, 60);
+  const name = path.basename(agentPath);
+  resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
+  return resetLock.run(dispatchKey(sessionCwd), trigger, () => switchConversationCore(agentPath, a),
+    (m) => logStuckWatchdog(`reset: ${name} ${m}`), { kind: a.newConversation ? "reset" : "serial" });
+}
+async function switchConversationCore(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
   const sessionCwd = sessionCwdFor(agentPath);
   // Drop the ptySessions entry BEFORE killing the pty: proc.onExit ->
   // handlePtyExit checks `if (!session) return` first, so removing it now
@@ -5543,16 +5720,25 @@ async function switchConversationImpl(agentPath, { resumeSessionId, newConversat
   }
   // review M1: claim the slot BEFORE the (slow) stop so input arriving meanwhile queues instead of being dropped
   if (placeholder) ptySessions.set(agentPath, { starting: true, pendingInput: [] });
-  // Stops the underlying `claude --bg` daemon for this cwd and polls until
-  // its pid is actually gone (same helper delete-agent uses).
-  try {
-    await stopBackgroundAgentForCwd(sessionCwd);
-  } catch (e) {
-    if (placeholder) dropPlaceholder(agentPath);
-    throw e;
-  }
+  // Stop the underlying `claude --bg` copies for this cwd.
+  // v1.141.1: was the stopBackgroundAgentForCwd helper, whose hard 5 s race returned with the old copy still alive on a loaded PC, so the
+  // new copy was dispatched next to it (2026-10-24 06:13). Now: stop EVERY live copy of this folder and continue only once two
+  // fresh listings in a row show none; still alive at the deadline = throw, never a second copy.
   const shell = process.platform === "win32" ? resolveClaudeExecutable() : "claude";
   const spawnEnv = { ...process.env, CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", ...CLAUDE_AUTOUPDATER_DISABLE_ENV };
+  try {
+    const r = await resetGuard.stopAllAndConfirmGone({
+      listCopies: () => listLiveCopies(shell, spawnEnv, sessionCwd, { fresh: true }),
+      stop: (id) => stopCopy(shell, id, spawnEnv),
+      sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      log: (m) => logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} ${m}`),
+    });
+    if (r.stopped.length) logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} old copy ${r.stopped.join(", ")} confirmed gone after ${Math.round(r.waitedMs / 1000)} s`);
+  } catch (e) {
+    if (placeholder) dropPlaceholder(agentPath);
+    logStuckWatchdog(`switch-conversation: ${path.basename(agentPath)} NOT starting a new copy: ${e.message}`);
+    throw e;
+  }
   const opts = newConversation ? { forceFresh: true, initialPrompt, urgent: true } : { resumeSessionId, urgent: true };
   let newId;
   try {
@@ -5607,8 +5793,9 @@ function logSentInput(agentPath, data) {
   } catch (e) {}
 }
 
-ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp }) => {
+ipcMain.on("terminal-input", (event, { agentPath, data, app: fromApp, auto: fromAuto }) => {
   logSentInput(agentPath, data);
+  if (!fromApp && !fromAuto) lastHumanInputAt.set(agentPath, Date.now()); // v1.137.0: the wake-up watcher leaves an agent alone while a person types to it (app-originated input: xterm replies, Keep going, handoffs, does not count)
   const session = ptySessions.get(agentPath);
   if (!session) {
     // No tracked session at all for this agent (as opposed to the "starting"

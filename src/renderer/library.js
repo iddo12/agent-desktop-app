@@ -388,7 +388,7 @@
     else if (e.agent) rcpts.appendChild(el("span", "library-rcpt-none", `Writer: ${e.agent} (not in this app)`));
     if (coo && (!writer || coo.path !== writer.path)) addRcpt(rcpts, coo, "");
     panel.appendChild(rcpts);
-    const others = list.filter((a) => (!writer || a.path !== writer.path) && (!coo || a.path !== coo.path));
+    const others = list.filter((a) => (!writer || a.path !== writer.path) && (!coo || a.path !== coo.path) && !(a.hidden && !(window.hiddenAgentsView && window.hiddenAgentsView.shown())));   // v1.140.0: hidden agents left out of the picker (the writer itself is still offered)
     if (others.length) {
       const det = el("details", "library-send-others");
       det.appendChild(el("summary", null, `Other agents (${others.length})`));

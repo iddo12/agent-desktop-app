@@ -47,6 +47,12 @@ const KEYS = {
   financeFeedPath: { kind: "file", label: "Finance feed file (finance_feed.json)", derive: (c) => c.sub("workDir", "finance", "feed", "finance_feed.json") },
   // Plain login links for the Home view: "sourceId=https://...;sourceId=https://..." (https only; empty = no link, nothing stored but the address)
   financeLoginLinks: { kind: "text", max: 1500, label: "Finance: login links per source (id=https://...;id=https://...)", derive: () => null },
+  // Intake (phone app, PC side): the folder the phone watcher writes intake_index.jsonl in; this app appends only to intake_approvals.jsonl there.
+  intakeDir: { kind: "folder", label: "Intake folder (holds intake_index.jsonl)", derive: (c) => c.sub("workDir", "intake") },
+  // Contacts tab: the folder holding the Personal Assistant agent's contacts.json. Keep it outside cloud-synced folders (the tab refuses a synced folder).
+  contactsDir: { kind: "folder", label: "Contacts folder (holds contacts.json from the Personal Assistant agent)", derive: (c) => c.sub("workDir", "contacts") },
+  intakeDefaultAgent: { kind: "text", max: 80, label: "Intake: folder name of the agent the watcher delivers approved items to by default", derive: () => null },
+  intakeRequireVerified: { kind: "text", max: 3, label: "Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)", derive: () => null },
   healthParent: { kind: "folder", autoCreate: true, label: "Health folder", derive: (c) => c.userSub("health") },
   telegramTasksDir: { kind: "folder", label: "Telegram task queue folder", derive: () => null },
   telegramBridgeDir: { kind: "folder", label: "Telegram bridge folder (holds tasks.py)", derive: () => null },
@@ -66,6 +72,7 @@ const KEYS = {
   exchangeOutboxName: { kind: "text", segment: true, label: "Mailbox sub-folder for notes FROM you", derive: () => "from_me" },
   leadRole: { kind: "text", label: "Role name of the agent that talks to the other side (for example COO)", derive: () => null },
   ownerName: { kind: "text", label: "Your name", derive: () => null },
+  hiddenAgents: { kind: "text", max: 2000, label: "Agents hidden from the sidebar, pickers and fleet views (folder names, separated by ;). They keep running.", derive: () => null },   // v1.140.0 (src/hiddenAgents.js)
   partnerName: { kind: "text", label: "Partner's name (for the fleet and shared calendar)", derive: () => null },
   memoryStatsFile: { kind: "file", label: "Memory statistics file (memory_stats.json)", derive: () => null },
   memoryBaselineFile: { kind: "file", label: "Starting-context baseline file (baseline_context.json)", derive: () => null },
@@ -494,8 +501,13 @@ function createAppConfig(opts) {
     return () => ee.removeListener("config-changed", fn);
   }
 
+  // Read-only copy of a plain top-level section of app-config.json (for example "wakeWatcher": { "enabled": true }); {} when absent.
+  function section(id) {
+    try { const v = load()[String(id)]; return v && typeof v === "object" && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {}; } catch (e) { return {}; }
+  }
+
   const api = {
-    get, path: pathOf, source, feature, isReady, usable, consentState, isConsented: (id) => consentState(id).granted, grantConsent, revokeConsent, hasSection: (id) => consentState(id).exists, set, setMany, setFeature, onChange,
+    section, get, path: pathOf, source, feature, isReady, usable, consentState, isConsented: (id) => consentState(id).granted, grantConsent, revokeConsent, hasSection: (id) => consentState(id).exists, set, setMany, setFeature, onChange,
     reload: () => { pathMemo = new Map(); load(true); return { exists, error: loadError }; },
     snapshot,
     setProbe: (id, fn) => { if (typeof fn === "function") probes[String(id)] = fn; else delete probes[String(id)]; },
@@ -525,7 +537,7 @@ function def() {
   return init({ userDataDir: ud, documentsDir: docs });
 }
 const proxy = { createAppConfig, init, KEYS, FILE_NAME, SCHEMA, envName };
-for (const m of ["get", "path", "source", "feature", "isReady", "usable", "consentState", "isConsented", "grantConsent", "revokeConsent", "hasSection", "set", "setMany", "setFeature", "onChange", "reload", "snapshot", "setProbe", "hasConfigFile", "configPath", "allKeys", "keyInfo", "suggestWorkspace", "clean", "on"]) {
+for (const m of ["section", "get", "path", "source", "feature", "isReady", "usable", "consentState", "isConsented", "grantConsent", "revokeConsent", "hasSection", "set", "setMany", "setFeature", "onChange", "reload", "snapshot", "setProbe", "hasConfigFile", "configPath", "allKeys", "keyInfo", "suggestWorkspace", "clean", "on"]) {
   proxy[m] = (...a) => def()[m](...a);
 }
 module.exports = proxy;

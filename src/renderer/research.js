@@ -1027,34 +1027,44 @@
   }
 
   // v1.133.0 MY RECOMMENDATIONS: a second tab. recs.js and styles-recs.css load the first time the tab is opened; closing the view drops it.
+  // v1.139.0 SKILLS & PLUGINS: a third tab, same pattern (skills.js + styles-skills.css, window.skillsView). SUB_TABS maps a tab id to its module.
+  const SUB_TABS = {
+    recs: { script: "recs.js", css: "styles-recs.css", view: () => window.recsView, opening: "Opening the recommendations...", failed: "The recommendations tab could not load. Switch tabs and back to try again." },
+    skills: { script: "skills.js", css: "styles-skills.css", view: () => window.skillsView, opening: "Opening Skills & Plugins...", failed: "The Skills & Plugins tab could not load. Switch tabs and back to try again." },
+  };
+  function unmountSub(id) { const t = SUB_TABS[id], v = t && t.view(); if (v) v.unmount(); }
   function renderTabs() {
     const bar = el("div", "rc-tabs"); bar.setAttribute("role", "tablist");
-    [["findings", "Findings"], ["recs", "My Recommendations"]].forEach(([id, word]) => {
+    [["findings", "Findings"], ["recs", "My Recommendations"], ["skills", "Skills & Plugins"]].forEach(([id, word]) => {
       const b = el("button", "", word); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", (S.tab || "findings") === id ? "true" : "false");
-      b.addEventListener("click", () => { if ((S.tab || "findings") === id) return; if (window.recsView && S.tab === "recs") window.recsView.unmount(); S.tab = id; render(); });
+      if (id === "skills") b.title = "What the weekly Skills & Plugins watch will look at, and what it found.";
+      b.addEventListener("click", () => { if ((S.tab || "findings") === id) return; unmountSub(S.tab); S.tab = id; render(); });
       bar.appendChild(b);
     });
     return bar;
   }
-  let recsLoading = false;
-  function mountRecs() {
-    const go = () => { if (window.recsView) window.recsView.mount(bodyHost); };
-    if (window.recsView) return go();
-    bodyHost.appendChild(el("div", "rs-muted rs-pad", "Opening the recommendations..."));
-    if (recsLoading) return;                                  // already loading: its onload mounts into whatever the current bodyHost is
-    recsLoading = true;
-    const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "styles-recs.css"; document.head.appendChild(link);
-    const sc = document.createElement("script"); sc.src = "recs.js";
-    sc.onload = () => { recsLoading = false; if (S.tab === "recs") { bodyHost.textContent = ""; go(); } };
-    sc.onerror = () => { recsLoading = false; sc.remove(); link.remove(); bodyHost.textContent = ""; bodyHost.appendChild(el("p", "rs-note", "The recommendations tab could not load. Switch tabs and back to try again.")); };
+  const subLoading = new Set();
+  function mountSub(id) {
+    const t = SUB_TABS[id];
+    const go = () => { const v = t.view(); if (v) v.mount(bodyHost); };
+    if (t.view()) return go();
+    bodyHost.appendChild(el("div", "rs-muted rs-pad", t.opening));
+    if (subLoading.has(id)) return;                           // already loading: its onload mounts into whatever the current bodyHost is
+    subLoading.add(id);
+    const link = document.createElement("link"); link.rel = "stylesheet"; link.href = t.css; document.head.appendChild(link);
+    const sc = document.createElement("script"); sc.src = t.script;
+    sc.onload = () => { subLoading.delete(id); if (S.tab === id) { bodyHost.textContent = ""; go(); } };
+    sc.onerror = () => { subLoading.delete(id); sc.remove(); link.remove(); bodyHost.textContent = ""; bodyHost.appendChild(el("p", "rs-note", t.failed)); };
     document.body.appendChild(sc);
   }
+  function mountRecs() { mountSub("recs"); }
   function render() {
     headHost.textContent = ""; bodyHost.textContent = ""; listHost = topHost = moreHost = leadHost = findBar = null;
     if (S.io) { S.io.disconnect(); S.io = null; }
     headHost.appendChild(renderHeader(S));
-    headHost.appendChild(renderTabs());                       // v1.133.0: Findings | Recommendations
+    headHost.appendChild(renderTabs());                       // v1.133.0: Findings | Recommendations (v1.139.0: | Skills & Plugins)
     if (S.tab === "recs") { mountRecs(); return; }
+    if (S.tab === "skills") { mountSub("skills"); return; }
     if (!S.snap) { bodyHost.appendChild(el("div", "rs-muted rs-pad", "Reading this week's digests...")); return; }
     const main = el("div", "rs-main");
     if (S.snap.needsSetup && window.NeedsSetup) { bodyHost.appendChild(main); main.appendChild(window.NeedsSetup.card("research")); return; } // v1.121.0: the calm card with a Set up button
@@ -1138,7 +1148,7 @@
     S.imgs = new Map(); S.threads = new Map(); S.magLimit = MAG_PAGE; moreHost = null;   // v1.91.0: no images or threads stay in the page
     if (pendingSeen.size) flushSeen(); if (dwellIO) { dwellIO.disconnect(); dwellIO = null; }
     S.snap = null; S.marked = new Set(); S.ideas = new Set(); S.openA = new Set(); S.openF = new Set(); S.f = noFilters();
-    if (window.recsView) window.recsView.unmount(); S.tab = "findings";
+    if (window.recsView) window.recsView.unmount(); if (window.skillsView) window.skillsView.unmount(); S.tab = "findings";
     headHost.textContent = ""; bodyHost.textContent = ""; toast.textContent = ""; toast.classList.add("hidden"); listHost = topHost = null;   // nothing from the digests stays in the page
   }
   window.researchView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

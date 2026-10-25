@@ -220,6 +220,7 @@ function getAgentOverview(agents, sessionCwdFor, dialogOpenFor) {
       path: a.path,
       folderName: a.folderName,
       displayName: a.displayName,
+      hidden: !!a.hidden,   // v1.140.0 hiddenAgents setting (the all-agents triage view leaves these out)
       state,
       sinceMs: activity.sinceMs,
       attention,

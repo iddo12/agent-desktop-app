@@ -224,6 +224,7 @@
     let list = [];
     try {
       list = (await window.api.listAgents()) || [];
+      if (!(window.hiddenAgentsView && window.hiddenAgentsView.shown())) list = list.filter((a) => !a.hidden);   // v1.140.0 hiddenAgents setting
     } catch (e) {
       return [];
     }

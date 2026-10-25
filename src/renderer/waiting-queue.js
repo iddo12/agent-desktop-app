@@ -100,6 +100,7 @@
   }
   // v1.117.3 (the owner): the Testing agent (and any name in localStorage "agentDesktop.waitingQueue.ignore", comma separated) never shows in the queue
   function ignored(row) {
+    if (row.classList.contains("agent-hidden")) return true;   // v1.140.0: a hidden agent (hiddenAgents setting) is not listed here either
     var list = (ls("agentDesktop.waitingQueue.ignore") || "testing").split(",").map(norm).filter(Boolean), f = norm(row.dataset.folderName), nm = row.querySelector(".agent-item-name"), d = norm(nm && nm.textContent);
     return list.some(function (x) { return f === x || d === x || f.indexOf(x + " ") === 0 || d.indexOf(x + " ") === 0; });
   }

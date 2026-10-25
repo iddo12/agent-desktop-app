@@ -1,0 +1,12 @@
+/* Projects sidebar entry (Project Autopilot). Same look as the Task List / My Finance entries. The view's own styles are in styles-projects.css, loaded on first open.
+   The name and badge spans also carry the .tasklist-nav-name / -badge classes, so the left-pane tile rules cover them. */
+:root { --pj-badge-bg: #b3382c; --pj-badge-fg: #ffffff; }   /* red = blocked, waiting for you */
+.projects-nav { margin: 0 12px 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.projects-nav:hover { background: var(--bg-hover); }
+.projects-nav.active { border-color: var(--accent); background: var(--bg-active); }
+.projects-nav-badge.hidden { display: none; }
+.projects-nav-badge { background: var(--pj-badge-bg); color: var(--pj-badge-fg); }   /* red = blocked, waiting for you */
+body:not(.lp-on).argus-open .projects-nav, body:not(.lp-on).iris-open .projects-nav { display: none; }
+/* an opened Projects view hides the other views, exactly as the Task List does */
+body.projects-open #chat-view, body.projects-open #empty-state, body.projects-open #library-view, body.projects-open #argus-view, body.projects-open #iris-view,
+body.projects-open #memory-view, body.projects-open #daily-view, body.projects-open #health-view, body.projects-open #tools-view, body.projects-open #research-view, body.projects-open #xp-panel { display: none !important; }

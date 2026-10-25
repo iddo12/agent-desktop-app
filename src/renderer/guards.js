@@ -261,7 +261,7 @@
     if (polls.length < FORCE_CONFIRM_POLLS) return false;
     forcePolls.delete(a.path);
     forcedInterrupts.set(a.path, now);
-    window.api.sendInput(a.path, "");              // Esc: interrupt the running turn
+    window.api.sendInput(a.path, "", { app: true });              // Esc: interrupt the running turn
     try { window.autoHandoffLog("forced Esc: " + a.displayName + " " + Math.round(t / 1000) + "K after " + Math.round(act.sinceMs / 1000) + " s continuous work"); } catch (e) {}
     console.log("[guards] forced checkpoint: interrupted", a.displayName, "at", t, "tokens after", Math.round(act.sinceMs / 60000), "min of continuous work");
     return true;
@@ -415,7 +415,7 @@
             "(lessons saved to memory first, old conversation kept in History).",
           [{ label: "Dismiss", onClick: () => render() }]
         );
-        startFlow(a.path, false);
+        startFlow(a.path, false, "auto-handoff " + k);
         return;                                   // only ever one per pass
       } catch (e) {
         window.autoHandoffLog("sweep error for " + nm + ": " + (e && e.message));
@@ -485,7 +485,7 @@
   headerBtn.title = "A smarter Reset Session: first asks the agent to save its lessons/open items to memory and a handoff file, THEN wipes the conversation and starts fresh from that handoff - so the next session doesn't have to re-learn what this one already figured out. Worth it once a conversation gets long and expensive.";
   const resetBtn = document.getElementById("reset-session-btn");
   if (resetBtn && resetBtn.parentNode) resetBtn.parentNode.insertBefore(headerBtn, resetBtn);
-  headerBtn.addEventListener("click", () => startFlow(activeAgentPath, true));
+  headerBtn.addEventListener("click", () => startFlow(activeAgentPath, true, "handoff-reset-button"));
 
   // The person's name for agent-facing prompts comes from the configuration layer (AppCfg.owner), never from this file.
   function ownerName() { return window.AppCfg ? window.AppCfg.owner() : "the user"; }
@@ -550,7 +550,7 @@
           const holds = await window.api.agentInputHoldsText(agentPath, text).catch(() => false);
           if (!holds) return false;
           window.autoHandoffLog(nm + ": handoff prompt sits unsent in the input box - pressing Enter");
-          if (typeof writeQueued === "function") writeQueued(se, () => window.api.sendInput(agentPath, "\r")); else window.api.sendInput(agentPath, "\r");
+          if (typeof writeQueued === "function") writeQueued(se, () => window.api.sendInput(agentPath, "\r", { app: true })); else window.api.sendInput(agentPath, "\r", { app: true });
           return true;
         },
         log: (line) => window.autoHandoffLog(nm + ": " + line),
@@ -581,11 +581,13 @@
       " before this handoff request, so it does not contain this session's lessons.";
   }
 
-  async function startFlow(agentPath, confirmFirst) {
+  // v1.141.1: `trigger` names who started the flow (auto-handoff / button / handoff-all); it is logged and passed to the reset.
+  async function startFlow(agentPath, confirmFirst, trigger) {
     try {
-      if (!agentPath || flows.has(agentPath)) return;
+      if (!agentPath) return;
+      if (flows.has(agentPath)) { window.autoHandoffLog(agentName(agentPath) + ": handoff flow NOT started (trigger=" + (trigger || "?") + "): one is already running"); return; }
       if (confirmFirst && !confirm("Ask this agent to save its lessons + a handoff file, then reset the session and resume from the handoff?")) return;
-      const flow = { phase: "saving", startedAt: Date.now(), error: null, quietPolls: 0 };
+      const flow = { phase: "saving", startedAt: Date.now(), error: null, quietPolls: 0, trigger: trigger || "unspecified" };
       flows.set(agentPath, flow);
       parkQueue(agentPath, "handoff flow start");   // before the prompt goes out, so only the user's messages are parked
       flow.hid = window.HandoffDelivery.makeMarker();   // one hid per flow: the prompt is typed at most once under it
@@ -599,9 +601,15 @@
     }
   }
 
+  // v1.141.1: the 3 s interval can fire again while the previous tick still awaits its IPC calls (a loaded PC); two ticks
+  // passing the "saving" check could both call runReset. One tick at a time per flow.
   async function advanceFlow(agentPath) {
     const flow = flows.get(agentPath);
-    if (!flow || flow.phase !== "saving") return;
+    if (!flow || flow.phase !== "saving" || flow.advancing) return;
+    flow.advancing = true;
+    try { await advanceFlowTick(agentPath, flow); } finally { flow.advancing = false; }
+  }
+  async function advanceFlowTick(agentPath, flow) {
     try {
       parkQueue(agentPath, "queued during handoff");   // a message typed mid-flow must not block the idle test or reach the old conversation
       // Time spent stopped on a usage limit does not count: the agent cannot write anything then.
@@ -691,6 +699,7 @@
   // its comment in renderer.js), then hand the resume message to tickResume(), which delivers it
   // and VERIFIES it reached the transcript (the old flow "succeeded" while the message was lost).
   async function runReset(agentPath, flow) {
+    if (flow.phase === "resetting" || flow.phase === "resuming") { window.autoHandoffLog(agentName(agentPath) + ": second reset for the same handoff ignored (phase " + flow.phase + ")"); return; }
     flow.phase = "resetting";
     clearInterval(flow.timer);
     render();
@@ -704,7 +713,8 @@
     // v1.69.0: main decides the text (continue-at-once when the handoff has open work and no BLOCKED) and sets the persisted
     // "mission in progress" marker; the old static text stays the fallback.
     try { const kg = await window.api.keepGoingResumePrompt(agentPath, arch.path); if (kg && kg.text && kg.text.startsWith(RESUME_MARKER)) resumeText = kg.text; } catch (e) { /* keep the static text */ }
-    await performSessionReset(agentPath, { initialPrompt: resumeText });
+    const rr = await performSessionReset(agentPath, { initialPrompt: resumeText, trigger: "handoff (" + (flow.trigger || "unspecified") + ")" });
+    if (rr && rr.deduped) window.autoHandoffLog(agentName(agentPath) + ": reset was a duplicate (first trigger " + (rr.firstTrigger || "?") + ") - reused copy " + (rr.agentId || "?"));
     pendingResume.set(agentPath, { text: resumeText, path: arch.path, readySince: null, sentAt: Date.now(), viaDispatch: true, tries: 1 });
     flow.phase = "resuming";
     render();
@@ -917,7 +927,7 @@
       await sleep(2000);
     }
     if (s.busy || s.transcriptWorking) return { status: "skipped (busy)" };
-    await startFlow(ap, false);
+    await startFlow(ap, false, "handoff-all");
     const t2 = Date.now();
     while (Date.now() - t2 < 25 * 60 * 1000) {
       if (run.cancelled) return { status: "cancelled during its handoff (that one keeps running)" };
@@ -1081,6 +1091,7 @@
                 try {
                   if (staleWarning(flow) && !confirm("handoff_latest.md is older than this handoff request - it will NOT contain this session's lessons. Reset with it anyway?")) return;
                   flow.canUseExisting = false;
+                  flow.trigger = "use-existing-handoff-button";
                   await runReset(ap, flow);
                 } catch (e) {
                   flow.phase = "failed";
@@ -1099,7 +1110,7 @@
           "guard-amber",
           "This conversation is " + Math.round(ctxTokens / 1000) + "K tokens - every message re-reads all of it, so it costs far more than a fresh session. A handoff reset (lessons saved to memory first) typically saves ~30-40% of this agent's usage.",
           [
-            { label: "Save handoff & reset", onClick: () => startFlow(ap, false) },
+            { label: "Save handoff & reset", onClick: () => startFlow(ap, false, "context-banner-button") },
             { label: "Later", onClick: () => { dismissedAt.set(ap, ctxTokens); render(); } },
           ]
         );

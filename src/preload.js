@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("api", {
   voiceWarm: () => ipcRenderer.invoke("voice-warm"),
   voiceSave: (wavBase64) => ipcRenderer.invoke("voice-save", { wavBase64 }),
   logGuard: (line) => ipcRenderer.send("guard-log", { line }),
-  sendInput: (agentPath, data, opts) => ipcRenderer.send("terminal-input", { agentPath, data, app: !!(opts && opts.app) }),
+  sendInput: (agentPath, data, opts) => ipcRenderer.send("terminal-input", { agentPath, data, app: !!(opts && opts.app), auto: !!(opts && opts.auto) }),
   onPhemeRequest: (callback) => { ipcRenderer.on("pheme-request", (event, payload) => callback(payload)); }, // v1.77.4 PHEME delivery
   phemeReply: (id, result) => ipcRenderer.send("pheme-reply", { id, result }),
   onVoiceInbox: (callback) => { ipcRenderer.on("voice-inbox-request", (event, payload) => callback(payload)); }, // v1.113.0 voice inbox (dictation addressed to one agent)
@@ -248,6 +248,8 @@ contextBridge.exposeInMainWorld("api", {
     write: (week, agent, findingId, text) => ipcRenderer.invoke("research-write", { week, agent, findingId, text }),
     recsLoad: (all) => ipcRenderer.invoke("recs-load", { all: !!all }),
     recsWrite: (week, agent, itemId, text) => ipcRenderer.invoke("recs-write", { week, agent, itemId, text }),
+    skillsLoad: (week) => ipcRenderer.invoke("skills-load", { week: week || "" }),   // v1.139.0 Skills & Plugins tab (read-only)
+    skillsSetRotation: (agents, expected) => ipcRenderer.invoke("skills-rotation-set", { agents, expected }),   // v1.141.0 who looks this week
     // v1.91.0 magazine view: a finding's cached lead image (main fetches it once, safely; never a remote URL) and the owner's sent thread
     image: (week, agent, findingId) => ipcRenderer.invoke("research-image", { week, agent, findingId }),
     thread: (week, agent, findingId) => ipcRenderer.invoke("research-thread", { week, agent, findingId }),
@@ -257,10 +259,47 @@ contextBridge.exposeInMainWorld("api", {
     seen: (items) => ipcRenderer.invoke("research-seen", { items }),
     seenAll: () => ipcRenderer.invoke("research-seen-all"),
   },
+  projects: {   // Projects tab (Project Autopilot): read the ledger, answer a blocking question, press Green light (both go through project.py)
+    list: () => ipcRenderer.invoke("projects-list"),
+    detail: (slug) => ipcRenderer.invoke("projects-detail", { slug }),
+    answer: (slug, qid, text) => ipcRenderer.invoke("projects-answer", { slug, qid, text }),
+    greenLight: (slug) => ipcRenderer.invoke("projects-green-light", { slug }),
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("projects-changed", h); return () => ipcRenderer.removeListener("projects-changed", h); },
+  },
+  contacts: {
+    list: (o) => ipcRenderer.invoke("contacts-list", o || {}),
+    company: (id) => ipcRenderer.invoke("contacts-company", { id }),
+    person: (id) => ipcRenderer.invoke("contacts-person", { id }),
+    setNote: (kind, id, text) => ipcRenderer.invoke("contacts-set-note", { kind, id, text }),
+    setCategories: (id, categories) => ipcRenderer.invoke("contacts-set-categories", { id, categories }),
+    setLink: (id, kind, value) => ipcRenderer.invoke("contacts-set-link", { id, kind, value }),
+    snooze: (id, mode, days) => ipcRenderer.invoke("contacts-snooze", { id, mode, days }),
+    mailSearch: (id, keywords, withAtt, withoutAtt) => ipcRenderer.invoke("contacts-mail-search", { id, keywords, withAtt: !!withAtt, withoutAtt: !!withoutAtt }),
+    mailOpen: (id) => ipcRenderer.invoke("contacts-mail-open", { id }),
+    suggestions: () => ipcRenderer.invoke("contacts-suggestions", {}),
+    resolveSuggestion: (id, action, categories) => ipcRenderer.invoke("contacts-suggestion-resolve", { id, action, categories }),
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("contacts-changed", h); return () => ipcRenderer.removeListener("contacts-changed", h); },
+  },
+  tasklist: {
+    load: (agent) => ipcRenderer.invoke("tasklist-load", { agent }),
+    move: (agent, id, dir, target) => ipcRenderer.invoke("tasklist-move", { agent, id, dir, target }),
+    cancel: (agent, id) => ipcRenderer.invoke("tasklist-cancel", { agent, id }),
+    clear: (agent) => ipcRenderer.invoke("tasklist-clear", { agent }),
+    undo: (batch) => ipcRenderer.invoke("tasklist-undo", { batch }),
+    auto: (agent, on) => ipcRenderer.invoke("tasklist-auto", { agent, on: !!on }),   // Iddo switch: continue to the next task after a handoff
+    onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("tasklist-changed", h); return () => ipcRenderer.removeListener("tasklist-changed", h); },
+  },
   // v1.90.0 MY FINANCE skeleton (renderer/finance.js): the renderer sends filter values and "drop"/"vault"; the folder is fixed in main.
+  intake: {
+    load: () => ipcRenderer.invoke("intake-load"),
+    item: (id) => ipcRenderer.invoke("intake-item", { id }),
+    agents: (sealed) => ipcRenderer.invoke("intake-agents", { sealed: !!sealed }),
+    decide: (id, action, agent, hash) => ipcRenderer.invoke("intake-decide", { id, action, agent, hash }),
+    audit: () => ipcRenderer.invoke("intake-audit"),
+  },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),
-    feed: (scope, page, offset, filter) => ipcRenderer.invoke("finance-feed", { scope, page, offset, filter }),
+    feed: (scope, page, offset, filter, from, to) => ipcRenderer.invoke("finance-feed", { scope, page, offset, filter, from, to }),
     transactions: (q) => ipcRenderer.invoke("finance-transactions", q),
     importScan: () => ipcRenderer.invoke("finance-import-scan"),
     demoCreate: () => ipcRenderer.invoke("finance-demo-create"),

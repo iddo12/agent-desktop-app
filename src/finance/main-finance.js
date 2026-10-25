@@ -14,7 +14,8 @@ function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, en
   const service = () => (svc || (svc = require("./service").createService({ userData, appDir, testMode: !!testMode, env: env || process.env, defaultDir: () => require("../appConfig").get("financeVault"), log: say })));
   // v1.129.0 feed (read-only JSON from the Accounting feed tool): the path and the login links come from the configuration layer, never from the renderer.
   const cfgGet = (k) => { try { return require("../appConfig").get(k); } catch (e) { return null; } };
-  const fc = feedConfig || { path: () => cfgGet("financeFeedPath"), links: () => cfgGet("financeLoginLinks") };
+  const cfgSource = (k) => { try { return require("../appConfig").source(k); } catch (e) { return null; } };
+  const fc = feedConfig || { path: () => { let v = cfgGet("financeFeedPath"); if (!v) say("finance-feed path set=no"); else if (cfgSource("financeFeedPath") !== "config") say("finance-feed path source=" + cfgSource("financeFeedPath")); return v; }, links: () => cfgGet("financeLoginLinks") };
   let reader = null;
   const feedReader = () => (reader || (reader = require("./feedReader").createFeedReader({ getPath: () => fc.path(), appDir, log: say })));
   const handle = (channel, fn) => raw.handle(channel, async (event, arg) => {
@@ -55,13 +56,14 @@ function init({ ipcMain: raw, getMainWindow, userData, appDir, testMode, log, en
     if (a && a.page !== undefined && a.page !== null && !page) return { ok: false, reason: "Bad request." };
     const offset = a && Number.isInteger(a.offset) && a.offset >= 0 && a.offset <= 100000 ? a.offset : 0;
     const filter = a && typeof a.filter === "string" ? a.filter : null;
+    const from = a && typeof a.from === "string" ? a.from : null, to = a && typeof a.to === "string" ? a.to : null;   // validated (YYYY-MM) in pageView
     const r = feedReader().readFeed();
     if (!r.ok) return { ok: false, code: r.code, reason: r.reason, firstError: r.firstError || null };
     const t = typeof today === "function" ? today() : null;
     const d = new Date();
     const local = t || d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     let links = null; try { links = FR.parseLoginLinks(fc.links()); } catch (e) { links = null; }
-    if (page) return { ok: true, page: FP.pageView(r.feed, page, scope, { today: local, loginLinks: links || undefined, offset, filter }) };
+    if (page) return { ok: true, page: FP.pageView(r.feed, page, scope, { today: local, loginLinks: links || undefined, offset, filter, from, to }) };
     return { ok: true, view: FR.homeView(r.feed, scope, { today: local, loginLinks: links || undefined }) };
   });
   handle("finance-transactions", (a) => service().transactions(a));

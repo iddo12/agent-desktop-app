@@ -1,0 +1,18 @@
+# v1.141.0 - (2026-10-24) Skills & Plugins: edit who looks this week; hidden agents are discussed in the Claude app, not here
+
+## 1. "This week" (Iddo)
+- The rotation file's reason paragraph ("Why these agents") and the "Schedule as written" line are no longer shown.
+- The list of agents who look this week is **editable**: each agent is a chip with a remove (x) button (disabled when it is the last one), and an **"+ Add agent..."** dropdown lists every agent Agent Desktop knows that is not in the list yet (display name shown, folder name saved; hidden agents are offered too, they are valid rotation agents). Each change is saved at once with a plain line "Removed X. Saved. Next run Thursday 29 Oct, about 17:00 (in 5 days)." and an **Undo** (puts the previous list back).
+- Write path (main, `src/skills/rotationWrite.js`, IPC `skills-rotation-set`): changes ONLY `agents` and sets `setAt` to today in `shared_reports\research\skills_plugins_rotation.json`; every other field is kept. Names must be Agent Desktop agents (folder or display name, mapped to the folder name because `Run-SkillsWatch.ps1` passes them to `Run-AgentJob.ps1 -Agent`) or names already in the file; an empty list is refused; duplicates are dropped; path characters are refused. If the file changed since the tab showed it, nothing is written ("Press Refresh and try again"). Once per day the file is copied to `skills_plugins_rotation.json.bak_<YYYY-MM-DD>` before the first change (never overwritten). Async, atomic (temp file + rename), UTF-8 without BOM. No names in code. The weekly runner needs no change.
+
+## 2. Hidden agents are discussed in the Claude desktop app (Iddo)
+- For an agent in the `hiddenAgents` setting, "Discuss with <agent>" (and the My Research / My Recommendations replies, which share the same writer) NEVER delivers into the agent's Agent Desktop session. The message always goes to its pending-notes file (the same `<slug>_pending_notes.md` at the workspace root that the not-running path already uses), with the note saying it came via My Research while the owner talks to that agent outside Agent Desktop. The tab says: "Saved for Security. Security reads it in the Claude desktop app, not here." Other agents behave as before.
+- Code: `research/write.js` (`isHidden` option, checked before `isRunning`), `research/main-research.js` (passes `isHidden` from the hiddenAgents setting), `renderer/skills.js` and `renderer/recs.js` (message).
+
+## Tests
+`tests/skillsRotation.test.js` (16, new: write path in temp folders, field preservation, daily backup, unknown-agent/empty/path/stale refusals, display-name mapping, hidden agents allowed, undo; hidden agent never calls the delivery path and gets the pending note; non-hidden unchanged; wiring). research/research-mag allow-lists include `skills-rotation-set`.
+
+## Review fixes (SE, same version)
+- (required) The research writer's hidden check now matches the folder AND the display name (the folder's display name is looked up in the app's agent list), so a display name in `hiddenAgents` also routes "Discuss"/replies to the pending note. The setting is read by ONE function, `hiddenAgents.configured()` (appConfig.get: env `AGENT_DESKTOP_HIDDEN_AGENTS` > app-config.json), used by both the list marking in main.js and the writer (`hiddenAgents.makeIsHidden({ listAgents })`); main-research no longer reads the env var itself.
+- (optional, done) `rotationWrite.js` retries the rename once after ~300 ms on EPERM/EBUSY/EACCES (Dropbox sync lock); a second failure is reported in plain words and the temp file is removed.
+- Tests: skillsRotation.test.js now 21 (display-name entry hides and routes to the pending note; env override honoured by both paths; rename retry and second-failure cleanup).

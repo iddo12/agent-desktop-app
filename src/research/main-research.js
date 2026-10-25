@@ -20,7 +20,7 @@ function safeUrl(u) {
   return p.href;
 }
 
-function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, log, env, openExternal, deliverToAgent, classifyDelivery, resolveAgent, isAgentRunning, now, imageDeps }) {
+function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, log, env, openExternal, deliverToAgent, classifyDelivery, resolveAgent, isAgentRunning, now, imageDeps, listAgents }) {
   const say = typeof log === "function" ? log : () => {};
   const e = env || process.env;
   let svc = null;
@@ -205,6 +205,9 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
     researchDir: researchDir(), root: workspaceRoot, owner: () => cfg.get("ownerName"), log: say, now,
     findRef: (week, agent, fid) => (typeof fid === "string" && fid.startsWith("rec:") ? recsSvc().findRef(week, agent, fid) : service().findRef(week, agent, fid)),   // v1.133.0: one writer (one rate limit + duplicate check) for findings and recommendations
     resolveAgent, isRunning: isAgentRunning,
+    // v1.141.0: hiddenAgents setting (src/hiddenAgents.js); a hidden agent never gets a live delivery from here, only its pending notes
+    // (SE review) folder AND display name are checked; the setting is read by the same function the list marking uses
+    isHidden: require("../hiddenAgents").makeIsHidden({ listAgents }),
     // no delivery function (should not happen in the app): report a dry result, which classifies as "failed" with a plain reason
     deliver: typeof deliverToAgent === "function" ? deliverToAgent : () => Promise.resolve({ delivered: false, dry: true }),
     classify: typeof classifyDelivery === "function" ? classifyDelivery : null,
@@ -229,6 +232,29 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
     const x = a && typeof a === "object" ? a : {};
     return getWriter().write({ week: x.week, agent: x.agent, findingId: typeof x.itemId === "string" ? "rec:" + x.itemId.slice(0, 116) : "", text: x.text });
   }, MAX_WRITE_ARG_CHARS);
+  // v1.139.0 SKILLS & PLUGINS (inside My Research): read-only async load of the weekly skills watch (rotation, findings, places, pinned copies).
+  // Verdicts are only READ here (recommendations\<week>\<agent>.json, written by ARGUS's buttons); this tab writes nothing.
+  let skills = null;
+  const skillsSvc = () => (skills || (skills = require("../skills/service").createService({
+    researchDir: researchDir(), recDir: path.join(reportsDir(), "recommendations"), now,
+    skillsDir: (() => { const t = require("../testGuard").workspaceDir("sharedTools", e); return t ? path.join(t, "skills") : null; })(), log: say })));
+  // v1.141.0: the agents Agent Desktop knows (folder + display name; hidden agents too, they are valid rotation agents). Names only, no paths.
+  const knownAgents = () => { try { return (typeof listAgents === "function" ? listAgents() : []).filter((a) => a && typeof a.folderName === "string").map((a) => ({ folderName: a.folderName, displayName: typeof a.displayName === "string" ? a.displayName : a.folderName })); } catch (x) { return []; } };
+  handle("skills-load", async (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    const r = await skillsSvc().load({ week: a && typeof a.week === "string" ? a.week.slice(0, 10) : "" });
+    if (r && r.ok) r.knownAgents = knownAgents();
+    return r;
+  });
+  // v1.141.0 skills-rotation-set {agents:[names], expected:[the list the tab showed]}: change WHO looks this week (src/skills/rotationWrite.js).
+  handle("skills-rotation-set", async (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    const x = a && typeof a === "object" ? a : {};
+    const r = await require("../skills/rotationWrite").setAgents({ file: path.join(researchDir(), "skills_plugins_rotation.json"), agents: x.agents, expected: x.expected, known: knownAgents(), now: typeof now === "function" ? now() : Date.now() });
+    say("skills-rotation-set: " + (r.ok ? "saved " + r.agents.length + " agents" : "refused"));
+    if (r.ok) { const S = require("../skills/service"); r.nextRunAt = S.nextRun(S.parseSchedule(r.schedule), typeof now === "function" ? now() : Date.now()); }
+    return r;
+  }, 8192);
   // flushImages: called from main.js on before-quit so a fetch just before quitting keeps its index entry
   return { service, writer: getWriter, images: getImages, flushImages: () => { if (images) images.close(); } };   // sweep + write at quit
 }

@@ -22,7 +22,11 @@
     { id: "health",  cls: "health-open",  nav: ".health-nav",  close: () => { if (window.healthView) window.healthView.close(); } },
     { id: "designs", cls: "designs-open", nav: ".designs-nav", close: () => { if (window.designsView) window.designsView.close(); } },
     { id: "setup",   cls: "setup-open",   nav: "#setup-nav",   close: () => { if (window.setupView) window.setupView.close(); } },
+    { id: "tasklist", cls: "tasklist-open", nav: ".tasklist-nav", close: () => { if (window.tasklistView) window.tasklistView.close(); } },
     { id: "finance", cls: "finance-open", nav: ".finance-nav", close: () => { if (window.financeView) window.financeView.close(); else if (window.demoFinance) window.demoFinance.close(); } },
+    { id: "projects", cls: "projects-open", nav: ".projects-nav", close: () => { if (window.projectsView) window.projectsView.close(); } },
+    { id: "intake", cls: "intake-open", nav: ".intake-nav", close: () => { if (window.intakeView) window.intakeView.close(); } },
+    { id: "contacts", cls: "contacts-open", nav: ".contacts-nav", close: () => { if (window.contactsView) window.contactsView.close(); } },
   ];
 
   const openSet = () => new Set(VIEWS.filter((v) => body.classList.contains(v.cls)).map((v) => v.id));

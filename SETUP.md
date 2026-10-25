@@ -8,6 +8,7 @@ Resolution order for each key: environment variable AGENT_DESKTOP_<KEY_IN_SNAKE_
 Paths must be absolute, without "..". Folders must exist (create them first). Lists (outputRoots, documentRoots, openPathRoots, toolsAllowedRoots) are JSON arrays.
 Program keys (pythonExe, claudeExe, nodeExe, gitExe, whisperExe) must end in .exe, .cmd or .bat on Windows; script keys (tasksTool, pcHealthScript, argusBuilder, registryTool) must end in .py. Network (UNC \\server\share) and device paths (\\?\, \\.\) are refused for them, in the file and in the environment. Role keys (roleCoo, roleSecurity, roleOptimization, roleSeo; a trailing * only there) and exchangeInboxName / exchangeOutboxName are ONE folder name: no \, /, :, .. or drive letter. A value that does not pass is ignored, as if it were not set.
 Consent (iris, claudeIntegration): these two sections are an honour-system record. The app only acts on a section that has enabled:true AND a consentAt time; whoever can edit app-config.json can write one, so the record states that the person agreed, it cannot prove it. An agent must never write one: ask the person to press Turn on in Setup. an install that already had IRIS paired, or our status line in the Claude Code settings, is recognised once at the first start.
+Wake-up watcher (optional, OFF by default): a plain section { "wakeWatcher": { "enabled": true, "dryRun": true } } in app-config.json (no consentAt needed; no Setup button yet; restart to apply). When on, an idle attached agent with nothing in its input box is woken by one fixed line when a mail marker in <workspaceRoot>/shared_state/mail/<agent folder>/ addresses it. dryRun:true only writes to the app log what would be sent. Max 6 wakes per agent and 30 per fleet per hour, never for health/finance/legal/personal agents.
 Easiest route: open Agent Desktop > Setup and press the button of each feature; or write the file by hand and restart the app.
 
 ## Keys
@@ -28,6 +29,10 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - financeVault (folder): Finance folder  [env AGENT_DESKTOP_FINANCE_VAULT]
 - financeFeedPath (file): Finance feed file (finance_feed.json)  [env AGENT_DESKTOP_FINANCE_FEED_PATH]
 - financeLoginLinks (text): Finance: login links per source (id=https://...;id=https://...)  [env AGENT_DESKTOP_FINANCE_LOGIN_LINKS]
+- intakeDir (folder): Intake folder (holds intake_index.jsonl)  [env AGENT_DESKTOP_INTAKE_DIR]
+- contactsDir (folder): Contacts folder (holds contacts.json from the Personal Assistant agent)  [env AGENT_DESKTOP_CONTACTS_DIR]
+- intakeDefaultAgent (text): Intake: folder name of the agent the watcher delivers approved items to by default  [env AGENT_DESKTOP_INTAKE_DEFAULT_AGENT]
+- intakeRequireVerified (text): Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)  [env AGENT_DESKTOP_INTAKE_REQUIRE_VERIFIED]
 - healthParent (folder): Health folder  [env AGENT_DESKTOP_HEALTH_PARENT]
 - telegramTasksDir (folder): Telegram task queue folder  [env AGENT_DESKTOP_TELEGRAM_TASKS_DIR]
 - telegramBridgeDir (folder): Telegram bridge folder (holds tasks.py)  [env AGENT_DESKTOP_TELEGRAM_BRIDGE_DIR]
@@ -47,6 +52,7 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - exchangeOutboxName (text): Mailbox sub-folder for notes FROM you  [env AGENT_DESKTOP_EXCHANGE_OUTBOX_NAME]
 - leadRole (text): Role name of the agent that talks to the other side (for example COO)  [env AGENT_DESKTOP_LEAD_ROLE]
 - ownerName (text): Your name  [env AGENT_DESKTOP_OWNER_NAME]
+- hiddenAgents (text): Agents hidden from the sidebar, pickers and fleet views (folder names, separated by ;). They keep running.  [env AGENT_DESKTOP_HIDDEN_AGENTS]
 - partnerName (text): Partner's name (for the fleet and shared calendar)  [env AGENT_DESKTOP_PARTNER_NAME]
 - memoryStatsFile (file): Memory statistics file (memory_stats.json)  [env AGENT_DESKTOP_MEMORY_STATS_FILE]
 - memoryBaselineFile (file): Starting-context baseline file (baseline_context.json)  [env AGENT_DESKTOP_MEMORY_BASELINE_FILE]
