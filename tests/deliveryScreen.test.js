@@ -130,3 +130,14 @@ assert.strictEqual(DS.attachEvidence(tailOf(F.ctrlCAgain)), null);   // "Press C
   assert.strictEqual(DS.attachEvidence("\rSession opened in another window\r\n"), "kicked");
 }
 console.log("deliveryScreen ok");
+
+// v1.144.2: the CLI's paste-review notice is not a prompt waiting for an answer (live screen, Software Engineering 2026-10-25)
+{
+  const review = "[msg]\n[msg]\n   Removed 1 invisible character · review and press Enter to send";
+  assert.strictEqual(DS.promptWaiting(review), false);
+  assert.strictEqual(DS.promptWaiting("review and press Enter to send"), false);
+  assert.strictEqual(DS.promptWaiting("Do you want to proceed?\n 1. Yes\n Esc to cancel"), true);
+  assert.strictEqual(DS.promptWaiting("Press Enter to continue"), true);
+  assert.strictEqual(DS.promptWaiting(review + "\nDo you want to proceed?"), true);
+  console.log("deliveryScreen review-notice tests ok");
+}

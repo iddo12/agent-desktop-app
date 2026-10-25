@@ -2015,12 +2015,11 @@ function trackDialog(agentPath, data) {
 }
 // v1.65.0: broader than DIALOG_RE (which drives the red badge): any screen that looks like a prompt
 // waiting for an answer. Used only to gate typing/Enter into a session.
-const PROMPT_RE = /Esc to cancel|Enter to confirm|Do you want to|\(y\/n\)|\[Y\/n\]|❯\s*1\.\s|Press Enter/i;
 const deliveryScreen = require("./deliveryScreen"); // v1.69.4: screen classifiers (dialog / queued / unsent box), tested on real CLI captures
 function promptLikelyOpen(agentPath) {
   if (dialogOpenFor(agentPath)) return true;
   const tail = dialogTails.get(agentPath) || "";
-  return PROMPT_RE.test(tail.slice(-600)) || deliveryScreen.isDialog(tail, ""); // v1.69.4: also matches when cursor moves ate the spaces ("Doyouwanttoproceed")
+  return deliveryScreen.promptWaiting(tail) || deliveryScreen.isDialog(tail, ""); // v1.69.4: also matches when cursor moves ate the spaces ("Doyouwanttoproceed")
 }
 function dialogOpenFor(agentPath) {
   if (!ptySessions.get(agentPath) || !ptySessions.get(agentPath).proc) return false;

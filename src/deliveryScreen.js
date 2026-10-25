@@ -142,4 +142,12 @@ function screensDiffer(attachTail, logsText) {
 // a message ending in a backslash would insert a newline instead of submitting
 const fixTrailingBackslash = (text) => (/\\$/.test(String(text)) ? text + " " : text);
 
-module.exports = { redactSecrets, attachEvidence, screensDiffer, attachHealth, stackedNewlines, stripTerminalCodes, squash, isDialog, isQueued, isWorkingScreen, ctrlCAgainShown, hasSnippet, inputHolds, classify, lastLines, fixTrailingBackslash };
+// v1.144.2: "a prompt is waiting for an answer" (v1.65.0 PROMPT_RE, moved here to be testable). The CLI's own paste-review notice
+// ("Removed 1 invisible character - review and press Enter to send") contains "press Enter" but is NOT a question for the person:
+// the box holds the pending message. It was treated as an approval prompt on 2026-10-25 (Software Engineering): Enter and every
+// resend were refused for 25 min, the keep-going nudges were STOPPED and the owner's message stayed "Not confirmed".
+const PROMPT_RE = /Esc to cancel|Enter to confirm|Do you want to|\(y\/n\)|\[Y\/n\]|❯\s*1\.\s|Press Enter/i;
+const REVIEW_NOTICE_RE = /(Removed\s+\d+\s+invisible\s+characters?\s*[·.-]?\s*)?review\s+and\s+press\s+Enter\s+to\s+send/gi;
+const promptWaiting = (tail) => PROMPT_RE.test(String(tail || "").replace(REVIEW_NOTICE_RE, " ").slice(-600));
+
+module.exports = { promptWaiting, redactSecrets, attachEvidence, screensDiffer, attachHealth, stackedNewlines, stripTerminalCodes, squash, isDialog, isQueued, isWorkingScreen, ctrlCAgainShown, hasSnippet, inputHolds, classify, lastLines, fixTrailingBackslash };
