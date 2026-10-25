@@ -52,6 +52,20 @@ const srv = http.createServer((req, res) => {
   r = await M.openMail(1, env2, (e, a) => { call = [e, a]; }); assert.ok(r.ok); assert.deepStrictEqual(call, ["bb.exe", ["mid:abc@smallrig.com"]]);
   call = null; r = await M.openMail(2, env2, (e, a) => { call = [e, a]; }); assert.ok(!r.ok && !call);
   r = await M.openMail("1; calc", env2, () => { throw new Error("must not run"); }); assert.ok(!r.ok);
+  for (const bad of ["-oops@x", "a b", 5, null, ["x"]]) {
+    const s3 = http.createServer((q, s) => s.end(JSON.stringify({ message_id: bad }))); await new Promise((r2) => s3.listen(0, "127.0.0.1", r2));
+    r = await M.openMail(1, { port: s3.address().port, tokenFile, betterbird: "bb.exe" }, () => { throw new Error("must not run"); }); assert.ok(!r.ok, "odd Message-ID refused: " + JSON.stringify(bad));
+    await new Promise((r2) => s3.close(r2));
+  }
+  // oversized and stalled answers resolve (never hang)
+  const big = http.createServer((q, s) => { s.setHeader("Content-Type", "application/json"); s.write("["); const t = setInterval(() => s.write("0,".repeat(1 << 20)), 1); s.on("close", () => clearInterval(t)); });
+  await new Promise((r2) => big.listen(0, "127.0.0.1", r2));
+  r = await M.searchMails({ company: co }, { port: big.address().port, tokenFile }); assert.ok(!r.ok, "oversized answer ends the search");
+  big.closeAllConnections(); await new Promise((r2) => big.close(r2));
+  const stall = http.createServer((q, s) => { s.writeHead(200); s.write("{"); });
+  await new Promise((r2) => stall.listen(0, "127.0.0.1", r2));
+  const t0 = Date.now(); r = await M.searchMails({ company: co }, { port: stall.address().port, tokenFile }); assert.ok(!r.ok && Date.now() - t0 < 12000, "stalled answer ends within the deadline");
+  stall.closeAllConnections(); await new Promise((r2) => stall.close(r2));
   await new Promise((r2) => srv2.close(r2));
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("contactsMail tests passed");

@@ -48,7 +48,7 @@ const call = (c, a, e) => h[c](e || ev, a);
   assert.strictEqual((await call("contacts-set-link", { id: 1, kind: "web", value: "javascript:alert(1)" })).ok, false);
   assert.strictEqual((await call("contacts-set-note", { kind: "../x", id: 1, text: "a" })).ok, false);
   assert.deepStrictEqual(fs.readFileSync(path.join(dir, "contacts.json")), before, "contacts.json never written");
-  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ["category_suggestions.json", "contacts.json", "contacts_directory.json", "contacts_ui.json"]);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ["category_suggestions.json", "contacts.json", "contacts_directory.json", "contacts_ui.json", "contacts_ui.json.bak"]);
   const exp = fs.readFileSync(path.join(dir, "contacts_directory.json"), "utf8");
   assert.ok(!exp.includes("SECRET-SUBJECT") && !exp.includes("@x.example"), "no subjects or addresses in the agent export");
   const ej = JSON.parse(exp); const g = ej.companies.find((c) => c.company === "Godox");
@@ -92,6 +92,17 @@ const call = (c, a, e) => h[c](e || ev, a);
   assert.ok(ej.companies.every((c) => (c.note || "").length <= 4000 && c.current_contacts.every((p) => (p.role || "").length <= 160)));
   cfgDir = null; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false);
   cfgDir = path.join(root, "nope"); r = await call("contacts-list", {}); assert.strictEqual(r.ok, false);
+  // a corrupt/locked contacts_ui.json is never replaced by an empty one
+  const d2 = path.join(root, "scratch2"); fs.mkdirSync(d2, { recursive: true });
+  fs.copyFileSync(path.join(dir, "contacts.json"), path.join(d2, "contacts.json")); fs.writeFileSync(path.join(d2, "contacts_ui.json"), "{ not json");
+  cfgDir = d2; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false); assert.ok(/could not be read/.test(r.reason));
+  assert.strictEqual((await call("contacts-set-note", { kind: "company", id: 1, text: "x" })).ok, false);
+  assert.strictEqual(fs.readFileSync(path.join(d2, "contacts_ui.json"), "utf8"), "{ not json", "bad file left untouched");
+  // a folder holding a .dropbox marker is treated as synced even when its name does not say so
+  const d3 = path.join(root, "plainname"); fs.mkdirSync(d3, { recursive: true }); fs.writeFileSync(path.join(d3, ".dropbox"), "");
+  cfgDir = d3; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false); assert.ok(/synced/.test(r.reason));
+  // a note for a person that does not exist is refused
+  cfgDir = dir; assert.strictEqual((await call("contacts-set-note", { kind: "person", id: 99999, text: "x" })).ok, false);
   assert.ok(!logs.some((l) => /SECRET|Lena|Godox/.test(l)), "logs carry no names or subjects");
   api.stop();
   fs.rmSync(root, { recursive: true, force: true });

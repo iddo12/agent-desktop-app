@@ -23,7 +23,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
   });
 
   const dirPath = () => { const d = cfg("contactsDir"); return d ? path.resolve(d) : null; };
-  const synced = (d) => { let r = d; try { r = fs.realpathSync(d); } catch (e) { /* not there yet: judge the given path */ } const re = /(^|[\\/])(dropbox|onedrive|google drive|icloud)([\\/]|$)/i; return re.test(d) || re.test(r); };
+  const synced = (d) => { let r = d; try { r = fs.realpathSync(d); } catch (e) { /* not there yet: judge the given path */ } const re = /(^|[\\/])(dropbox|onedrive|google drive|icloud)([\\/]|$)/i; if (re.test(d) || re.test(r)) return true; try { for (let x = path.resolve(r), i = 0; i < 12; i++) { if (fs.existsSync(path.join(x, ".dropbox")) || fs.existsSync(path.join(x, ".dropbox.cache"))) return true; const up = path.dirname(x); if (up === x) break; x = up; } } catch (e) { /* unreadable: name check stands */ } return false; };
   const readJson = (f, max) => { try { const st = fs.statSync(f); if (!st.isFile() || st.size > (max || MAX_BYTES)) return null; return JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, "")); } catch (e) { return null; } };
   function writeJsonAtomic(f, obj) {
     const tmp = f + "." + process.pid + ".tmp";
@@ -41,18 +41,25 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     const f = path.join(d, "contacts.json");
     let mt = 0; try { mt = fs.statSync(f).mtimeMs; } catch (e) { return { err: "contacts.json was not found in the contacts folder." }; }
     if (st.dir !== d) st = { mtime: 0, dir: d, ui: null, index: null, raw: null, err: "", suggestions: null };
-    if (!st.ui) { const u = readJson(path.join(d, UI_FILE), 8 * 1024 * 1024); st.ui = Object.assign(uiEmpty(), u && typeof u === "object" ? u : {}); st.index = null; }
+    if (!st.ui) {
+      const uf = path.join(d, UI_FILE); let exists = true; try { fs.statSync(uf); } catch (e) { exists = e && e.code !== "ENOENT"; }
+      const u = exists ? readJson(uf, 8 * 1024 * 1024) : null;
+      if (exists && !(u && typeof u === "object" && !Array.isArray(u))) return { err: "Your contacts file (" + UI_FILE + ") could not be read, so nothing was changed. Close other programs using it and reopen the tab." };
+      st.ui = Object.assign(uiEmpty(), u || {}); st.index = null;
+    }
     if (!st.raw || st.mtime !== mt) {
       const r = readJson(f); if (!r) return { err: "contacts.json could not be read." };
       st.raw = L.normalise(r); st.mtime = mt; st.index = null; st.suggestions = null;
     }
+    const day = Math.floor(clock() / 86400000); if (st.day !== day) { st.day = day; st.index = null; }   // snooze/quiet depend on today
     if (!st.index) st.index = L.buildIndex(st.raw, { companies: st.ui.companies }, st.ui.snooze, clock());
     return { d };
   }
   const rebuild = () => { st.index = null; };
   function save() {
     const d = dirPath(); if (!d) return false;
-    writeJsonAtomic(path.join(d, UI_FILE), st.ui); rebuild();
+    const uf = path.join(d, UI_FILE); try { fs.copyFileSync(uf, uf + ".bak"); } catch (e) { /* first save: nothing to back up */ }
+    writeJsonAtomic(uf, st.ui); rebuild();
     try { writeExport(d); } catch (e) { say("contacts export failed: code=" + (e && e.code ? e.code : "unknown")); }
     return true;
   }
@@ -107,7 +114,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     const r = load(); if (r.err) return { ok: false, reason: r.err };
     if (!Number.isInteger(a.id) || typeof a.text !== "string" || !["company", "handover", "person"].includes(a.kind)) return { ok: false, reason: "Bad request." };
     const text = L.cleanText(a.text, L.MAX_NOTE);
-    if (a.kind === "person") { if (!st.ui.person) st.ui.person = {}; if (text) st.ui.person[a.id] = text; else delete st.ui.person[a.id]; }
+    if (a.kind === "person") { if (!L.personView(st.index, { person: st.ui.person }, st.ui.snooze, a.id, clock())) return { ok: false, reason: "That person is not in the list." }; if (!st.ui.person) st.ui.person = {}; if (text) st.ui.person[a.id] = text; else delete st.ui.person[a.id]; }
     else { if (!st.index.byId.has(a.id)) return { ok: false, reason: "That company is not in the list." }; const c = st.ui.companies[a.id] || (st.ui.companies[a.id] = {}); c[a.kind === "company" ? "note" : "handover"] = text; }
     save(); return { ok: true };
   });
