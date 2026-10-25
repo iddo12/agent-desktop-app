@@ -81,12 +81,22 @@ async function openMail(id, env, launch) {
   const port = (env && env.port) || PORT;
   const token = readToken((env && env.tokenFile) || tokenPath());
   if (!token || !Number.isInteger(id) || id < 1) return { ok: false, reason: "Cannot open that mail." };
+  const exe = (env && env.betterbird) || findBetterbird();
+  const go = launch || ((e, a) => { const c = spawn(e, a, { detached: true, stdio: "ignore" }); c.unref(); });
+  // 1) Preferred: the service copies the mail out of its mbox to <id>.eml and Betterbird opens that file. Betterbird's own
+  //    mid: lookup does not search Local Folders (so it fails for most history), but a file always opens, with Reply.
+  const f = await getJson(port, "/eml?id=" + id, token);
+  const p = f.code === 200 && f.body && f.body.path;
+  const openDir = path.resolve((env && env.openDir) || process.env.SS_OPEN_DIR || path.join(require("os").homedir(), "BetterbirdSuperSearch_open"));   // same default as the service's open_dir()
+  if (typeof p === "string" && exe && path.isAbsolute(p) && /^\d+\.eml$/.test(path.basename(p)) && path.dirname(path.resolve(p)).toLowerCase() === openDir.toLowerCase()) {
+    try { go(exe, [p]); return { ok: true }; } catch (e) { /* fall back to mid: */ }
+  }
+  // 2) Fallback: ask Betterbird for the Message-ID.
   const r = await getJson(port, "/message?id=" + id, token);
   const mid = r.code === 200 && r.body && r.body.message_id;
   if (typeof mid !== "string" || !/^[A-Za-z0-9!#$%&'*+\/=?^_`{|}~.@-]{1,300}$/.test(mid) || mid.startsWith("-")) return { ok: false, reason: "Betterbird could not find that mail." };
-  const exe = (env && env.betterbird) || findBetterbird();
   if (!exe) return { ok: false, reason: "Betterbird was not found on this PC." };
-  try { (launch || ((e, a) => { const c = spawn(e, a, { detached: true, stdio: "ignore" }); c.unref(); }))(exe, ["mid:" + mid]); return { ok: true }; } catch (e) { return { ok: false, reason: "Betterbird did not start." }; }
+  try { go(exe, ["mid:" + mid]); return { ok: true }; } catch (e) { return { ok: false, reason: "Betterbird did not start." }; }
 }
 function findBetterbird() {
   const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs")].filter(Boolean);

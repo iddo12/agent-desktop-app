@@ -1,4 +1,4 @@
-// mailsearch.js against a fake Super Search server: token header, company pinning, attachment filter, bounded output, safe open.
+﻿// mailsearch.js against a fake Super Search server: token header, company pinning, attachment filter, bounded output, safe open.
 "use strict";
 const assert = require("assert"), http = require("http"), fs = require("fs"), os = require("os"), path = require("path");
 const M = require("../src/contacts/mailsearch");
@@ -66,6 +66,20 @@ const srv = http.createServer((req, res) => {
     const s3 = http.createServer((q, s) => s.end(JSON.stringify({ message_id: bad }))); await new Promise((r2) => s3.listen(0, "127.0.0.1", r2));
     r = await M.openMail(1, { port: s3.address().port, tokenFile, betterbird: "bb.exe" }, () => { throw new Error("must not run"); }); assert.ok(!r.ok, "odd Message-ID refused: " + JSON.stringify(bad));
     await new Promise((r2) => s3.close(r2));
+  }
+  // open via .eml: only a file named <id>.eml inside <token dir>/open is launched; anything else falls back to mid:
+  const openDir = path.join(dir, "open"); fs.mkdirSync(openDir, { recursive: true });   // passed to openMail as env.openDir
+  for (const [reply, expect, label] of [
+    [{ path: path.join(openDir, "7.eml") }, ["bb.exe", [path.join(openDir, "7.eml")]], "clean eml path is opened as a file"],
+    [{ path: path.join(dir, "7.eml"), message_id: "abc@smallrig.com" }, ["bb.exe", ["mid:abc@smallrig.com"]], "path outside open dir refused, mid: fallback"],
+    [{ path: path.join(openDir, "..", "x.eml"), message_id: "abc@smallrig.com" }, ["bb.exe", ["mid:abc@smallrig.com"]], "traversal refused"],
+    [{ path: path.join(openDir, "evil.exe"), message_id: "abc@smallrig.com" }, ["bb.exe", ["mid:abc@smallrig.com"]], "odd name refused"],
+    [{ error: "mail file not readable", message_id: "abc@smallrig.com" }, ["bb.exe", ["mid:abc@smallrig.com"]], "service error falls back to mid:"],
+  ]) {
+    const s4 = http.createServer((q, s) => { s.setHeader("Content-Type", "application/json"); s.end(JSON.stringify(q.url.startsWith("/eml") ? reply : { message_id: "abc@smallrig.com" })); });
+    await new Promise((r2) => s4.listen(0, "127.0.0.1", r2)); call = null;
+    r = await M.openMail(1, { port: s4.address().port, tokenFile, betterbird: "bb.exe", openDir }, (e, a) => { call = [e, a]; });
+    assert.ok(r.ok, label); assert.deepStrictEqual(call, expect, label); await new Promise((r2) => s4.close(r2));
   }
   // oversized and stalled answers resolve (never hang)
   const big = http.createServer((q, s) => { s.setHeader("Content-Type", "application/json"); s.write("["); const t = setInterval(() => s.write("0,".repeat(1 << 20)), 1); s.on("close", () => clearInterval(t)); });
