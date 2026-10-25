@@ -182,6 +182,16 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     if (!v) return { ok: false, reason: "That person is not in the list any more." };
     return MS.personMails({ emails: v.emails, limit: 5 }, mailEnvNow());
   });
+  // Company logo: main fetches/caches the company's own icon and returns a data: URL (or null). Setting contactsLogos = "no" turns it off.
+  let logos = null;
+  handle("contacts-logo", async (a) => {
+    const r = load(); if (r.err) return { ok: true, url: null };
+    if (!Number.isInteger(a.id) || String(cfg("contactsLogos") || "").trim().toLowerCase() === "no") return { ok: true, url: null };
+    const c = st.index.byId.get(a.id); if (!c) return { ok: true, url: null };
+    let host = c.domain; if (!host && c.website) { try { host = new URL(c.website).hostname; } catch (e) { host = null; } }
+    if (!logos) logos = require("./logos").createLogos(path.join(r.d, "logos"));
+    return { ok: true, url: await logos.get(host) };
+  });
   handle("contacts-mail-read", async (a) => MS.readMail(a.id, mailEnvNow()));
   handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnvNow(), mailLaunch));
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; }, _state: () => st };

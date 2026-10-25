@@ -10,6 +10,16 @@
   const ago = (d) => (d == null ? "never" : d === 0 ? "today" : d < 60 ? d + " d ago" : d < 700 ? Math.round(d / 30) + " mo ago" : Math.round(d / 365) + " y ago");
   const initials = (n) => (String(n).replace(/[^\p{L}\p{N} ]/gu, "").trim().split(/\s+/).slice(0, 2).map((w) => w.charAt(0)).join("") || "?").toUpperCase();
 
+  // Company avatar: the initials at once, swapped for the company logo when the main process has one (cached there; the page never fetches anything).
+  const logoCache = new Map();
+  function avatar(id, name, big) {
+    const a = el("span", "ct-ini" + (big ? " ct-ini-big" : ""), initials(name));
+    const put = (url) => { if (!url) return; const i = document.createElement("img"); i.alt = ""; i.src = url; i.className = "ct-logo"; a.textContent = ""; a.classList.add("ct-has-logo"); a.append(i); };
+    if (logoCache.has(id)) put(logoCache.get(id));
+    else api.logo(id).then((r) => { const u = r && r.ok && typeof r.url === "string" && r.url.startsWith("data:image/") ? r.url : null; logoCache.set(id, u); put(u); }).catch(() => {});
+    return a;
+  }
+
   const view = el("div"); view.id = "contacts-view"; view.className = "hidden";
   const head = el("div", "ct-head"), chips = el("div", "ct-chips"), show = el("div", "ct-show"), main = el("div", "ct-main"), foot = el("div", "ct-foot");
   const list = el("div", "ct-list"), detail = el("div", "ct-detail");
@@ -53,7 +63,7 @@
   function rowFor(r) {
     const b = el("button", "ct-row" + (S.selKind === "company" && S.sel === r.id ? " on" : "")); b.type = "button";
     const t = el("div", "ct-rt"); t.append(el("div", "ct-rn", r.name), el("div", "ct-rs", (r.cats.length ? r.cats.join(", ") + " · " : "") + "last contact " + ago(r.daysAgo) + (r.dir === "in" ? " · they wrote last" : r.dir === "out" ? " · I wrote last" : "") + " · " + r.current + " current"));
-    b.append(el("span", "ct-ini", initials(r.name)), t);
+    b.append(avatar(r.id, r.name), t);
     if (r.tag && TAG[r.tag]) b.append(el("span", "ct-tag " + TAG[r.tag][0], TAG[r.tag][1] + (r.tag === "quiet" && r.daysAgo != null ? " " + r.daysAgo + " d" : "")));
     b.addEventListener("click", () => { openCompany(r.id); }); return b;
   }
@@ -126,7 +136,9 @@
       if (!r || !r.ok) { detail.append(el("p", "ct-empty", (r && r.reason) || "Could not load.")); return; }
       const c = r.company;
       detail.append(btn("Back to list", "ct-back", () => { S.sel = null; render(); }));
-      detail.append(el("h2", "ct-title", c.name));
+      const hd = el("div", "ct-hd"); hd.append(avatar(c.id, c.name, true), el("h2", "ct-title", c.name)); detail.append(hd);
+      const site = (c.links && c.links.web) || c.website;
+      if (site && /^https:[/][/]/i.test(site)) { const a = el("a", "ct-site", site.replace(/^https:[/][/]/i, "").replace(/[/]$/, "")); a.href = site; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "Open the website"; detail.append(a); }
       const cs = el("div", "ct-sec"); const cats = el("div", "ct-cats");
       const setCats = (list2) => api.setCategories(c.id, list2).then((x) => { if (x && x.ok) { openCompany(c.id); load(); } });
       c.categories.forEach((k) => { const w = el("span", "ct-cat", k); const x = el("button", "", "×"); x.type = "button"; x.setAttribute("aria-label", "Remove category " + k); x.addEventListener("click", () => setCats(c.categories.filter((y) => y !== k))); w.append(x); cats.append(w); });

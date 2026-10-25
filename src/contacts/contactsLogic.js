@@ -48,6 +48,7 @@ function normalise(raw) {
       id: c.id,
       name: cleanText(c.name, 120) || cleanText(c.domain, 120) || "(unnamed)",
       domain: c.domain ? cleanText(c.domain, 120) : null,
+      website: typeof c.website === "string" && /^https:\/\/[^\s<>"']{4,200}$/i.test(c.website.trim()) ? c.website.trim() : null,
       aliases: (Array.isArray(c.aliases) ? c.aliases : []).map((a) => cleanText(a, 120)).filter(Boolean).slice(0, 12),
       last: typeof c.last_contact === "string" ? c.last_contact.slice(0, 10) : null,
       dir: c.last_direction === "in" || c.last_direction === "out" ? c.last_direction : null,
@@ -132,7 +133,7 @@ function companyView(index, records, snooze, id, now) {
   const c = index.byId.get(id); if (!c) return null;
   const r = ((records && records.companies) || {})[id] || {};
   return {
-    id: c.id, name: c.name, domain: c.domain, aliases: c.aliases, last: c.last, dir: c.dir,
+    id: c.id, name: c.name, domain: c.domain, website: c.website || null, aliases: c.aliases, last: c.last, dir: c.dir,
     categories: Array.isArray(r.categories) ? r.categories : [], links: r.links && typeof r.links === "object" ? r.links : {},
     note: cleanText(r.note, MAX_NOTE), handover: cleanText(r.handover, MAX_NOTE),
     current: currentContacts(c, now),

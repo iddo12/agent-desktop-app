@@ -53,6 +53,8 @@ const KEYS = {
   contactsDir: { kind: "folder", label: "Contacts folder (holds contacts.json from the Personal Assistant agent)", derive: (c) => c.sub("workDir", "contacts") },
   // Contacts mail: the Betterbird Super Search token file. Empty = the service default (LOCALAPPDATA/BetterbirdSuperSearch/token).
   superSearchTokenFile: { kind: "file", label: "Betterbird Super Search token file (empty = default location)", derive: () => null },
+  // Contacts: company logos are fetched from each company's own website. Type no to switch that off.
+  contactsLogos: { kind: "text", max: 3, label: "Contacts: company logos from their websites (type no to turn off)", derive: () => null },
   intakeDefaultAgent: { kind: "text", max: 80, label: "Intake: folder name of the agent the watcher delivers approved items to by default", derive: () => null },
   intakeRequireVerified: { kind: "text", max: 3, label: "Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)", derive: () => null },
   healthParent: { kind: "folder", autoCreate: true, label: "Health folder", derive: (c) => c.userSub("health") },
