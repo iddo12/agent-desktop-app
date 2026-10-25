@@ -95,5 +95,6 @@ assert.ok(!JSON.stringify(rec).includes("there"), "no subjects in the agent expo
   assert.strictEqual(L.applyMerges(d0, null).companies.length, 5);
   const ix = L.buildIndex(m, {}, {}, NOW); assert.ok(L.listPage(ix, { q: "smallrig.cn", sort: "az" }).rows.some((r) => r.id === 1), "search finds the merged-in domain");
   assert.strictEqual(L.nameKey("The SmallRig, Inc."), "smallrig");
+  const d1 = JSON.parse(JSON.stringify(d0)); d1.companies[0].aliases = ["smallrig.cn"]; assert.strictEqual(L.mergeSuggestions(d1, {}).length, 0, "a domain already listed as an alias is not suggested again")
 }
 console.log("contactsLogic tests passed");

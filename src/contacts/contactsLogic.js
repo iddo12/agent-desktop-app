@@ -217,7 +217,8 @@ function domainLabel(d) {
 function mergeSuggestions(dir, notDup, limit) {
   const nd = notDup && typeof notDup === "object" ? notDup : {}, groups = new Map();
   const add = (k, c) => { if (!k) return; (groups.get(k) || groups.set(k, []).get(k)).push(c); };
-  for (const c of dir.companies) { const nk = nameKey(c.name); add(nk.length >= 4 ? "n:" + nk : "", c); add(domainLabel(c.domain) ? "d:" + domainLabel(c.domain) : "", c); }
+  const aliased = new Set(); for (const c of dir.companies) for (const a of c.aliases || []) aliased.add(String(a).toLowerCase());   // the PA already merged these domains into another company
+  for (const c of dir.companies) { if (c.domain && aliased.has(String(c.domain).toLowerCase())) continue; const nk = nameKey(c.name); add(nk.length >= 4 ? "n:" + nk : "", c); add(domainLabel(c.domain) ? "d:" + domainLabel(c.domain) : "", c); }
   const out = [], seen = new Set();
   for (const [k, g] of groups) {
     if (g.length < 2 || g.length > 6) continue;
