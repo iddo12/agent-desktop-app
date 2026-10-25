@@ -77,4 +77,23 @@ assert.strictEqual(L.validLink("web", ""), "");
 const rec = L.lookupRecord(idx, {}, {}, dir.companies[0], NOW);
 assert.strictEqual(rec.current_contacts.length, 3); assert.strictEqual(rec.current_contacts[0].who_wrote_last, "them");
 assert.ok(!JSON.stringify(rec).includes("there"), "no subjects in the agent export");
+// ---- merges + duplicate suggestions
+{
+  const mk = (id, name, domain, people, last) => ({ id, name, domain, aliases: [], last, dir: "in", people: people.map((i) => ({ id: i, name: "P" + i, emails: [], mails: [] })) });
+  const d0 = { generatedAt: null, windowDays: 1460, unknownPeople: 0, companies: [mk(1, "SmallRig", "smallrig.com", [1, 2, 3], "2026-10-01"), mk(2, "Smallrig Ltd", "smallrig.cn", [4], "2026-10-20"), mk(3, "Other Co", "other.example", [5], "2026-01-01"), mk(4, "Gmail Bob", "gmail.com", [6], null), mk(5, "Gmail Ann", "gmail.com", [7], null)] };
+  const sg = L.mergeSuggestions(d0, {});
+  assert.strictEqual(sg.length, 1, "smallrig pair only (gmail and short names are not a duplicate signal)"); assert.strictEqual(sg[0].into.id, 1, "the company with more people stays"); assert.strictEqual(sg[0].from.id, 2);
+  assert.strictEqual(L.mergeSuggestions(d0, { "1-2": 1 }).length, 0, "Not the same is remembered");
+  const m = L.applyMerges(d0, { 2: 1 });
+  assert.strictEqual(m.companies.length, 4); const c1 = m.companies.find((c) => c.id === 1);
+  assert.deepStrictEqual(c1.people.map((p) => p.id), [1, 2, 3, 4]); assert.strictEqual(c1.last, "2026-10-20", "newest contact wins");
+  assert.ok(c1.aliases.includes("Smallrig Ltd") && c1.aliases.includes("smallrig.cn")); assert.strictEqual(c1.mergedFrom[0].id, 2); assert.strictEqual(m.merges[0].into.name, "SmallRig");
+  assert.strictEqual(d0.companies.length, 5, "input untouched"); assert.strictEqual(d0.companies[0].people.length, 3);
+  const ch = L.applyMerges(d0, { 3: 2, 2: 1 }); assert.strictEqual(ch.companies.find((c) => c.id === 1).people.length, 5, "chains resolve to the end");
+  const cy = L.applyMerges(d0, { 1: 2, 2: 1 }); assert.strictEqual(cy.companies.length, 5, "a cycle merges nothing");
+  assert.strictEqual(L.applyMerges(d0, { 9: 1, 1: 99, 2: "x" }).companies.length, 5, "unknown ids ignored");
+  assert.strictEqual(L.applyMerges(d0, null).companies.length, 5);
+  const ix = L.buildIndex(m, {}, {}, NOW); assert.ok(L.listPage(ix, { q: "smallrig.cn", sort: "az" }).rows.some((r) => r.id === 1), "search finds the merged-in domain");
+  assert.strictEqual(L.nameKey("The SmallRig, Inc."), "smallrig");
+}
 console.log("contactsLogic tests passed");

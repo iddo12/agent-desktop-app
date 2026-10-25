@@ -44,12 +44,13 @@
   const headTitle = el("h2", "ct-title", "Contacts"), sortSel = el("select", "ct-inp"); sortSel.setAttribute("aria-label", "Sort");
   [["latest", "Latest contact"], ["az", "A to Z"], ["category", "Category"]].forEach(([v, l]) => { const o = el("option", "", l); o.value = v; sortSel.append(o); });
   sortSel.addEventListener("change", () => { S.sort = sortSel.value; load(); });
-  let sugBtn = null;
+  let sugBtn = null, dupBtn = null;
   head.append(headTitle, search, sortSel);
   function renderHead() {
     sortSel.value = S.sort;
-    if (sugBtn) { sugBtn.remove(); sugBtn = null; }
+    if (sugBtn) { sugBtn.remove(); sugBtn = null; } if (dupBtn) { dupBtn.remove(); dupBtn = null; }
     if (S.chips && S.chips.uncategorised) { sugBtn = btn("Review suggestions (" + S.chips.uncategorised + " without a category)", "pri", openSuggestions); head.append(sugBtn); }
+    if (S.chips && S.chips.dups) { dupBtn = btn("Possible duplicates (" + S.chips.dups + ")", "", openDups); head.append(dupBtn); }
   }
   function chip(label, n, on, fn) { const b = el("button", "ct-chip" + (on ? " on" : ""), label); b.type = "button"; if (n != null) b.append(el("b", "", String(n))); b.setAttribute("aria-pressed", on ? "true" : "false"); b.addEventListener("click", fn); return b; }
   function renderChips() {
@@ -156,6 +157,7 @@
       detail.append(who);
       const rest = c.people.filter((p) => !c.current.some((x) => x.id === p.id));
       if (rest.length) { const sec = el("div", "ct-sec"); sec.append(el("div", "ct-sh", "Other people (" + rest.length + ")")); rest.slice(0, 40).forEach((p) => sec.append(personCard(p, c))); detail.append(sec); }
+      mergeBox(detail, c);
       mailSearchBox(detail, c);
       noteBox(detail, "Company note", "company", c.id, c.note); noteBox(detail, "Handover", "handover", c.id, c.handover);
       view.classList.add("ct-showdetail");
@@ -218,6 +220,45 @@
       const em = el("div", "ct-sec"); em.append(el("div", "ct-sh", "Recent emails (" + p.mails.length + (p.mailsTotal > p.mails.length ? " of " + p.mailsTotal : "") + ")"));
       detail.append(em); liveMails(em, id, p); noteBox(detail, "Note", "person", id, p.note);
       view.classList.add("ct-showdetail");
+    }).catch(() => {});
+  }
+
+  // ---- duplicate companies: merge one into another (nothing is deleted; Unmerge restores it)
+  function mergeBox(parent, c) {
+    const sec = el("div", "ct-sec");
+    if ((c.mergedFrom || []).length) {
+      sec.append(el("div", "ct-sh", "Merged into this company"));
+      c.mergedFrom.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.name + (m.domain ? " (" + m.domain + ")" : "")), btn("Unmerge", "", () => api.unmerge(m.id).then(() => { openCompany(c.id); load(); }))); sec.append(row); });
+    }
+    sec.append(el("div", "ct-sh", "Merge a duplicate into " + c.name));
+    const q = el("input", "ct-inp"); q.placeholder = "search the duplicate by name or domain"; q.maxLength = 60; q.setAttribute("aria-label", "Find duplicate company");
+    const out = el("div", "ct-mails"); let t = null, mine = 0;
+    q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => {
+      const n = ++mine, term = q.value.trim(); out.textContent = ""; if (term.length < 2) return;
+      api.list({ q: term, category: "", filter: "", sort: "az", offset: 0 }).then((r) => {
+        if (n !== mine || !r || !r.ok) return; out.textContent = "";
+        r.page.rows.filter((x) => x.id !== c.id).slice(0, 6).forEach((x) => {
+          const row = el("div", "ct-mail"); row.append(el("span", "", x.name), btn("Merge into " + c.name, "", () => { if (!row.dataset.sure) { row.dataset.sure = "1"; row.lastChild.textContent = "Sure? Merge " + x.name + " into " + c.name; return; } api.merge(x.id, c.id).then((m) => { if (m && m.ok) { openCompany(c.id); load(); } else row.lastChild.textContent = (m && m.reason) || "Not merged"; }); }));
+          out.append(row);
+        });
+        if (!out.childNodes.length) out.append(el("p", "ct-rs", "No other company matches."));
+      }).catch(() => {});
+    }, 250); });
+    sec.append(q, out); parent.append(sec);
+  }
+  function openDups() {
+    S.mode = "suggest"; S.sel = null; detail.textContent = ""; list.textContent = ""; list.scrollTop = 0; view.classList.remove("ct-showdetail");
+    api.dupSuggestions().then((r) => {
+      list.textContent = ""; list.append(btn("Back to the list", "", () => { S.mode = "list"; load(); }));
+      if (!r || !r.ok) { list.append(el("p", "ct-empty", (r && r.reason) || "Could not load.")); return; }
+      list.append(el("p", "ct-empty", r.pairs.length ? "Possible duplicates: " + r.pairs.length + ". The company with more people stays; the other one is folded into it. Nothing is deleted and you can undo it from the company page." : "No more suspected duplicates."));
+      r.pairs.slice(0, 60).forEach((s) => {
+        const card = el("div", "ct-sug"), nm = (x) => x.name + (x.domain ? " (" + x.domain + ", " + x.people + " people)" : " (" + x.people + " people)");
+        card.append(el("div", "ct-rn", nm(s.from)), el("div", "ct-rs", "into " + nm(s.into) + " · " + s.why));
+        const bs = el("div", "ct-btns");
+        bs.append(btn("Merge", "pri", () => api.merge(s.from.id, s.into.id).then((m) => { if (m && m.ok) card.remove(); else card.append(el("div", "ct-rs ct-warn", (m && m.reason) || "Not merged")); })), btn("Not the same", "", () => api.dupReject(s.from.id, s.into.id).then(() => { card.remove(); })));
+        card.append(bs); list.append(card);
+      });
     }).catch(() => {});
   }
 
