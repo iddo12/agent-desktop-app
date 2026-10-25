@@ -158,7 +158,9 @@
       if (fleetTimes.length >= c.maxFleetHour) { skip("fleet-hour-cap"); continue; }
       if (lastFleet && now - lastFleet < c.minFleetGapMs) { skip("fleet-gap"); continue; }
       const senders = [];
-      for (const m of p.markers) { const n = cleanName(m.from); if (n && senders.indexOf(n) < 0) senders.push(n); }
+      // 2026-10-25: a marker's free-text `from` never goes into the wake line; only a name that matches an attached agent's folder does (forged text cannot inject)
+      const knownAgent = (f) => { const k = cleanName(f).toLowerCase(); for (const nm of Object.keys(agents)) if (cleanName(nm).toLowerCase() === k) return cleanName(nm); return ""; };
+      for (const m of p.markers) { const n = knownAgent(m.from); if (n && senders.indexOf(n) < 0) senders.push(n); }
       const projects = [];
       for (const r of p.ready) { const s = cleanSlug(r.project); if (s && projects.indexOf(s) < 0) projects.push(s); }
       const id = makeWakeId(config && config.rand);

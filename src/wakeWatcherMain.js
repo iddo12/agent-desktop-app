@@ -96,7 +96,7 @@ function create(deps) {
           const st = fs.statSync(f), len = Math.min(128 * 1024, st.size), buf = Buffer.alloc(len), fd = fs.openSync(f, "r");
           try { fs.readSync(fd, buf, 0, len, st.size - len); } finally { fs.closeSync(fd); }
           for (const line of buf.toString("utf-8").split("\n")) {
-            try { const e = JSON.parse(line), t = Date.parse(e.ts), k = normAgent(e.agent); if (k && t > (byAgent[k] || 0)) byAgent[k] = t; } catch (x) { /* partial / bad line */ }
+            try { const e = JSON.parse(line), t = Date.parse(e.ts), k = normAgent(e.agent); if (!/^(progress|verified)$/.test(String(e.kind))) continue; /* 2026-10-25: free-text notes cannot lift a hop stop */ if (k && t > (byAgent[k] || 0)) byAgent[k] = t; } catch (x) { /* partial / bad line */ }
           }
         } catch (e) { /* no events file */ }
       }
