@@ -18,6 +18,7 @@ const srv = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (u.pathname === "/search") return res.end(JSON.stringify({ rows: u.searchParams.get("att") === "1" ? rows.filter((r) => r.has_att) : rows }));
   if (u.pathname === "/message") return res.end(JSON.stringify({ message_id: u.searchParams.get("id") === "1" ? "abc@smallrig.com" : "bad id>" }));
+  if (u.pathname === "/body") return res.end(JSON.stringify(u.searchParams.get("id") === "1" ? { id: 1, subject: "Hello", from: "Lena", to: "Iddo", cc: "", date: "x", attachments: [], text: "a\r\nb" + "z".repeat(70000), truncated: true } : { error: "not found" }));
   res.statusCode = 404; res.end("{}");
 });
 (async () => {
@@ -38,6 +39,15 @@ const srv = http.createServer((req, res) => {
   assert.deepStrictEqual(r.rows.map((m) => m.id), [2, 3]);
 
   r = await M.searchMails({ company: { domain: null, aliases: [] }, keywords: "x" }, env); assert.strictEqual(r.ok, false);
+
+  // person mails: newest first, limited, bad addresses refused; read: text only, capped
+  r = await M.personMails({ emails: ["lena@smallrig.com", "not an address", "a b@x.com"], limit: 2 }, env);
+  assert.ok(r.ok); assert.deepStrictEqual(r.rows.map((m) => m.id), [1, 2], "newest first, limited"); assert.ok(/q=lena%40smallrig\.com/.test(seen[seen.length - 1].url));
+  r = await M.personMails({ emails: ["bad address"] }, env); assert.strictEqual(r.ok, false);
+  r = await M.personMails({ emails: [] }, env); assert.strictEqual(r.ok, false);
+  r = await M.readMail(1, env); assert.ok(r.ok); assert.strictEqual(r.mail.subject, "Hello"); assert.ok(r.mail.text.length <= 60000 && !/\r/.test(r.mail.text));
+  assert.ok(!(await M.readMail(0, env)).ok && !(await M.readMail("1", env)).ok);
+  assert.ok(!(await M.readMail(2, env)).ok, "a service error is not shown as a mail");
   r = await M.searchMails({ company: { domain: "evil.com&q=1", aliases: [] }, keywords: "x" }, env); assert.strictEqual(r.ok, false, "odd domain not used");
   r = await M.searchMails({ company: co }, { port: env.port, tokenFile: path.join(dir, "nope") }); assert.ok(!r.ok && /token/.test(r.reason));
   fs.writeFileSync(path.join(dir, "bad"), "short"); r = await M.searchMails({ company: co }, { port: env.port, tokenFile: path.join(dir, "bad") }); assert.ok(!r.ok);

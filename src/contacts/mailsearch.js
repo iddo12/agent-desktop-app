@@ -94,4 +94,36 @@ function findBetterbird() {
   return null;
 }
 
-module.exports = { searchMails, openMail, companyTerms, cleanKeywords, tokenPath, readToken, PORT };
+/** The newest mails to/from one person (by email address), newest first. opts: { emails:[...], limit }. Rows: { id, date, subject, person, addr, att, ts }. */
+async function personMails(opts, env) {
+  const port = (env && env.port) || PORT;
+  const token = readToken((env && env.tokenFile) || tokenPath());
+  if (!token) return { ok: false, reason: "Mail is not set up: the Super Search token was not found on this PC." };
+  const addrs = (opts.emails || []).map((e) => String(e || "").trim().toLowerCase()).filter((e) => /^[a-z0-9._%+'-]+@[a-z0-9.-]+$/.test(e) && e.length <= 120).slice(0, 3);
+  if (!addrs.length) return { ok: false, reason: "This person has no email address." };
+  const limit = Math.min(Math.max(parseInt(opts.limit, 10) || 5, 1), 10), seen = new Map();
+  for (const a of addrs) {
+    const r = await getJson(port, "/search?q=" + encodeURIComponent(a) + "&scope=everything", token);
+    if (r.code === 0) return { ok: false, reason: "The Super Search service is not running." };
+    if (r.code === 403) return { ok: false, reason: "The Super Search service refused the token." };
+    if (r.code !== 200 || !r.body || !Array.isArray(r.body.rows)) return { ok: false, reason: "The Super Search service gave no usable answer." };
+    for (const m of r.body.rows) if (m && typeof m === "object" && Number.isInteger(m.id) && Number.isFinite(m.ts)) seen.set(m.id, m);
+  }
+  const dedup = new Map(); for (const m of [...seen.values()].sort((x, y) => y.ts - x.ts || x.id - y.id)) { const k = String(m.subject) + "|" + String(m.sender_addr) + "|" + m.ts; if (!dedup.has(k)) dedup.set(k, m); }   // same mail filed in several folders shows once
+  const rows = [...dedup.values()].slice(0, limit).map((m) => ({ id: m.id, ts: m.ts, date: new Date(m.ts * 1000).toISOString().slice(0, 10), subject: cap(m.subject, 200), person: cap(m.sender, 120), addr: cap(m.sender_addr, 200), att: !!m.has_att }));
+  return { ok: true, rows };
+}
+
+/** One mail's readable text (headers + body), for the reading pane. Text only, capped; the renderer sets it with textContent. */
+async function readMail(id, env) {
+  const port = (env && env.port) || PORT;
+  const token = readToken((env && env.tokenFile) || tokenPath());
+  if (!token || !Number.isInteger(id) || id < 1) return { ok: false, reason: "Cannot read that mail." };
+  const r = await getJson(port, "/body?id=" + id, token);
+  if (r.code === 0) return { ok: false, reason: "The Super Search service is not running." };
+  if (r.code !== 200 || !r.body || r.body.error) return { ok: false, reason: "That mail could not be read." };
+  const b = r.body, atts = Array.isArray(b.attachments) ? b.attachments.slice(0, 20).map((x) => cap(x, 120)) : [];
+  return { ok: true, mail: { id, subject: cap(b.subject, 300), from: cap(b.from, 300), to: cap(b.to, 500), cc: cap(b.cc, 500), date: cap(b.date, 80), attachments: atts, text: cap(b.text, 60000).replace(/\r/g, ""), truncated: !!b.truncated } };
+}
+
+module.exports = { searchMails, personMails, readMail, openMail, companyTerms, cleanKeywords, tokenPath, readToken, PORT };

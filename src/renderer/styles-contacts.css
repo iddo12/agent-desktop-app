@@ -61,3 +61,7 @@ body.dark #contacts-view { --ct-blue: #8db4f0; --ct-amber: #f5cf85; --ct-grey: #
   .ct-back { display: inline-block; }
 }
 .ct-detail > .ct-btn { align-self: flex-start; }
+.ct-mailbtn { width: 100%; background: none; border: 0; border-bottom: 1px solid var(--border); color: inherit; text-align: left; cursor: pointer; font: inherit; font-size: 13.5px; } .ct-mailbtn:hover, .ct-mailbtn:focus-visible { background: var(--hover, rgba(127,127,127,.12)); } .ct-mailbtn span:nth-child(2) { max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-mailpane { margin-top: 10px; } .ct-mailtext { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13.5px; max-height: 340px; overflow: auto; margin: 8px 0 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.ct-ini.ct-has-logo { background: #fff; overflow: hidden; } .ct-logo { width: 100%; height: 100%; object-fit: contain; display: block; } .ct-ini-big { width: 48px; height: 48px; }
+.ct-hd { display: flex; align-items: center; gap: 12px; } .ct-hd .ct-title { margin: 0; } .ct-site { display: inline-block; margin: 4px 0 8px; font-size: 13.5px; color: var(--accent, #4ea1ff); overflow-wrap: anywhere; }

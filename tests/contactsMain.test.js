@@ -103,6 +103,18 @@ const call = (c, a, e) => h[c](e || ev, a);
   cfgDir = d3; r = await call("contacts-list", {}); assert.strictEqual(r.ok, false); assert.ok(/synced/.test(r.reason));
   // a note for a person that does not exist is refused
   cfgDir = dir; assert.strictEqual((await call("contacts-set-note", { kind: "person", id: 99999, text: "x" })).ok, false);
+  // merge: Nikon into Godox; its people join, it leaves the list, the export tells the PA, categories move, Unmerge restores it
+  assert.ok((await call("contacts-set-categories", { id: 2, categories: ["Cameras"] })).ok);
+  assert.strictEqual((await call("contacts-merge", { from: 1, into: 1 })).ok, false); assert.strictEqual((await call("contacts-merge", { from: 1, into: 99 })).ok, false); assert.strictEqual((await call("contacts-merge", { from: "2", into: 1 })).ok, false);
+  assert.ok((await call("contacts-merge", { from: 2, into: 1 })).ok);
+  r = await call("contacts-list", {}); assert.ok(!r.page.rows.some((x) => x.id === 2) && r.page.rows.some((x) => x.id === 1), "merged-away company leaves the list");
+  r = await call("contacts-company", { id: 1 }); assert.strictEqual(r.company.people.length, 3); assert.strictEqual(r.company.mergedFrom[0].name, "Nikon"); assert.ok(r.company.categories.includes("Cameras") && r.company.categories.includes("Lighting"));
+  const mexp = JSON.parse(fs.readFileSync(path.join(dir, "contacts_directory.json"), "utf8")); assert.deepStrictEqual(mexp.merges.map((x) => [x.from_company, x.into_company]), [["Nikon", "Godox"]]); assert.ok(!mexp.companies.some((x) => x.company === "Nikon"));
+  assert.strictEqual((await call("contacts-unmerge", { from: 1 })).ok, false);
+  assert.ok((await call("contacts-unmerge", { from: 2 })).ok);
+  r = await call("contacts-list", {}); assert.ok(r.page.rows.some((x) => x.id === 2), "Unmerge brings it back");
+  assert.ok((await call("contacts-dup-reject", { a: 1, b: 2 })).ok); assert.strictEqual((await call("contacts-dup-reject", { a: 1, b: 1 })).ok, false);
+  assert.ok((await call("contacts-dup-suggestions", {})).ok);
   assert.ok(!logs.some((l) => /SECRET|Lena|Godox/.test(l)), "logs carry no names or subjects");
   api.stop();
   fs.rmSync(root, { recursive: true, force: true });

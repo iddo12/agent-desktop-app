@@ -33,7 +33,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
 
   // ---- state: the PA export is re-read only when its mtime changes; Iddo's file is kept in memory and rewritten on each change
   let st = { mtime: 0, dir: null, ui: null, index: null, raw: null, err: "", suggestions: null };
-  const uiEmpty = () => ({ schema: 1, companies: {}, person: {}, snooze: {}, rejected: {} });
+  const uiEmpty = () => ({ schema: 1, companies: {}, person: {}, snooze: {}, rejected: {}, merges: {}, notDup: {} });
   function load() {
     const d = dirPath();
     if (!d) return { err: "The contacts folder is not set. Open Setup and fill in the contacts folder." };
@@ -46,13 +46,14 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
       const u = exists ? readJson(uf, 8 * 1024 * 1024) : null;
       if (exists && !(u && typeof u === "object" && !Array.isArray(u))) return { err: "Your contacts file (" + UI_FILE + ") could not be read, so nothing was changed. Close other programs using it and reopen the tab." };
       st.ui = Object.assign(uiEmpty(), u || {}); st.index = null;
+      for (const k of ["merges", "notDup"]) if (!st.ui[k] || typeof st.ui[k] !== "object" || Array.isArray(st.ui[k])) st.ui[k] = {};
     }
     if (!st.raw || st.mtime !== mt) {
       const r = readJson(f); if (!r) return { err: "contacts.json could not be read." };
       st.raw = L.normalise(r); st.mtime = mt; st.index = null; st.suggestions = null;
     }
     const day = Math.floor(clock() / 86400000); if (st.day !== day) { st.day = day; st.index = null; }   // snooze/quiet depend on today
-    if (!st.index) st.index = L.buildIndex(st.raw, { companies: st.ui.companies }, st.ui.snooze, clock());
+    if (!st.index) { st.merged = L.applyMerges(st.raw, st.ui.merges); st.dups = null; st.index = L.buildIndex(st.merged, { companies: st.ui.companies }, st.ui.snooze, clock()); }
     return { d };
   }
   const rebuild = () => { st.index = null; };
@@ -67,8 +68,8 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
   function writeExport(d) {
     const ready = load(); if (ready.err) return;
     const t = clock();
-    const companies = st.raw.companies.map((c) => L.lookupRecord(st.index, { companies: st.ui.companies }, st.ui.snooze, c, t));
-    writeJsonAtomic(path.join(d, EXPORT_FILE), { schema: 1, generated: new Date(t).toISOString(), source_generated: st.raw.generatedAt, note: "Read-only export for agents. Written by Agent Desktop's Contacts tab; do not edit.", _notice: L.EXPORT_NOTICE, companies });
+    const companies = st.merged.companies.map((c) => L.lookupRecord(st.index, { companies: st.ui.companies }, st.ui.snooze, c, t));
+    writeJsonAtomic(path.join(d, EXPORT_FILE), { schema: 1, generated: new Date(t).toISOString(), source_generated: st.raw.generatedAt, note: "Read-only export for agents. Written by Agent Desktop's Contacts tab; do not edit.", _notice: L.EXPORT_NOTICE, merges: st.merged.merges.map((x) => ({ from_company: x.from.name, from_domain: x.from.domain, into_company: x.into.name, into_domain: x.into.domain })), companies });
   }
 
   // First open, or a new PA export: refresh the agent export when it is missing or older than contacts.json
@@ -96,7 +97,7 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     const page = L.listPage(st.index, { q, category: typeof a.category === "string" ? a.category.slice(0, 40) : "", filter: ["needs", "waiting", "quiet"].includes(a.filter) ? a.filter : "", sort: ["latest", "az", "category"].includes(a.sort) ? a.sort : "latest", offset: Number.isInteger(a.offset) ? a.offset : 0 });
     const gen = st.raw.generatedAt, age = gen ? Math.floor((t - Date.parse(gen)) / 86400000) : null;
     return { ok: true, page, people: page.offset === 0 && q ? L.searchPeople(st.index, q, 15) : [],
-      chips: { total: st.index.total, uncategorised: st.index.uncategorised, counts: st.index.counts, needs: st.index.needs, waiting: st.index.waiting, quiet: st.index.quiet },
+      chips: { dups: (st.dups || (st.dups = L.mergeSuggestions(st.merged, st.ui.notDup))).length, total: st.index.total, uncategorised: st.index.uncategorised, counts: st.index.counts, needs: st.index.needs, waiting: st.index.waiting, quiet: st.index.quiet },
       meta: { generatedAt: gen, ageDays: age, stale: age != null && age > L.STALE_DAYS, unknownPeople: st.raw.unknownPeople, windowDays: st.raw.windowDays } };
   });
   handle("contacts-company", (a) => {
@@ -123,6 +124,29 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
     const cats = L.validCategories(a.categories);
     if (!Number.isInteger(a.id) || !cats || !st.index.byId.has(a.id)) return { ok: false, reason: "Bad request." };
     (st.ui.companies[a.id] || (st.ui.companies[a.id] = {})).categories = cats; save(); return { ok: true };
+  });
+  // Duplicate companies: Iddo merges one into another (stored as from -> into; nothing is deleted, so Unmerge restores it). The PA gets the list in the export.
+  handle("contacts-merge", (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.from) || !Number.isInteger(a.into) || a.from === a.into || !st.index.byId.has(a.from) || !st.index.byId.has(a.into)) return { ok: false, reason: "Bad request." };
+    st.ui.merges[a.from] = a.into;
+    const fr = st.ui.companies[a.from], cats = fr && Array.isArray(fr.categories) ? fr.categories : [];   // its categories move to the target, so none are lost
+    if (cats.length) { const to = st.ui.companies[a.into] || (st.ui.companies[a.into] = {}); const cur = Array.isArray(to.categories) ? to.categories : []; to.categories = L.validCategories(cur.concat(cats.filter((c) => !cur.includes(c)))) || cur; }
+    save(); return { ok: true };
+  });
+  handle("contacts-unmerge", (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.from) || !Object.prototype.hasOwnProperty.call(st.ui.merges, a.from)) return { ok: false, reason: "Bad request." };
+    delete st.ui.merges[a.from]; save(); return { ok: true };
+  });
+  handle("contacts-dup-suggestions", () => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    return { ok: true, pairs: st.dups || (st.dups = L.mergeSuggestions(st.merged, st.ui.notDup)) };
+  });
+  handle("contacts-dup-reject", (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.a) || !Number.isInteger(a.b) || a.a === a.b) return { ok: false, reason: "Bad request." };
+    st.ui.notDup[Math.min(a.a, a.b) + "-" + Math.max(a.a, a.b)] = 1; st.dups = null; save(); return { ok: true };
   });
   handle("contacts-set-link", (a) => {
     const r = load(); if (r.err) return { ok: false, reason: r.err };
@@ -165,14 +189,40 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mail
   });
   // Mail search inside one company via the local Super Search service (read-only). The renderer sends a company id + keywords, never a URL or token.
   const MS = require("./mailsearch");
+  // Token file: the setting "superSearchTokenFile" if set, else the service default (LOCALAPPDATA/BetterbirdSuperSearch/token).
+  // Start the Super Search service ourselves when it is not answering (settings superSearchDir + superSearchDb + Python). Not when a test supplies mailEnv.
+  const svc = require("./ssService").createService(cfg);
+  const ready = async () => { if (!mailEnv) { try { await svc.ensure(); } catch (e) { /* the search reports "not running" */ } } };
+  const mailEnvNow = () => { if (mailEnv) return mailEnv; let f = null; try { f = typeof cfg === "function" ? cfg("superSearchTokenFile") : null; } catch (e) { f = null; } return f ? { tokenFile: f } : undefined; };
   handle("contacts-mail-search", async (a) => {
     const r = load(); if (r.err) return { ok: false, reason: r.err };
     if (!Number.isInteger(a.id) || (a.keywords != null && typeof a.keywords !== "string")) return { ok: false, reason: "Bad request." };
     const v = L.companyView(st.index, { companies: st.ui.companies }, st.ui.snooze, a.id, clock());
     if (!v) return { ok: false, reason: "That company is not in the list any more." };
-    return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnv);
+    await ready();
+    return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnvNow());
   });
-  handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnv, mailLaunch));
+  // Newest mails with one person + reading one mail. Same rules: ids and short strings in, text out, no URL or token in the renderer.
+  handle("contacts-person-mails", async (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.id)) return { ok: false, reason: "Bad request." };
+    const v = L.personView(st.index, { person: {} }, st.ui.snooze, a.id, clock());
+    if (!v) return { ok: false, reason: "That person is not in the list any more." };
+    await ready();
+    return MS.personMails({ emails: v.emails, limit: 5 }, mailEnvNow());
+  });
+  // Company logo: main fetches/caches the company's own icon and returns a data: URL (or null). Off unless the setting contactsLogos is "yes" (it contacts each company's own website).
+  let logos = null;
+  handle("contacts-logo", async (a) => {
+    const r = load(); if (r.err) return { ok: true, url: null };
+    if (!Number.isInteger(a.id) || String(cfg("contactsLogos") || "").trim().toLowerCase() !== "yes") return { ok: true, url: null };
+    const c = st.index.byId.get(a.id); if (!c) return { ok: true, url: null };
+    let host = c.domain; if (!host && c.website) { try { host = new URL(c.website).hostname; } catch (e) { host = null; } }
+    if (!logos) logos = require("./logos").createLogos(path.join(r.d, "logos"));
+    return { ok: true, url: await logos.get(host) };
+  });
+  handle("contacts-mail-read", async (a) => { await ready(); return MS.readMail(a.id, mailEnvNow()); });
+  handle("contacts-mail-open", async (a) => { await ready(); return MS.openMail(a.id, mailEnvNow(), mailLaunch); });
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; }, _state: () => st };
 }
 

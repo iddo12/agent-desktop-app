@@ -10,6 +10,16 @@
   const ago = (d) => (d == null ? "never" : d === 0 ? "today" : d < 60 ? d + " d ago" : d < 700 ? Math.round(d / 30) + " mo ago" : Math.round(d / 365) + " y ago");
   const initials = (n) => (String(n).replace(/[^\p{L}\p{N} ]/gu, "").trim().split(/\s+/).slice(0, 2).map((w) => w.charAt(0)).join("") || "?").toUpperCase();
 
+  // Company avatar: the initials at once, swapped for the company logo when the main process has one (cached there; the page never fetches anything).
+  const logoCache = new Map();
+  function avatar(id, name, big) {
+    const a = el("span", "ct-ini" + (big ? " ct-ini-big" : ""), initials(name));
+    const put = (url) => { if (!url) return; const i = document.createElement("img"); i.alt = ""; i.src = url; i.className = "ct-logo"; a.textContent = ""; a.classList.add("ct-has-logo"); a.append(i); };
+    if (logoCache.has(id)) put(logoCache.get(id));
+    else api.logo(id).then((r) => { const u = r && r.ok && typeof r.url === "string" && r.url.startsWith("data:image/") ? r.url : null; logoCache.set(id, u); put(u); }).catch(() => {});
+    return a;
+  }
+
   const view = el("div"); view.id = "contacts-view"; view.className = "hidden";
   const head = el("div", "ct-head"), chips = el("div", "ct-chips"), show = el("div", "ct-show"), main = el("div", "ct-main"), foot = el("div", "ct-foot");
   const list = el("div", "ct-list"), detail = el("div", "ct-detail");
@@ -30,13 +40,17 @@
     }).catch(() => { S.err = "Contacts could not load."; render(); });
   }
 
+  // The search box and sort select are built once and kept in the DOM: re-creating them on each render stole focus mid-typing.
+  const headTitle = el("h2", "ct-title", "Contacts"), sortSel = el("select", "ct-inp"); sortSel.setAttribute("aria-label", "Sort");
+  [["latest", "Latest contact"], ["az", "A to Z"], ["category", "Category"]].forEach(([v, l]) => { const o = el("option", "", l); o.value = v; sortSel.append(o); });
+  sortSel.addEventListener("change", () => { S.sort = sortSel.value; load(); });
+  let sugBtn = null, dupBtn = null;
+  head.append(headTitle, search, sortSel);
   function renderHead() {
-    head.textContent = ""; const t = el("h2", "ct-title", "Contacts");
-    const sort = el("select", "ct-inp"); sort.setAttribute("aria-label", "Sort");
-    [["latest", "Latest contact"], ["az", "A to Z"], ["category", "Category"]].forEach(([v, l]) => { const o = el("option", "", l); o.value = v; if (S.sort === v) o.selected = true; sort.append(o); });
-    sort.addEventListener("change", () => { S.sort = sort.value; load(); });
-    head.append(t, search, sort);
-    if (S.chips && S.chips.uncategorised) head.append(btn("Review suggestions (" + S.chips.uncategorised + " without a category)", "pri", openSuggestions));
+    sortSel.value = S.sort;
+    if (sugBtn) { sugBtn.remove(); sugBtn = null; } if (dupBtn) { dupBtn.remove(); dupBtn = null; }
+    if (S.chips && S.chips.uncategorised) { sugBtn = btn("Review suggestions (" + S.chips.uncategorised + " without a category)", "pri", openSuggestions); head.append(sugBtn); }
+    if (S.chips && S.chips.dups) { dupBtn = btn("Possible duplicates (" + S.chips.dups + ")", "", openDups); head.append(dupBtn); }
   }
   function chip(label, n, on, fn) { const b = el("button", "ct-chip" + (on ? " on" : ""), label); b.type = "button"; if (n != null) b.append(el("b", "", String(n))); b.setAttribute("aria-pressed", on ? "true" : "false"); b.addEventListener("click", fn); return b; }
   function renderChips() {
@@ -50,7 +64,7 @@
   function rowFor(r) {
     const b = el("button", "ct-row" + (S.selKind === "company" && S.sel === r.id ? " on" : "")); b.type = "button";
     const t = el("div", "ct-rt"); t.append(el("div", "ct-rn", r.name), el("div", "ct-rs", (r.cats.length ? r.cats.join(", ") + " · " : "") + "last contact " + ago(r.daysAgo) + (r.dir === "in" ? " · they wrote last" : r.dir === "out" ? " · I wrote last" : "") + " · " + r.current + " current"));
-    b.append(el("span", "ct-ini", initials(r.name)), t);
+    b.append(avatar(r.id, r.name), t);
     if (r.tag && TAG[r.tag]) b.append(el("span", "ct-tag " + TAG[r.tag][0], TAG[r.tag][1] + (r.tag === "quiet" && r.daysAgo != null ? " " + r.daysAgo + " d" : "")));
     b.addEventListener("click", () => { openCompany(r.id); }); return b;
   }
@@ -123,7 +137,9 @@
       if (!r || !r.ok) { detail.append(el("p", "ct-empty", (r && r.reason) || "Could not load.")); return; }
       const c = r.company;
       detail.append(btn("Back to list", "ct-back", () => { S.sel = null; render(); }));
-      detail.append(el("h2", "ct-title", c.name));
+      const hd = el("div", "ct-hd"); hd.append(avatar(c.id, c.name, true), el("h2", "ct-title", c.name)); detail.append(hd);
+      const site = (c.links && c.links.web) || c.website;
+      if (site && /^https:[/][/]/i.test(site)) { const a = el("a", "ct-site", site.replace(/^https:[/][/]/i, "").replace(/[/]$/, "")); a.href = site; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "Open the website"; detail.append(a); }
       const cs = el("div", "ct-sec"); const cats = el("div", "ct-cats");
       const setCats = (list2) => api.setCategories(c.id, list2).then((x) => { if (x && x.ok) { openCompany(c.id); load(); } });
       c.categories.forEach((k) => { const w = el("span", "ct-cat", k); const x = el("button", "", "×"); x.type = "button"; x.setAttribute("aria-label", "Remove category " + k); x.addEventListener("click", () => setCats(c.categories.filter((y) => y !== k))); w.append(x); cats.append(w); });
@@ -141,6 +157,7 @@
       detail.append(who);
       const rest = c.people.filter((p) => !c.current.some((x) => x.id === p.id));
       if (rest.length) { const sec = el("div", "ct-sec"); sec.append(el("div", "ct-sh", "Other people (" + rest.length + ")")); rest.slice(0, 40).forEach((p) => sec.append(personCard(p, c))); detail.append(sec); }
+      mergeBox(detail, c);
       mailSearchBox(detail, c);
       noteBox(detail, "Company note", "company", c.id, c.note); noteBox(detail, "Handover", "handover", c.id, c.handover);
       view.classList.add("ct-showdetail");
@@ -154,6 +171,36 @@
     else if (p.reply === "needs") card.append(el("span", "ct-tag ct-t-they", "Needs my reply")); else if (p.reply === "waiting") card.append(el("span", "ct-tag ct-t-wait", "Waiting on them"));
     if (p.automated) card.append(el("span", "ct-tag ct-t-quiet", "Automated"));
     card.addEventListener("click", () => openPerson(p.id)); return card;
+  }
+  // Last mails with a person from Betterbird (live, read-only). Click one to read it here; Reply opens it in Betterbird (we never send).
+  function liveMails(em, id, p) {
+    const fallback = (why) => { if (why) em.append(el("p", "ct-rs ct-warn", why + " Showing the list from the contacts file."));
+      if (!p.mails.length) em.append(el("p", "ct-rs", "No emails yet."));
+      p.mails.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.date), el("span", "", m.dir === "in" ? "they wrote" : "I wrote"), el("span", "", m.subject)); em.append(row); }); };
+    const list5 = el("div", "ct-mails"), pane = el("div", "ct-mailpane"); em.append(list5, pane);
+    list5.append(el("p", "ct-rs", "Loading mail..."));
+    api.personMails(id).then((r) => {
+      if (S.sel !== id || S.selKind !== "person") return; list5.textContent = "";
+      if (!r || !r.ok) { fallback((r && r.reason) || "Mail could not load."); return; }
+      if (!r.rows.length) { list5.append(el("p", "ct-rs", "No mail found for this person.")); return; }
+      r.rows.forEach((m) => {
+        const b = el("button", "ct-mail ct-mailbtn"); b.type = "button"; b.append(el("span", "", m.date), el("span", "", m.person), el("span", "", m.subject + (m.att ? "  [att]" : "")));
+        b.addEventListener("click", () => {
+          pane.textContent = ""; pane.append(el("p", "ct-rs", "Opening..."));
+          api.mailRead(m.id).then((x) => {
+            pane.textContent = "";
+            if (!x || !x.ok) { pane.append(el("p", "ct-rs ct-warn", (x && x.reason) || "Could not read it.")); return; }
+            const k = x.mail; pane.append(el("div", "ct-rn", k.subject || "(no subject)"), el("div", "ct-rs", "From " + k.from + " · " + k.date), el("div", "ct-rs", "To " + k.to + (k.cc ? " · Cc " + k.cc : "")));
+            if (k.attachments.length) pane.append(el("div", "ct-rs", "Attachments: " + k.attachments.join(", ")));
+            const st = el("div", "ct-btns"), note = el("span", "ct-rs");
+            st.append(btn("Reply in Betterbird", "pri", () => api.mailOpen(m.id).then((o) => { note.textContent = o && o.ok ? "Opened in Betterbird: press Reply there." : (o && o.reason) || "Could not open."; })), note);
+            const body = el("pre", "ct-mailtext"); body.textContent = k.text + (k.truncated ? "\n\n[cut: open it in Betterbird for the rest]" : "");
+            pane.append(st, body);
+          }).catch(() => { pane.textContent = ""; pane.append(el("p", "ct-rs ct-warn", "Could not read it.")); });
+        });
+        list5.append(b);
+      });
+    }).catch(() => {});
   }
   function openPerson(id) {
     S.sel = id; S.selKind = "person";
@@ -171,10 +218,47 @@
       if (p.noReply || p.snoozeUntil) st.append(btn("Clear", "", () => api.snooze(id, "clear").then(() => { refresh(); load(); })));
       detail.append(st);
       const em = el("div", "ct-sec"); em.append(el("div", "ct-sh", "Recent emails (" + p.mails.length + (p.mailsTotal > p.mails.length ? " of " + p.mailsTotal : "") + ")"));
-      if (!p.mails.length) em.append(el("p", "ct-rs", "No emails yet."));
-      p.mails.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.date), el("span", "", m.dir === "in" ? "they wrote" : "I wrote"), el("span", "", m.subject)); em.append(row); });
-      detail.append(em); noteBox(detail, "Note", "person", id, p.note);
+      detail.append(em); liveMails(em, id, p); noteBox(detail, "Note", "person", id, p.note);
       view.classList.add("ct-showdetail");
+    }).catch(() => {});
+  }
+
+  // ---- duplicate companies: merge one into another (nothing is deleted; Unmerge restores it)
+  function mergeBox(parent, c) {
+    const sec = el("div", "ct-sec");
+    if ((c.mergedFrom || []).length) {
+      sec.append(el("div", "ct-sh", "Merged into this company"));
+      c.mergedFrom.forEach((m) => { const row = el("div", "ct-mail"); row.append(el("span", "", m.name + (m.domain ? " (" + m.domain + ")" : "")), btn("Unmerge", "", () => api.unmerge(m.id).then(() => { openCompany(c.id); load(); }))); sec.append(row); });
+    }
+    sec.append(el("div", "ct-sh", "Merge a duplicate into " + c.name));
+    const q = el("input", "ct-inp"); q.placeholder = "search the duplicate by name or domain"; q.maxLength = 60; q.setAttribute("aria-label", "Find duplicate company");
+    const out = el("div", "ct-mails"); let t = null, mine = 0;
+    q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => {
+      const n = ++mine, term = q.value.trim(); out.textContent = ""; if (term.length < 2) return;
+      api.list({ q: term, category: "", filter: "", sort: "az", offset: 0 }).then((r) => {
+        if (n !== mine || !r || !r.ok) return; out.textContent = "";
+        r.page.rows.filter((x) => x.id !== c.id).slice(0, 6).forEach((x) => {
+          const row = el("div", "ct-mail"); row.append(el("span", "", x.name), btn("Merge into " + c.name, "", () => { if (!row.dataset.sure) { row.dataset.sure = "1"; row.lastChild.textContent = "Sure? Merge " + x.name + " into " + c.name; return; } api.merge(x.id, c.id).then((m) => { if (m && m.ok) { openCompany(c.id); load(); } else row.lastChild.textContent = (m && m.reason) || "Not merged"; }); }));
+          out.append(row);
+        });
+        if (!out.childNodes.length) out.append(el("p", "ct-rs", "No other company matches."));
+      }).catch(() => {});
+    }, 250); });
+    sec.append(q, out); parent.append(sec);
+  }
+  function openDups() {
+    S.mode = "suggest"; S.sel = null; detail.textContent = ""; list.textContent = ""; list.scrollTop = 0; view.classList.remove("ct-showdetail");
+    api.dupSuggestions().then((r) => {
+      list.textContent = ""; list.append(btn("Back to the list", "", () => { S.mode = "list"; load(); }));
+      if (!r || !r.ok) { list.append(el("p", "ct-empty", (r && r.reason) || "Could not load.")); return; }
+      list.append(el("p", "ct-empty", r.pairs.length ? "Possible duplicates: " + r.pairs.length + ". The company with more people stays; the other one is folded into it. Nothing is deleted and you can undo it from the company page." : "No more suspected duplicates."));
+      r.pairs.slice(0, 60).forEach((s) => {
+        const card = el("div", "ct-sug"), nm = (x) => x.name + (x.domain ? " (" + x.domain + ", " + x.people + " people)" : " (" + x.people + " people)");
+        card.append(el("div", "ct-rn", nm(s.from)), el("div", "ct-rs", "into " + nm(s.into) + " · " + s.why));
+        const bs = el("div", "ct-btns");
+        bs.append(btn("Merge", "pri", () => api.merge(s.from.id, s.into.id).then((m) => { if (m && m.ok) card.remove(); else card.append(el("div", "ct-rs ct-warn", (m && m.reason) || "Not merged")); })), btn("Not the same", "", () => api.dupReject(s.from.id, s.into.id).then(() => { card.remove(); })));
+        card.append(bs); list.append(card);
+      });
     }).catch(() => {});
   }
 
