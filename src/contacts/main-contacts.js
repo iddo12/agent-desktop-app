@@ -9,7 +9,7 @@ const L = require("./contactsLogic");
 const MAX_BYTES = 40 * 1024 * 1024;
 const UI_FILE = "contacts_ui.json", EXPORT_FILE = "contacts_directory.json";
 
-function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch }) {
+function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch, mailEnv, mailLaunch }) {
   const say = typeof log === "function" ? log : () => {};
   const clock = now || (() => Date.now());
   const wc = () => { try { const w = getMainWindow(); return w && !(typeof w.isDestroyed === "function" && w.isDestroyed()) ? w.webContents : null; } catch (e) { return null; } };
@@ -156,6 +156,16 @@ function init({ ipcMain: raw, getMainWindow, log, cfg, now, watch }) {
     const cats = L.validCategories(a.categories); if (!cats || !cats.length) return { ok: false, reason: "Pick at least one category." };
     (st.ui.companies[a.id] || (st.ui.companies[a.id] = {})).categories = cats; save(); return { ok: true };
   });
+  // Mail search inside one company via the local Super Search service (read-only). The renderer sends a company id + keywords, never a URL or token.
+  const MS = require("./mailsearch");
+  handle("contacts-mail-search", async (a) => {
+    const r = load(); if (r.err) return { ok: false, reason: r.err };
+    if (!Number.isInteger(a.id) || (a.keywords != null && typeof a.keywords !== "string")) return { ok: false, reason: "Bad request." };
+    const v = L.companyView(st.index, { companies: st.ui.companies }, st.ui.snooze, a.id, clock());
+    if (!v) return { ok: false, reason: "That company is not in the list any more." };
+    return MS.searchMails({ company: { domain: v.domain, aliases: v.aliases }, keywords: a.keywords, withAtt: !!a.withAtt, withoutAtt: !!a.withoutAtt }, mailEnv);
+  });
+  handle("contacts-mail-open", async (a) => MS.openMail(a.id, mailEnv, mailLaunch));
   return { stop() { clearTimeout(timer); try { if (watcher && watcher.close) watcher.close(); } catch (e) { /* closed */ } watcher = null; }, _state: () => st };
 }
 

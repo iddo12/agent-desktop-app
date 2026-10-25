@@ -274,6 +274,8 @@ contextBridge.exposeInMainWorld("api", {
     setCategories: (id, categories) => ipcRenderer.invoke("contacts-set-categories", { id, categories }),
     setLink: (id, kind, value) => ipcRenderer.invoke("contacts-set-link", { id, kind, value }),
     snooze: (id, mode, days) => ipcRenderer.invoke("contacts-snooze", { id, mode, days }),
+    mailSearch: (id, keywords, withAtt, withoutAtt) => ipcRenderer.invoke("contacts-mail-search", { id, keywords, withAtt: !!withAtt, withoutAtt: !!withoutAtt }),
+    mailOpen: (id) => ipcRenderer.invoke("contacts-mail-open", { id }),
     suggestions: () => ipcRenderer.invoke("contacts-suggestions", {}),
     resolveSuggestion: (id, action, categories) => ipcRenderer.invoke("contacts-suggestion-resolve", { id, action, categories }),
     onChanged: (fn) => { const h = () => { try { fn(); } catch (e) { /* view gone */ } }; ipcRenderer.on("contacts-changed", h); return () => ipcRenderer.removeListener("contacts-changed", h); },

@@ -89,6 +89,33 @@
     ta.addEventListener("input", () => { dirty = true; clearTimeout(t); say("Typing..."); t = setTimeout(() => { dirty = false; save(); }, 900); }); ta.addEventListener("blur", () => { if (dirty) { dirty = false; clearTimeout(t); save(); } });
     parent.append(sec); return ta;
   }
+  // Search this company's mail by keyword (Betterbird Super Search, read-only). All text from mail goes in with textContent only.
+  function mailSearchBox(parent, c) {
+    const sec = el("div", "ct-sec"); sec.append(el("div", "ct-sh", "Search mail with " + c.name));
+    const row = el("div", "ct-btns");
+    const kw = el("input", "ct-inp"); kw.placeholder = "keywords, e.g. tripod adapter"; kw.maxLength = 120; kw.setAttribute("aria-label", "Mail keywords");
+    const mk = (label, on) => { const l = el("label", "ct-rs"); const i = document.createElement("input"); i.type = "checkbox"; i.checked = on; l.append(i, document.createTextNode(" " + label)); return [l, i]; };
+    const [wl, withI] = mk("With attachments", true), [nl, noI] = mk("Without attachments", true);
+    const out = el("div", "ct-mails");
+    const go = () => {
+      out.textContent = ""; out.append(el("p", "ct-rs", "Searching..."));
+      api.mailSearch(c.id, kw.value, withI.checked, noI.checked).then((r) => {
+        out.textContent = "";
+        if (!r || !r.ok) { out.append(el("p", "ct-empty", (r && r.reason) || "Search failed.")); return; }
+        if (!r.rows.length) { out.append(el("p", "ct-empty", "No matching mail.")); return; }
+        out.append(el("p", "ct-rs", r.total + " mails" + (r.more ? " (showing " + r.rows.length + ")" : "")));
+        r.rows.forEach((m) => {
+          const b = el("button", "ct-row"); b.type = "button"; const t = el("div", "ct-rt");
+          t.append(el("div", "ct-rn", (m.att ? "📎 " : "") + (m.subject || "(no subject)")), el("div", "ct-rs", m.date + " · " + (m.person || m.addr)));
+          b.append(t); b.title = "Open in Betterbird";
+          b.addEventListener("click", () => api.mailOpen(m.id).then((x) => { if (!(x && x.ok)) b.title = (x && x.reason) || "Could not open"; }));
+          out.append(b);
+        });
+      }).catch(() => { out.textContent = ""; out.append(el("p", "ct-empty", "Search failed.")); });
+    };
+    kw.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    row.append(kw, wl, nl, btn("Search", "", go)); sec.append(row, out); parent.append(sec);
+  }
   function openCompany(id) {
     S.sel = id; S.selKind = "company"; if (S.mode === "suggest") { S.mode = "list"; } renderList();
     api.company(id).then((r) => {
@@ -114,6 +141,7 @@
       detail.append(who);
       const rest = c.people.filter((p) => !c.current.some((x) => x.id === p.id));
       if (rest.length) { const sec = el("div", "ct-sec"); sec.append(el("div", "ct-sh", "Other people (" + rest.length + ")")); rest.slice(0, 40).forEach((p) => sec.append(personCard(p, c))); detail.append(sec); }
+      mailSearchBox(detail, c);
       noteBox(detail, "Company note", "company", c.id, c.note); noteBox(detail, "Handover", "handover", c.id, c.handover);
       view.classList.add("ct-showdetail");
     }).catch(() => {});
