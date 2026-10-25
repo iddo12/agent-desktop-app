@@ -31,6 +31,7 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - financeLoginLinks (text): Finance: login links per source (id=https://...;id=https://...)  [env AGENT_DESKTOP_FINANCE_LOGIN_LINKS]
 - intakeDir (folder): Intake folder (holds intake_index.jsonl)  [env AGENT_DESKTOP_INTAKE_DIR]
 - contactsDir (folder): Contacts folder (holds contacts.json from the Personal Assistant agent)  [env AGENT_DESKTOP_CONTACTS_DIR]
+- superSearchTokenFile (file): Betterbird Super Search token file (empty = default location)  [env AGENT_DESKTOP_SUPER_SEARCH_TOKEN_FILE]
 - intakeDefaultAgent (text): Intake: folder name of the agent the watcher delivers approved items to by default  [env AGENT_DESKTOP_INTAKE_DEFAULT_AGENT]
 - intakeRequireVerified (text): Intake: type yes to refuse approving items the phone did not sign (phone signing is not live yet)  [env AGENT_DESKTOP_INTAKE_REQUIRE_VERIFIED]
 - healthParent (folder): Health folder  [env AGENT_DESKTOP_HEALTH_PARENT]
