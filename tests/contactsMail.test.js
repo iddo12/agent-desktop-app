@@ -1,4 +1,4 @@
-﻿// mailsearch.js against a fake Super Search server: token header, company pinning, attachment filter, bounded output, safe open.
+// mailsearch.js against a fake Super Search server: token header, company pinning, attachment filter, bounded output, safe open.
 "use strict";
 const assert = require("assert"), http = require("http"), fs = require("fs"), os = require("os"), path = require("path");
 const M = require("../src/contacts/mailsearch");

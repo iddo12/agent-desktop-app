@@ -85,7 +85,7 @@ async function openMail(id, env, launch) {
   const go = launch || ((e, a) => { const c = spawn(e, a, { detached: true, stdio: "ignore" }); c.unref(); });
   // 1) Preferred: the service copies the mail out of its mbox to <id>.eml and Betterbird opens that file. Betterbird's own
   //    mid: lookup does not search Local Folders (so it fails for most history), but a file always opens, with Reply.
-  const f = await getJson(port, "/eml?id=" + id, token);
+  const f = exe ? await getJson(port, "/eml?id=" + id, token) : { code: 0, body: null };   // no Betterbird: do not leave a copy of the mail on disk
   const p = f.code === 200 && f.body && f.body.path;
   const openDir = path.resolve((env && env.openDir) || process.env.SS_OPEN_DIR || path.join(require("os").homedir(), "BetterbirdSuperSearch_open"));   // same default as the service's open_dir()
   if (typeof p === "string" && exe && path.isAbsolute(p) && /^\d+\.eml$/.test(path.basename(p)) && path.dirname(path.resolve(p)).toLowerCase() === openDir.toLowerCase()) {
