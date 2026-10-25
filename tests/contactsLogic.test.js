@@ -66,6 +66,7 @@ assert.strictEqual(pv.note, "likes short mails"); assert.strictEqual(pv.mails[0]
 // validation of what the view may write
 assert.deepStrictEqual(L.validCategories(["Audio", " Lighting "]), ["Audio", "Lighting"]);
 assert.strictEqual(L.validCategories(["Audio", "audio"]), null, "duplicate (folded)"); assert.strictEqual(L.validCategories(["<script>"]), null);
+for (const bad of ["constructor", "__proto__", "toString", "__none"]) assert.strictEqual(L.validCategories([bad]), null, "reserved category name " + bad);
 assert.strictEqual(L.validCategories("Audio"), null); assert.strictEqual(L.validCategories(Array(9).fill("x").map((x, i) => x + i)), null);
 assert.strictEqual(L.validDate("2026-10-30"), true); assert.strictEqual(L.validDate("2026-13-40"), false); assert.strictEqual(L.validDate("tomorrow"), false);
 assert.strictEqual(L.validLink("web", "https://a.example/x"), "https://a.example/x"); assert.strictEqual(L.validLink("web", "javascript:alert(1)"), null);

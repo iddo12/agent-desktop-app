@@ -93,10 +93,10 @@ function buildIndex(dir, records, snooze, now) {
     const hay = fold([c.name, c.domain || "", c.aliases.join(" "), (r.aliases || []).join(" "), cats.join(" "), c.people.map((p) => p.name + " " + p.emails.join(" ")).join(" ")].join(" "));
     return { id: c.id, name: c.name, cats, last: c.last, daysAgo: d, dir: c.dir, tag, needs, waiting, current: cur.length, people: c.people.length, hay, nameFold: fold(c.name) };
   });
-  const counts = {}; let uncategorised = 0, needsN = 0, waitingN = 0, quietN = 0;
+  const counts = Object.create(null); let uncategorised = 0, needsN = 0, waitingN = 0, quietN = 0;
   for (const r of rows) {
     if (!r.cats.length) uncategorised++;
-    for (const k of r.cats) counts[k] = (counts[k] || 0) + 1;
+    for (const k of r.cats) if (!RESERVED.has(String(k).toLowerCase())) counts[k] = (counts[k] || 0) + 1;
     if (r.needs) needsN++; if (r.waiting) waitingN++; if (r.tag === "quiet") quietN++;
   }
   return { rows, counts, uncategorised, needs: needsN, waiting: waitingN, quiet: quietN, total: rows.length, byId: new Map(dir.companies.map((c) => [c.id, c])) };
@@ -151,10 +151,12 @@ function personView(index, userNotes, snooze, id, now) {
 
 // ---- validation of what the view may change (everything else is refused) ----
 const CAT_OK = /^[^\u0000-\u001f<>]{1,40}$/;
+/** Names that would collide with Object.prototype keys or our own markers: never accepted as a category. */
+const RESERVED = new Set(["constructor", "__proto__", "prototype", "tostring", "valueof", "hasownproperty", "__none"]);
 function validCategories(list) {
   if (!Array.isArray(list) || list.length > MAX_CATEGORIES) return null;
   const seen = new Set(), out = [];
-  for (const c of list) { const n = cleanName(c); if (!CAT_OK.test(n) || seen.has(fold(n))) return null; seen.add(fold(n)); out.push(n); }
+  for (const c of list) { const n = cleanName(c); if (!CAT_OK.test(n) || RESERVED.has(n.toLowerCase()) || seen.has(fold(n))) return null; seen.add(fold(n)); out.push(n); }
   return out;
 }
 function validDate(s) { return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && dayMs(s) != null; }
