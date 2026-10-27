@@ -69,6 +69,52 @@ t("op screenshot: end to end through the service with an injected reader; bad im
   assert.strictEqual(bad.ok, false);
 });
 
+t("cleanBox: fractions inside the picture are kept, anything implausible is dropped", () => {
+  assert.deepStrictEqual(V.cleanBox([0.05, 0.25, 0.17, 0.44]), [0.05, 0.25, 0.17, 0.44]);
+  assert.strictEqual(V.cleanBox(null), null);
+  assert.strictEqual(V.cleanBox([0.2, 0.2, 0.1, 0.4]), null, "inverted");
+  assert.strictEqual(V.cleanBox([0, 0, 1, 1]), null, "whole screenshot");
+  assert.strictEqual(V.cleanBox([0.1, 0.1, 0.11, 0.3]), null, "too thin");
+  assert.strictEqual(V.cleanBox([0.1, 0.1, 0.9, 0.2]), null, "a banner, not a product picture");
+  assert.strictEqual(V.cleanBox(["a", 0, 1, 1]), null);
+});
+t("parseReading: items may be strings (old) or {name, box}; boxes run parallel to names", () => {
+  const r = V.parseReading(JSON.stringify({ orderId: ORDER, parcels: [{ trackingNumber: "2367361581", carrier: "aramex", items: ["Cable", { name: "Slippers", box: [0.05, 0.25, 0.17, 0.44] }, { name: "Band", box: [0, 0, 1, 1] }] }] }));
+  assert.deepStrictEqual(r.parcels[0].items, ["Cable", "Slippers", "Band"]);
+  assert.deepStrictEqual(r.parcels[0].boxes, [null, [0.05, 0.25, 0.17, 0.44], null]);
+});
+t("applyReading: screenshot items become card items and queue one crop per picture; a card that already has pictures is left alone", () => {
+  const card = mk({ numbers: [], orderId: ORDER });
+  const rd = V.parseReading(JSON.stringify({ orderId: ORDER, merchant: "Amazon", parcels: [{ trackingNumber: "2367361581", carrier: "aramex", items: [{ name: "Slippers", box: [0.05, 0.25, 0.17, 0.44] }, { name: "Band" }] }] }));
+  const list = [card];
+  const out = V.applyReading(list, rd, NOW, ORDER);
+  assert.ok(out.ok, JSON.stringify(out));
+  assert.deepStrictEqual(card.items.map((x) => x.name), ["Slippers", "Band"]);
+  assert.strictEqual(out.crops.length, 1);
+  assert.strictEqual(out.crops[0].card, card);
+  assert.strictEqual(out.crops[0].index, 0);
+  const withPic = mk({ numbers: [{ no: "2367361581", carrier: "aramex" }], items: [{ name: "Keep me", qty: 1, thumb: "ship-x-0.png" }] });
+  const out2 = V.applyReading([withPic], rd, NOW, ORDER);
+  assert.strictEqual(withPic.items[0].name, "Keep me");
+  assert.strictEqual(out2.crops.length, 0);
+});
+t("op screenshot: pictures are cropped through the injected cropPicture and stored as item thumbs; a failing crop only loses that picture", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ship-crop-")), "shipments.json");
+  fs.writeFileSync(file, JSON.stringify({ items: [mk()] }));
+  const stub = JSON.stringify({ orderId: ORDER, merchant: "Amazon", parcels: [{ carrier: "aramex", trackingNumber: "2367361581", items: [{ name: "A", box: [0.05, 0.25, 0.17, 0.44] }, { name: "B", box: [0.05, 0.5, 0.17, 0.7] }] }] });
+  fs.writeFileSync(path.join(path.dirname(file), "stub.txt"), stub);
+  const reader = V.createReader({ testMode: true, stubFile: path.join(path.dirname(file), "stub.txt") });
+  const calls = [];
+  const cropPicture = async (url, box, id) => { calls.push(box); if (calls.length === 2) throw new Error("boom"); return id + ".png"; };
+  const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], readScreenshot: reader.read, cropPicture, now: () => NOW, notices: [], say: () => {}, testMode: true });
+  const r = await svc.op({ op: "screenshot", image: "data:image/png;base64,iVBORw0KGgo=", orderId: ORDER });
+  assert.ok(r.ok, JSON.stringify(r));
+  const card = JSON.parse(fs.readFileSync(file, "utf8")).items[0];
+  assert.strictEqual(calls.length, 2);
+  assert.ok(/^ship-[\w-]+-s0-[\w]+\.png$/.test(card.items[0].thumb), card.items[0].thumb);
+  assert.ok(!card.items[1].thumb);
+});
+
 t("migration 3: the junk 10-digit number on an Amazon email card is dropped with its events; a chosen carrier is kept; backup made", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-mig-"));
   const file = path.join(dir, "shipments.json");

@@ -387,7 +387,7 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
     }),
   });
   const shipments = shipMain.createService({
-    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow, readScreenshot: shotReader.read, makeThumb: (url, id) => makeThumbFor(url, id),
+    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow, readScreenshot: shotReader.read, makeThumb: (url, id) => makeThumbFor(url, id), cropPicture: (dataUrl, box, id) => cropThumbFor(dataUrl, box, id),
     getMails: async (now) => {
       if (testMode) return [];
       const out = [];
@@ -465,6 +465,21 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
     }
   });
 
+  // A product picture cut out of a pasted screenshot: box = [left, top, right, bottom] as fractions of the image; kept as a small PNG next to the others.
+  async function cropThumbFor(dataUrl, box, id) {
+    const img = nativeImage.createFromDataURL(String(dataUrl || ""));
+    if (img.isEmpty() || !Array.isArray(box) || box.length !== 4) return "";
+    const sz = img.getSize();
+    const x = Math.max(0, Math.round(box[0] * sz.width)), y = Math.max(0, Math.round(box[1] * sz.height));
+    const w = Math.min(sz.width - x, Math.round((box[2] - box[0]) * sz.width)), h = Math.min(sz.height - y, Math.round((box[3] - box[1]) * sz.height));
+    if (w < 16 || h < 16) return "";
+    const part = img.crop({ x, y, width: w, height: h });
+    const small = part.resize(w >= h ? { width: Math.min(w, 160) } : { height: Math.min(h, 160) });
+    fs.mkdirSync(thumbDir, { recursive: true });
+    const name = String(id).replace(/[^\w-]/g, "") + ".png";
+    fs.writeFileSync(path.join(thumbDir, name), small.toPNG());
+    return name;
+  }
   // Thumbnails: download the product image (same SSRF rules), shrink it, keep a small PNG under daily/thumbs/.
   async function makeThumbFor(imageUrl, id) {
     if (makeThumb) return makeThumb(imageUrl, id, thumbDir);

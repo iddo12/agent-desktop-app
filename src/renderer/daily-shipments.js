@@ -213,14 +213,15 @@
         ico.title = s.carrierName;
         const main = el("div", "ship-main");
         const l1 = el("div", "ship-l1");
-        const name = s.title || s.merchant || (s.numbers[0] ? s.carrierName : "Parcel");
+        // 2026-10-27 (Iddo): the bold first name is ALWAYS the sender (Amazon, iHerb, B&H...), never the product; the product is its own line below
+        const senderFrom = (s.from || "").split(/[,(<]/)[0].trim();
+        const name = s.merchant || senderFrom || (s.numbers[0] ? s.carrierName : "Parcel");
         l1.append(el("b", "ship-name", name), chipEl(s.effective));
         if (s.split && s.orderId) {
           const sibs = ((data && data.items) || []).filter((x) => x.split && x.orderId === s.orderId && !x.archived);
           if (sibs.length > 1) l1.append(el("span", "ship-chip mute", "Parcel " + (sibs.findIndex((x) => x.id === s.id) + 1) + " of " + sibs.length));
         }
         if (s.review) l1.append(el("span", "ship-chip mute", "Review sample"));
-        if (s.merchant && s.title && s.merchant !== s.title) l1.append(el("span", "ship-merch", s.merchant));
         const l2 = el("div", "ship-l2");
         if (!s.needsNumber) l2.append(el("span", "ship-carrier", s.carrierName));
         else if (s.orderId) l2.append(el("span", "ship-carrier", "Order " + s.orderId + (s.orderAt ? ", " + shortDay(s.orderAt) : "")));
@@ -231,7 +232,10 @@
         }
         if (s.eta && !archived) l2.append(el("span", "ship-eta", "ETA " + dayText(s.eta, now)));
         main.append(l1, l2);
-        { const cb = contentsBlock(s); if (cb) main.append(cb); }
+        const cb = contentsBlock(s);
+        // the product line only when there is no item list with names/pictures below (otherwise it would say the same thing twice)
+        if (s.title && s.title !== name && s.title !== "From " + s.from && !(Array.isArray(s.items) && s.items.some((x) => !x.cat))) main.append(el("div", "ship-prod", s.title));
+        if (cb) main.append(cb);
         if (s.action && !archived) main.append(el("div", "ship-action " + (CHIP[s.effective] || [0, ""])[1], s.action + " !"));
         const ev = s.lastEvent;
         if (ev && ev.text) {

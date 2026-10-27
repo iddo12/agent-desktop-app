@@ -11,7 +11,7 @@ const V = require("./shipments-vision");
 const SCAN_MIN_MS = 10 * 60000;
 const MAX_MAILS = 400;
 
-function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, makeThumb, now, say, notices, testMode }) {
+function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, makeThumb, cropPicture, now, say, notices, testMode }) {
   const clock = typeof now === "function" ? now : () => Date.now();
   const log = typeof say === "function" ? say : () => {};
   let timer = null;
@@ -337,6 +337,13 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         if (!rd.ok) return { ok: false, reason: rd.reason };
         const r = V.applyReading(st.items, rd, t, M.clean(args.orderId, 40));
         if (!r.ok) return { ok: false, reason: r.reason };
+        // product pictures: cut each one out of the pasted screenshot (best effort; an item whose crop fails just has no picture)
+        let pics = 0;
+        if (typeof cropPicture === "function") for (const c of r.crops || []) {
+          try { const f = await cropPicture(args.image, c.box, "ship-" + String(c.card.id).replace(/[^\w-]/g, "") + "-s" + c.index + "-" + Date.now().toString(36)); if (f && /^[\w-]+\.png$/.test(f)) { c.card.items[c.index].thumb = f; pics++; } }
+          catch (e) { log("shipments crop failed: " + M.clean(e && e.message, 100)); }
+        }
+        if (pics) r.summary.push(pics + (pics === 1 ? " picture" : " pictures") + " added");
         for (const s of st.items) if (!s.archived && s.numbers.length && !s.polledAt) await pollOne(s);
         save(st);
         return { ok: true, summary: r.summary, created: r.created, changed: r.changed };
