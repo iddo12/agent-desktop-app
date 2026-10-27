@@ -22,6 +22,15 @@ t("model: split order never merges a different number by order id; unsplit order
   assert.strictEqual(r2.shipment, a, "same number still matches");
 });
 
+t("model: a mail carrying the same number as an existing sibling does not create another card", () => {
+  const list = [];
+  const a = M.mergeCandidate(list, { orderId: ORDER, merchant: "Amazon", numbers: [{ no: "TBA111111111111", carrier: "amazon" }], at: NOW }, NOW).shipment;
+  a.split = true;
+  const b = M.mergeCandidate(list, { orderId: ORDER, merchant: "Amazon", numbers: [{ no: "TBA222222222222", carrier: "amazon" }], at: NOW }, NOW).shipment;
+  const r = M.mergeCandidate(list, { orderId: ORDER, merchant: "Amazon", numbers: [{ no: "TBA222222222222", carrier: "amazon" }], at: NOW + 1000 }, NOW + 1000);
+  assert.ok(!r.created && r.shipment === b && list.length === 2);
+});
+
 t("op split: adds a numberless sibling with the same order, and marks both split", async () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ship-split-")), "shipments.json");
   const seed = { items: [M.makeShipment({ orderId: ORDER, merchant: "Amazon", title: "Amazon", state: "shipped", source: "email" }, NOW)] };
