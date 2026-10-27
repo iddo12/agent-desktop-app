@@ -90,7 +90,10 @@ function pushNum(out, raw, why, hint, refs) {
   const no = M.normNumber(raw);
   if (!no || no.length < 8) return;
   if (refs && refs.has(no)) return;                                                // labelled as an order number in this mail
-  if (M.looksLikeOrderNumber(raw)) return;                                         // an order id by format (Amazon 3-7-7, AliExpress 16 digits)
+  // an order id by format (Amazon 3-7-7 always; 16/17 plain digits only when the number is NOT explicitly a tracking value: a link
+  // parameter, a tracking label or a carrier format is explicit, so a genuine 16-digit Evri number in a carrier mail survives)
+  if (/^\d{3}-\d{7}-\d{7}$/.test(String(raw).trim())) return;
+  if ((why === "subject" || why === "bare") && M.looksLikeOrderNumber(raw)) return;
   if (/^(19|20)\d{6,}$/.test(no) && no.length <= 8) return;                        // a date
   if (out.some((x) => x.no === no)) return;
   const d = M.detectCarrier(no, hint);

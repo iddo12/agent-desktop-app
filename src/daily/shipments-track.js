@@ -90,7 +90,7 @@ function create17Track({ getKey, request, sleep }) {
     return r.json.data || {};
   };
   const alreadyRegistered = (rej) => !!rej && (/registered/i.test(String(rej.error && rej.error.message)) || (rej.error && rej.error.code === -18019901));
-  const systemError = (e) => /rate|refused|no key/i.test(String(e && e.message));
+  const systemError = (e) => /rate limit|too many requests|refused|no key/i.test(String(e && e.message));
   return {
     id: "17track", label: "17TRACK", needsKey: true, enabled: () => !!getKey(),
     // Extra output beside results/errors: info[number] = { status, sub } (17TRACK's own "NotFound" etc.), codes[number] = error code.
@@ -99,8 +99,12 @@ function create17Track({ getKey, request, sleep }) {
       const list = items.filter((i) => i && i.number);
       for (let i = 0; i < list.length; i += BATCH) {
         const batch = list.slice(i, i + BATCH);
-        // 2026-10-27: the owner set a carrier for a number that is already registered -> move it to that carrier. changecarrier is
-        // tried first; when 17TRACK refuses (or the carrier is "auto-detect") the number is deleted and registered again.
+        // 2026-10-27: the owner set a carrier for a number that is already registered -> move it to that carrier. changecarrier
+        // (fields number + carrier_new, per the 17TRACK v2.4 docs) is tried first; when 17TRACK refuses it, answers with an
+        // unexpected body, or the carrier is "auto-detect", the number is deleted and registered again. Anything that is not an
+        // explicit "accepted" counts as a failure: the number then gets an error ("carrier change failed") and is NOT registered,
+        // so the owner's choice stays pending (recarrier is kept) instead of being silently dropped.
+        const failedMove = new Set();
         const re = batch.filter((b) => b.recarrier);
         if (re.length) {
           try {
@@ -108,24 +112,32 @@ function create17Track({ getKey, request, sleep }) {
             let redo = re.filter((b) => !withCode.includes(b));
             if (withCode.length) {
               try {
-                const r = await post("changecarrier", withCode.map((b) => ({ number: b.number, carrier: M.CARRIER_BY_ID[b.carrier].t17 })));
-                const bad = new Set((r.rejected || []).map((x) => x.number));
-                redo = redo.concat(withCode.filter((b) => bad.has(b.number)));
+                const r = await post("changecarrier", withCode.map((b) => ({ number: b.number, carrier_new: M.CARRIER_BY_ID[b.carrier].t17 })));
+                const okSet = new Set(Array.isArray(r.accepted) ? r.accepted.map((x) => x && x.number) : []);
+                redo = redo.concat(withCode.filter((b) => !okSet.has(b.number)));
               } catch (e) { if (systemError(e)) throw e; redo = redo.concat(withCode); }
               await wait(MIN_GAP_MS);
             }
-            if (redo.length) { await post("deletetrack", redo.map((b) => ({ number: b.number }))); await wait(MIN_GAP_MS); }
+            if (redo.length) {
+              const d = await post("deletetrack", redo.map((b) => ({ number: b.number })));
+              const gone = new Set(Array.isArray(d.accepted) ? d.accepted.map((x) => x && x.number) : []);
+              const notReg = new Set((Array.isArray(d.rejected) ? d.rejected : []).filter((x) => /not (?:been )?registered|not exist|no such/i.test(String(x && x.error && x.error.message))).map((x) => x.number));
+              for (const b of redo) if (!gone.has(b.number) && !notReg.has(b.number)) { failedMove.add(b.number); out.errors[b.number] = "carrier change failed: 17TRACK did not confirm deleting the old registration"; }
+              await wait(MIN_GAP_MS);
+            }
           } catch (e) {
             if (systemError(e)) { for (const b of batch) out.errors[b.number] = clean(e && e.message, 120); break; }
-            /* a failed re-carrier is not fatal: register below still runs */
+            for (const b of re) { failedMove.add(b.number); out.errors[b.number] = "carrier change failed: " + clean(e && e.message, 100); }
           }
         }
-        const payload = batch.map((b) => { const o = { number: b.number }; const c = M.CARRIER_BY_ID[b.carrier]; if (c && c.t17) o.carrier = c.t17; return o; });
+        const live = batch.filter((b) => !failedMove.has(b.number));
+        if (!live.length) { if (i + BATCH < list.length) await wait(MIN_GAP_MS); continue; }
+        const payload = live.map((b) => { const o = { number: b.number }; const c = M.CARRIER_BY_ID[b.carrier]; if (c && c.t17) o.carrier = c.t17; return o; });
         try {
           const reg = await post("register", payload);
           for (const rej of reg.rejected || []) if (!alreadyRegistered(rej)) { out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected"; if (rej.error && rej.error.code != null) out.codes[rej.number] = rej.error.code; }
           await wait(MIN_GAP_MS);
-          const info = await post("gettrackinfo", batch.map((b) => ({ number: b.number })));
+          const info = await post("gettrackinfo", live.map((b) => ({ number: b.number })));
           for (const acc of info.accepted || []) {
             const parsed = parseTrackInfo(acc);
             if (parsed) out.results[acc.number] = parsed;
@@ -134,7 +146,7 @@ function create17Track({ getKey, request, sleep }) {
           }
           for (const rej of info.rejected || []) if (!out.errors[rej.number]) { out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected"; if (rej.error && rej.error.code != null) out.codes[rej.number] = rej.error.code; }
         } catch (e) {
-          for (const b of batch) out.errors[b.number] = clean(e && e.message, 120);
+          for (const b of live) out.errors[b.number] = clean(e && e.message, 120);
           if (systemError(e)) break;
         }
         if (i + BATCH < list.length) await wait(MIN_GAP_MS);
@@ -209,8 +221,9 @@ const DAY_MS = 86400000;
 function classifyReason(err, info, ageMs, code) {
   const e = String(err || "");
   if (e) {
+    if (/^carrier change failed/i.test(e)) return { reason: "error", reasonText: "Could not move the number to the carrier you chose yet (" + clean(e.replace(/^carrier change failed:\s*/i, ""), 80) + "). It will be tried again." };
     if (/refused|no key/i.test(e)) return { reason: "key_refused", reasonText: "17TRACK refused the key - check it under Tracking key." };
-    if (/rate/i.test(e)) return { reason: "rate", reasonText: "17TRACK was busy (rate limit) - it will be asked again." };
+    if (/rate limit|too many requests/i.test(e)) return { reason: "rate", reasonText: "17TRACK was busy (rate limit) - it will be asked again." };
     if (/quota|insufficient|balance|exceed/i.test(e)) return { reason: "quota", reasonText: "The 17TRACK quota is used up, so this number cannot be tracked." };
     if (/invalid|illegal|format|incorrect/i.test(e)) return { reason: "invalid", reasonText: "17TRACK says this is not a valid tracking number (" + clean(e, 80) + ")." };
     if (/carrier|detect|identif|rejected/i.test(e) || code != null) return { reason: "rejected", reasonText: "17TRACK did not accept this number: " + clean(e, 100) + "." };
@@ -281,7 +294,7 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
           const ref = it.ref;
           if (ref) {
             // keep the owner-chosen carrier request until the provider has really received it (not on key/rate/quota trouble)
-            if (ref.recarrier && !/refused|no key|rate|quota/i.test(String(err || ""))) delete ref.recarrier;
+            if (ref.recarrier && !/refused|no key|rate limit|too many requests|quota|^carrier change failed/i.test(String(err || ""))) delete ref.recarrier;
             if (hit && hit.events && hit.events.length) { delete ref.reason; delete ref.reasonText; delete ref.reasonAt; }
             else {
               const c = classifyReason(err, r.info && r.info[it.number], now - (ref.at || it.shipment.added || now), r.codes && r.codes[it.number]);

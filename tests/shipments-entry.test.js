@@ -249,7 +249,7 @@ t("set-carrier: marks the number as owner-chosen, calls changecarrier with the 1
   assert.strictEqual(sc.ok, true);
   const eps = s.calls.map((c) => c.ep);
   assert.deepStrictEqual(eps.slice(0, 3), ["changecarrier", "register", "gettrackinfo"]);
-  assert.deepStrictEqual(s.calls[0].body, [{ number: "ABC98765432", carrier: 100004 }]);
+  assert.deepStrictEqual(s.calls[0].body, [{ number: "ABC98765432", carrier_new: 100004 }]);
   assert.strictEqual(s.calls[1].body[0].carrier, 100004);
   const n = raw(s.file).items[0].numbers[0];
   assert.strictEqual(n.carrier, "aramex"); assert.strictEqual(n.carrierSet, true); assert.strictEqual(n.recarrier, undefined);

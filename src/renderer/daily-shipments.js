@@ -74,6 +74,16 @@
       // what the owner sees to tell parcels apart: merchant, product, order id, order date
       const orderLabel = (s) => [s.merchant, s.title && s.title !== s.merchant ? s.title : "", s.orderId ? "order " + s.orderId : "", s.orderAt ? "ordered " + shortDay(s.orderAt) : ""].filter(Boolean).join(" - ");
 
+      // 16-17 plain digits look like order numbers: the main process answers needsConfirm; the next press of the SAME button is
+      // relabelled "Use it anyway" and sends force:true. Returns a click handler for run(force) -> act() result.
+      function confirmable(button, run) {
+        let force = false;
+        return async () => {
+          const r = await run(force);
+          if (r && r.needsConfirm) { force = true; button.textContent = "Use it anyway"; }
+          return r;
+        };
+      }
       // A parcel that has no valid tracking number yet (only an order number came by mail): box to paste the real one.
       function numberBox(s) {
         const w = el("div", "ship-numbox");
@@ -83,9 +93,12 @@
         inp.placeholder = "Paste the tracking number (not the order number)";
         inp.maxLength = 400; inp.setAttribute("dir", "auto");
         const sel = carrierSelect("");
-        const go = () => { const v = inp.value.trim(); if (v) act("add-number", s.id, { text: v, carrier: sel.value }, "Tracking number saved."); };
+        let go = () => {};
+        const saveBtn = btn("Save number", "daily-btn sm pri", () => go());
+        go = confirmable(saveBtn, (force) => { const v = inp.value.trim(); return v ? act("add-number", s.id, { text: v, carrier: sel.value, force }, "Tracking number saved.") : null; });
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-        line.append(inp, sel, btn("Save number", "daily-btn sm pri", go));
+        inp.addEventListener("input", () => { saveBtn.textContent = "Save number"; });
+        line.append(inp, sel, saveBtn);
         w.append(line);
         return w;
       }
@@ -199,12 +212,15 @@
         const rvl = el("label", "ship-chk"); rvl.append(rv, document.createTextNode(" Review sample"));
         rvl.title = "Tag this parcel as a product sent to you for review";
         const pick = el("div", "ship-pick");
-        const go = async () => {
+        let go = () => {};
+        const addBtn = btn("Add", "daily-btn pri", () => go());
+        go = confirmable(addBtn, async (force) => {
           const v = inp.value.trim();
-          if (!v) return;
-          const r = await act("add", null, { text: v, carrier: sel.value, label: label.value.trim(), review: rv.checked }, "Added.");
+          if (!v) return null;
+          const r = await act("add", null, { text: v, carrier: sel.value, label: label.value.trim(), review: rv.checked, force }, "Added.");
           if (r && r.ok) { showAdd = false; ctx.rerender(); if (r.note) say(r.note); }
-        };
+          return r;
+        });
         const showPick = () => {
           pick.textContent = "";
           const v = inp.value.trim();
@@ -213,14 +229,17 @@
           pick.append(el("div", "ship-muted sm", "Which order is this? These parcels are still waiting for a tracking number:"));
           for (const s of open.slice(0, 12)) {
             const line = el("div", "ship-pickrow");
-            line.append(el("span", "ship-pickt", orderLabel(s) || "Parcel"), btn("This one", "daily-btn sm", () => act("add-number", s.id, { text: v, carrier: sel.value }, "Tracking number attached.").then((r) => { if (r && r.ok) { showAdd = false; ctx.rerender(); } })));
+            let pickGo = () => {};
+            const pb = btn("This one", "daily-btn sm", () => pickGo());
+            pickGo = confirmable(pb, async (force) => { const r = await act("add-number", s.id, { text: v, carrier: sel.value, force }, "Tracking number attached."); if (r && r.ok) { showAdd = false; ctx.rerender(); } return r; });
+            line.append(el("span", "ship-pickt", orderLabel(s) || "Parcel"), pb);
             pick.append(line);
           }
         };
-        inp.addEventListener("input", showPick);
+        inp.addEventListener("input", () => { addBtn.textContent = "Add"; showPick(); });
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); if (e.key === "Escape") { showAdd = false; ctx.rerender(); } });
         w.append(inp, sel);
-        w2.append(label, rvl, btn("Add", "daily-btn pri", go), btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
+        w2.append(label, rvl, addBtn, btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
         box.append(w, w2, pick);
         setTimeout(() => inp.focus(), 0);
         return box;

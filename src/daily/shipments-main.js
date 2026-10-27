@@ -77,7 +77,18 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     if (!tracker.hasLiveProvider() || !s || !s.numbers.length) return;
     try { await tracker.refresh([s], clock(), { force: true }); } catch (e) { log("shipments poll one failed: " + M.clean(e && e.message, 120)); }
   }
-  const orderLike = (no) => M.looksLikeOrderNumber(no);
+  // Review fix C: 16/17 plain digits are only a WARNING (Evri uses 16 digits). Hard refusal only when it equals a known order id,
+  // is an Amazon 3-7-7 id, or goes onto an AliExpress/Amazon parcel; otherwise the owner can confirm with force:true ("Use it anyway").
+  function orderCheck(st, numbers, parcel, args) {
+    const bad = numbers.find((n) => M.looksLikeOrderNumber(n.no));
+    if (!bad) return null;
+    const known = st.items.some((x) => x.orderId && M.normNumber(x.orderId) === bad.no);
+    const dashed = /\b\d{3}-\d{7}-\d{7}\b/.test(String(args.text || ""));
+    const market = !!parcel && /aliexpress|amazon|alibaba/i.test(parcel.merchant || "");
+    if (known || dashed || market) return { ok: false, reason: ORDER_MSG };
+    if (!args.force) return { ok: false, needsConfirm: true, reason: "This is 16-17 plain digits, which is how AliExpress and Amazon order numbers look. If it really is a tracking number (some carriers use 16 digits), press \"Use it anyway\"." };
+    return null;
+  }
   const ORDER_MSG = "That looks like an order number, not a tracking number. Tracking numbers come in the shipping mail from the carrier (AliExpress order ids are 16 digits).";
   const pickCarrier = (id) => (id && id !== "auto" && M.CARRIER_BY_ID[id]) ? id : "";
 
@@ -129,25 +140,32 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     retries++;
     retryTimer = setTimeout(() => {
       retryTimer = null;
-      const s2 = loadStore();
-      poll(s2, true).then((r) => { if (r) { try { save(s2); } catch (e) { /* next time */ } } }).catch(() => {});
+      backgroundPoll(true);
     }, 10 * 60000);
     if (retryTimer.unref) retryTimer.unref();
   }
 
-  async function load(args) {
+  // Review fix A: scan, poll, refresh and every op run one at a time through this queue. An op that waits seconds for 17TRACK can no
+  // longer overwrite what a scan or the 12 h poll saved meanwhile (each entry point loads the store fresh when its turn comes).
+  let chain = Promise.resolve();
+  const serial = (fn) => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
+  const backgroundPoll = (force) => serial(async () => { const s2 = loadStore(); const r = await poll(s2, force); if (r) { try { save(s2); } catch (e) { /* next time */ } } }).catch(() => {});
+
+  const load = (args) => serial(() => loadInner(args));
+  async function loadInner(args) {
     const st = loadStore();
     const a = args || {};
     const found = await scan(st, !!a.force);
     if (found || a.force) save(st); else if (!st.scannedAt) save(st);
     // a stale poll in the background (does not delay the answer)
     if (tracker.hasLiveProvider() && (!st.polledAt || clock() - st.polledAt >= T.POLL_MS)) {
-      poll(st, false).then((r) => { if (r) { try { save(st); } catch (e) { /* next time */ } } }).catch(() => {});
+      backgroundPoll(false);
     }
     return view(st);
   }
 
-  async function refreshNow() {
+  const refreshNow = () => serial(refreshInner);
+  async function refreshInner() {
     retries = 0;
     const st = loadStore();
     await scan(st, true);
@@ -158,7 +176,8 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     return v;
   }
 
-  async function op(a) {
+  const op = (a) => serial(() => opInner(a));
+  async function opInner(a) {
     const args = a && typeof a === "object" ? a : {};
     const st = loadStore();
     const t = clock();
@@ -167,7 +186,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       case "add": {
         const p = E.parseAddInput(args.text);
         if (!p.ok) return { ok: false, reason: p.reason };
-        if (p.numbers.some((n) => orderLike(n.no))) return { ok: false, reason: ORDER_MSG };
+        { const oc = orderCheck(st, p.numbers, null, args); if (oc) return oc; }
         const pc = pickCarrier(args.carrier);
         const numbers = p.numbers.map((n) => ({ no: n.no, carrier: pc || n.carrier, carrierSet: !!pc, at: t }));
         const label = M.clean(args.label, 120) || p.title;
@@ -207,7 +226,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." };
         const p = E.parseAddInput(args.text);
         if (!p.ok) return { ok: false, reason: p.reason };
-        if (p.numbers.some((n) => orderLike(n.no))) return { ok: false, reason: ORDER_MSG };
+        { const oc = orderCheck(st, p.numbers, s, args); if (oc) return oc; }
         const other = st.items.find((x) => x !== s && x.numbers.some((y) => p.numbers.some((n) => n.no === y.no)));
         if (other) return { ok: false, reason: "That number is already on another parcel (" + (other.title || other.merchant || other.id) + ")." };
         const pc = pickCarrier(args.carrier);
@@ -246,7 +265,8 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       if (!timer) { timer = setInterval(() => { runTimed().catch(() => {}); }, T.POLL_MS); if (timer.unref) timer.unref(); }
     } else if (timer) { clearInterval(timer); timer = null; }
   }
-  async function runTimed() {
+  const runTimed = () => serial(runTimedInner);
+  async function runTimedInner() {
     const st = loadStore();
     await scan(st, true);
     await poll(st, true);

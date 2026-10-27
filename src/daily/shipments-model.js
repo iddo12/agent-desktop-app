@@ -92,8 +92,11 @@ function migrateWrongNumbers(list, now) {
   for (const s of list) {
     if (!s || !Array.isArray(s.numbers)) continue;
     const keep = [];
+    // 2026-10-27 (review): a number that ever produced tracking events is proof of a real number (Evri 16 digits, DPD 14, GLS, FedEx,
+    // USPS ... are all plain digits). Parcels with events / lastEvent are never touched by the digit heuristics.
+    const proven = (s.events && s.events.length > 0) || !!s.lastEvent;
     for (const n of s.numbers) {
-      if (NUMBER_FIXES[n.no]) {
+      if (NUMBER_FIXES[n.no] && !proven) {
         const to = NUMBER_FIXES[n.no];
         keep.push({ no: to, carrier: detectCarrier(to, "").carrier });   // unknown format -> "other": 17TRACK auto-detects
         fixed.push({ id: s.id, from: n.no, to });
@@ -101,15 +104,17 @@ function migrateWrongNumbers(list, now) {
       }
       const strong = CARRIERS.some((c) => !c.weak && c.re.some((r) => r.test(n.no)));
       const market = /aliexpress|alibaba/i.test(s.merchant || "") || n.carrier === "cainiao";
-      const bad = !strong && !n.carrierSet && (looksLikeOrderNumber(n.no) || (market && /^\d{12,20}$/.test(n.no)));
-      if (bad) {
+      const bad = !proven && !strong && !n.carrierSet && (looksLikeOrderNumber(n.no) || (market && /^\d{12,20}$/.test(n.no)));
+      // an orderId that is already set and different is not overwritten, and the number is kept rather than dropped
+      const otherOrder = bad && s.orderId && normNumber(s.orderId) !== n.no;
+      if (bad && !otherOrder) {
         if (!s.orderId) s.orderId = clean(n.no, 40);
         moved.push({ id: s.id, no: n.no });
       } else keep.push(n);
     }
     if (keep.length !== s.numbers.length || fixed.some((f) => f.id === s.id)) {
       s.numbers = keep;
-      if (!keep.length) { s.events = []; s.lastEvent = null; s.polledAt = null; s.polledOk = null; }
+      if (!keep.length) { s.polledAt = null; s.polledOk = null; }   // events are never wiped (a parcel with events is never emptied)
       else s.carrier = keep[keep.length - 1].carrier;
       s.updated = now;
     }
