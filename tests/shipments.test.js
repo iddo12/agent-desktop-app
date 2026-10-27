@@ -184,5 +184,10 @@ t("makeShipment cleans junk and caps text", () => {
   assert.ok(s.title.length <= 120 && !/\u0000/.test(s.title));
   assert.strictEqual(s.state, "ordered"); assert.strictEqual(s.eta, null);
 });
+t("a carrier's \"final status\" (handed to the next carrier) is never shown as stuck", () => {
+  const s = { state: "shipped", carrier: "aramex", numbers: [{ no: "2367361581" }], lastChangeAt: NOW - 21 * DAY, stateAt: NOW - 21 * DAY, lastEvent: { text: "This is final status for this shipment tracking number.", place: "MILAN - MALPENSA - ITALY", at: NOW - 21 * DAY }, events: [{ text: "x", at: NOW - 21 * DAY }] };
+  assert.strictEqual(M.effectiveState(s, NOW), "shipped");
+  assert.strictEqual(M.effectiveState(Object.assign({}, s, { lastEvent: { text: "Departed hub", at: NOW - 21 * DAY } }), NOW), "exception_stuck");
+});
 console.log(`shipments: ${n - fails}/${n} passed`);
 process.exit(fails ? 1 : 0);

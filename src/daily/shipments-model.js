@@ -303,6 +303,8 @@ function effectiveState(s, now, stuckDays) {
   if (s.archived || s.state === "delivered" || NEEDS_ACTION.has(s.state) || s.state === "out_for_delivery") return s.state;
   if (s.state === "ordered") return s.state;
   if (needsNumber(s)) return s.state;   // 2026-10-27: no tracking number = nothing to track, so it cannot be "stuck" (Amazon card said "No update for 20 days")
+  // 2026-10-27: "final status for this shipment tracking number" = this carrier finished its leg and handed the parcel to another one (Aramex -> Amazon Italy); no later event is expected from it
+  if (s.lastEvent && /final status for this shipment/i.test(s.lastEvent.text || "")) return s.state;
   if (s.carrier === "amazon" && !(s.events && s.events.length)) return s.state;   // tracked inside Amazon: nothing to poll, so "no update" means nothing
   const days = stuckDays || STUCK_DAYS_DEFAULT;
   if (now - (s.lastChangeAt || s.stateAt || 0) > days * DAY) return "exception_stuck";
