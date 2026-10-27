@@ -283,8 +283,9 @@ function extractShipments(mail, now) {
   const merchant = sInfo ? sInfo.merchant : "";
   const from = extractFrom(text, merchant, sInfo && sInfo.isCarrier);
   const got = extractItems(body, subject);
+  // pictures are fetched only for mail from a known shop (not a carrier, not an unknown sender)
   const cand = {
-    items: pairImages(got.items, mail.images), itemCount: got.count,
+    items: (sInfo && !sInfo.isCarrier) ? pairImages(got.items, mail.images) : got.items, itemCount: got.count,
     numbers: nums.map((n) => ({ no: n.no, carrier: n.carrier })),
     carrier: nums.length ? nums[nums.length - 1].carrier : (hint || "other"),
     orderId, merchant, from, to: extractTo(text), eta, etaText,

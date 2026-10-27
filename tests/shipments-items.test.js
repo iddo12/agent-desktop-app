@@ -85,4 +85,16 @@ t("renderer + css wiring: contents block, textContent only, local pictures", () 
   assert.ok(/\.ship-pic\b/.test(css) && /\.ship-items\b/.test(css));
 });
 
+t("pictures are only taken from a known shop sender; hostile html stays fast", () => {
+  const body = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td>";
+  const c = E.extractShipments({ from: "x <a@evil.example>", subject: "Your order has shipped tracking 524349476473", date: "2026-10-27T08:00:00Z", messageId: "e1", images: ["https://evil.example/p.gif"], body }, NOW)[0];
+  if (c) assert.ok((c.items || []).every((x) => !x.src));
+  const G = require("../src/daily/gmail.js");
+  assert.ok(G);
+  const t0 = Date.now();
+  const hostile = "<img " + "src=\"https://a/".repeat(20000);
+  /<img[^<>]{0,1000}?src\s*=\s*["'](https:\/\/[^"'\s<>]{4,400})["'][^<>]{0,1000}>/gi.exec(hostile.slice(0, 300000));
+  assert.ok(Date.now() - t0 < 1000);
+});
+
 (async () => { let f = 0; for (const { n, f: fn } of queue) { try { await fn(); } catch (e) { f++; console.error("FAIL " + n + "\n  " + e.stack.split("\n").slice(0, 5).join("\n  ")); } } console.log(`shipments-items: ${queue.length - f}/${queue.length} passed`); process.exit(f ? 1 : 0); })();

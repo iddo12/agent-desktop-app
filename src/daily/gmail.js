@@ -220,7 +220,8 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
     if (!payload || (depth || 0) > 6 || out.length >= 24) return out;
     if (String(payload.mimeType) === "text/html" && payload.body && payload.body.data) {
       let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
-      const re = /<img\b[^>]*?\bsrc\s*=\s*["'](https:\/\/[^"'\s]{4,400})["'][^>]*>/gi;
+      t = t.slice(0, 300000);                                           // bounded work on hostile mail
+      const re = /<img\b[^<>]{0,1000}?\bsrc\s*=\s*["'](https:\/\/[^"'\s<>]{4,400})["'][^<>]{0,1000}>/gi;
       let m;
       while ((m = re.exec(t)) && out.length < 24) {
         const w = /\bwidth\s*=\s*["']?(\d+)/i.exec(m[0]);
