@@ -103,13 +103,21 @@
         return w;
       }
       // A picture (clipboard / file) -> JPEG data URL, longest side <= 1800 px so a 4K screen stays small and readable.
+      // The main process refuses any request over 262144 characters, so the picture is stepped down (size, then quality) until its
+      // data URL is <= 230000 characters (= shipments-vision.js MAX_DATAURL_CHARS). Text stays readable down to ~900 px.
       async function imageToDataUrl(blob) {
         const bmp = await createImageBitmap(blob);
-        const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
-        const c = document.createElement("canvas");
-        c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-        c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
-        return c.toDataURL("image/jpeg", 0.88);
+        for (const side of [1600, 1300, 1100, 950, 800]) {
+          for (const q of [0.8, 0.7, 0.6, 0.5]) {
+            const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+            const c = document.createElement("canvas");
+            c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+            c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+            const url = c.toDataURL("image/jpeg", q);
+            if (url.length <= 230000) return url;
+          }
+        }
+        throw new Error("too big");
       }
       // Screenshot of the shop's order / Track-package page: the app reads the tracking numbers AND which items are in which parcel.
       function orderTools(s) {

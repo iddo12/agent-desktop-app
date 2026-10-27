@@ -21,14 +21,22 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   // 3 (2026-10-27): Amazon shop mails carry link ids that were taken for a carrier number (2367361581 -> an old Milan parcel).
   // Drop a number from an Amazon email card when its format is only a weak guess and the owner never chose its carrier; the
   // tracking events that came from it go with it. Returns the number of cards changed.
+  // Review fix (SE 2026-10-27): a number that ever produced tracking events is "proven" and is never touched, and history is never
+  // wiped on a guess. Only numbers PROVEN to be junk by the owner (KNOWN_JUNK, seen by eye: an Oct 6 Milan parcel on a Nov order) lose
+  // their events; any other weak guess is dropped only from a card that has no events at all.
+  const KNOWN_JUNK = new Set(["2367361581"]);
   function junkAmazon(items, t) {
     let n = 0;
     for (const s of items) {
       if (!s || s.merchant !== "Amazon" || s.source !== "email" || !s.numbers.length) continue;
-      const bad = s.numbers.filter((x) => !x.carrierSet && (x.carrier === "other" || (M.CARRIER_BY_ID[x.carrier] && M.CARRIER_BY_ID[x.carrier].weak)));
+      const hasHistory = (Array.isArray(s.events) && s.events.length) || !!s.lastEvent;
+      const bad = s.numbers.filter((x) => !x.carrierSet && (KNOWN_JUNK.has(x.no) || (!hasHistory && (x.carrier === "other" || (M.CARRIER_BY_ID[x.carrier] && M.CARRIER_BY_ID[x.carrier].weak)))));
       if (!bad.length) continue;
       s.numbers = s.numbers.filter((x) => !bad.includes(x));
-      if (!s.numbers.length) { s.events = []; s.lastEvent = null; s.carrier = "other"; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.eta = s.eta && Date.parse(s.eta) > t ? s.eta : null; s.polledAt = null; }
+      if (!s.numbers.length) {
+        if (bad.some((x) => KNOWN_JUNK.has(x.no))) { s.events = []; s.lastEvent = null; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.eta = s.eta && Date.parse(s.eta) > t ? s.eta : null; }
+        s.carrier = "other"; s.polledAt = null;
+      }
       s.updated = t; n++;
     }
     return n;

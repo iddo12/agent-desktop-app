@@ -85,6 +85,43 @@ t("migration 3: the junk 10-digit number on an Amazon email card is dropped with
   assert.ok(v.ok);
 });
 
+t("migration 3: a weak number that has tracking history is never touched (Evri 16 digits, owner 'auto'); a numberless-history guess is dropped", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-mig2-"));
+  const file = path.join(dir, "shipments.json");
+  const proven = mk({ orderId: "113-3333333-4444444", numbers: [{ no: "5559876543", carrier: "dhl", carrierSet: false }], state: "in_transit", events: [{ at: NOW - 1e6, text: "Departed", place: "Leipzig" }], lastEvent: { at: NOW - 1e6, text: "Departed", place: "Leipzig" } });
+  const guess = mk({ orderId: "113-5555555-6666666", numbers: [{ no: "5550001112", carrier: "dhl", carrierSet: false }] });
+  fs.writeFileSync(file, JSON.stringify({ items: [proven, guess], migrated: 2 }));
+  const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], now: () => NOW, notices: [], say: () => {}, testMode: true });
+  await svc.load({});
+  const items = JSON.parse(fs.readFileSync(file, "utf8")).items;
+  const p = items.find((x) => x.orderId === "113-3333333-4444444");
+  assert.strictEqual(p.numbers.length, 1); assert.strictEqual(p.events.length, 1); assert.ok(p.lastEvent);
+  assert.strictEqual(items.find((x) => x.orderId === "113-5555555-6666666").numbers.length, 0);
+});
+
+t("IPC size: a worst-case screenshot request stays under the 262144-character cap of the daily-* wrapper", () => {
+  const image = "data:image/jpeg;base64," + "A".repeat(V.MAX_DATAURL_CHARS - 23);
+  const req = { op: "screenshot", id: "smvmq2trm3e9t", image, orderId: "113-6007992-3663405" };
+  assert.ok(JSON.stringify(req).length < 262144, "request " + JSON.stringify(req).length);
+  assert.ok(V.MAX_DATAURL_CHARS <= 230000);
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "daily-shipments.js"), "utf8");
+  assert.ok(/url\.length <= 230000/.test(src), "renderer limit matches MAX_DATAURL_CHARS");
+  assert.ok(/MAX_ARG_CHARS = 262144/.test(fs.readFileSync(path.join(__dirname, "..", "src", "daily", "main-daily.js"), "utf8")), "cap unchanged");
+});
+
+t("save fallback: a truncated shipments.json is restored from the .bak by readStore", () => {
+  const D = require("../src/daily/main-daily");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-trunc-"));
+  const file = path.join(dir, "shipments.json");
+  D.writeJsonAtomic(file, { version: 1, items: [{ id: "a" }] });
+  D.writeJsonAtomic(file, { version: 1, items: [{ id: "a" }, { id: "b" }] });   // second write makes the .bak (the first version)
+  fs.writeFileSync(file, '{"version":1,"items":[{"id":"a"},{"i');                // a crash mid in-place write
+  const notices = [];
+  const got = D.readStore(file, { items: [] }, notices, "Shipments");
+  assert.ok(Array.isArray(got.items) && got.items.length >= 1, "restored: " + JSON.stringify(got));
+  assert.ok(notices.length >= 1, "owner is told");
+});
+
 t("email: an Amazon shop mail's unrecognised id is no longer a tracking number", () => {
   const mail = { from: "ship-confirm@amazon.com", subject: "Shipped: your Amazon order " + ORDER, date: "2026-10-05T10:00:00Z", messageId: "m1",
     body: "Your package has shipped. Order # " + ORDER + "\nTrack your package: https://www.amazon.com/progress-tracker/package/ref?shipmentId=2367361581\nTracking ID: 2367361581\nArriving Tuesday" };

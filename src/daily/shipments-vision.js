@@ -9,6 +9,9 @@ const os = require("os");
 const M = require("./shipments-model");
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// Every daily-* IPC call is refused above 262144 JSON characters (main-daily.js MAX_ARG_CHARS). The renderer shrinks the picture until
+// its data URL is at most this many characters, which leaves room for the other fields. Keep in step with renderer/daily-shipments.js.
+const MAX_DATAURL_CHARS = 230000;
 const CARRIER_IDS = M.CARRIERS.map((c) => c.id).join(", ");
 
 const PROMPT = (file, orderHint) =>
@@ -113,4 +116,4 @@ function createReader({ callModel, tmpDir, testMode, stubFile }) {
   return { read };
 }
 
-module.exports = { parseReading, applyReading, createReader, PROMPT };
+module.exports = { parseReading, applyReading, createReader, PROMPT, MAX_DATAURL_CHARS };
