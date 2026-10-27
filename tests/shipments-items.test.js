@@ -126,4 +126,39 @@ t("pictures are only taken from a known shop sender; hostile html stays fast", (
   assert.ok(Date.now() - t0 < 1000);
 });
 
+t("one mail never makes a second card: a card holding the mail id is matched even when numbers differ", () => {
+  const list = [M.makeShipment({ merchant: "AliExpress", state: "shipped", orderId: "00100086960111", msgIds: ["mail-a"] }, NOW)];
+  const r = M.mergeCandidate(list, { merchant: "AliExpress", state: "shipped", numbers: [{ no: "00100086960111", carrier: "cainiao" }], msgId: "mail-a", at: NOW }, NOW);
+  assert.strictEqual(list.length, 1);
+  assert.strictEqual(r.created, false);
+  assert.strictEqual(list[0].numbers.length, 0, "the card's own order id is never a tracking number");
+});
+t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id numbers dropped; junk Amazon link id removed even with carrier set", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-dedupe-"));
+  const file = path.join(dir, "shipments.json");
+  const mk = (x) => M.makeShipment(Object.assign({ merchant: "AliExpress", state: "in_transit", source: "email" }, x), NOW);
+  const items = [
+    mk({ orderId: "00100086960111", state: "shipped", msgIds: ["m1"] }),
+    mk({ orderId: "00100086960111", state: "shipped", msgIds: ["m1"] }),
+    mk({ state: "shipped", numbers: [{ no: "00100086960111", carrier: "cainiao" }], msgIds: ["m1"] }),
+    mk({ numbers: [{ no: "PH8004100921", carrier: "other" }], msgIds: ["m2"] }),
+    mk({ numbers: [{ no: "PH8004100921", carrier: "other" }], msgIds: ["m2"] }),
+    mk({ numbers: [{ no: "8004100921", carrier: "dhl" }], msgIds: ["m2"] }),
+    mk({ merchant: "Amazon", orderId: "113-6007992-3663405", state: "delivered", numbers: [{ no: "2367361581", carrier: "aramex", carrierSet: true }], msgIds: ["a1", "a2"] }),
+  ];
+  items[6].events = [{ text: "MILAN", at: NOW - 20 * 86400000 }];
+  fs.writeFileSync(file, JSON.stringify({ items, migrated: 3 }));
+  const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], now: () => NOW, notices: [], say: () => {}, testMode: true });
+  await svc.load({});
+  const out = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(out.migrated, 4);
+  assert.strictEqual(out.items.length, 3, JSON.stringify(out.items.map((x) => [x.merchant, x.orderId, x.numbers.map((n) => n.no)])));
+  const ali1 = out.items.find((x) => x.orderId === "00100086960111");
+  assert.strictEqual(ali1.numbers.length, 0);
+  const dhl = out.items.find((x) => x.numbers.some((n) => n.no === "8004100921"));
+  assert.deepStrictEqual(dhl.numbers.map((n) => n.no), ["8004100921"]);
+  const amz = out.items.find((x) => x.merchant === "Amazon");
+  assert.strictEqual(amz.numbers.length, 0); assert.strictEqual(amz.events.length, 0); assert.strictEqual(amz.state, "shipped");
+  assert.ok(fs.readdirSync(dir).some((n) => /before_numberfix/.test(n)));
+});
 (async () => { let f = 0; for (const { n, f: fn } of queue) { try { await fn(); } catch (e) { f++; console.error("FAIL " + n + "\n  " + e.stack.split("\n").slice(0, 5).join("\n  ")); } } console.log(`shipments-items: ${queue.length - f}/${queue.length} passed`); process.exit(f ? 1 : 0); })();

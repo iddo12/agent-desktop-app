@@ -345,6 +345,9 @@ function sweep(list, now) {
 // A parcel can have two numbers (AliExpress LP.. then an Israel Post RR..). Match an incoming candidate to an existing
 // shipment by any shared (normalised) number, else by the same order id from the same merchant with no number conflict.
 function findMatch(list, cand) {
+  // the same mail never makes a second card: a card that already holds this mail's id IS the parcel
+  const ids = cand.msgId ? [cand.msgId] : (cand.msgIds || []);
+  if (ids.length) for (const s of list) if ((s.msgIds || []).some((m) => ids.includes(m))) return s;
   const nos = new Set((cand.numbers || []).map((x) => normNumber(typeof x === "string" ? x : x.no)).filter(Boolean));
   for (const s of list) if (s.numbers.some((x) => nos.has(x.no))) return s;
   if (cand.orderId) {
@@ -379,7 +382,7 @@ function mergeCandidate(list, cand, now) {
   let changed = false;
   for (const x of cand.numbers || []) {
     const no = normNumber(typeof x === "string" ? x : x.no);
-    if (!no || s.numbers.some((y) => y.no === no)) continue;
+    if (!no || s.numbers.some((y) => y.no === no) || (s.orderId && normNumber(s.orderId) === no)) continue;   // never the card's own order id
     s.numbers.push({ no, carrier: (x && x.carrier && CARRIER_BY_ID[x.carrier]) ? x.carrier : detectCarrier(no, cand.carrier).carrier, at: now });
     changed = true;
   }

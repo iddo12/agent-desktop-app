@@ -17,7 +17,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   let timer = null;
   let scanning = null;
 
-  const MIGRATION = 3;   // 2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
+  const MIGRATION = 4;   // 4: duplicate cards made from one mail are merged (dedupeByMail);  2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
   // 3 (2026-10-27): Amazon shop mails carry link ids that were taken for a carrier number (2367361581 -> an old Milan parcel).
   // Drop a number from an Amazon email card when its format is only a weak guess and the owner never chose its carrier; the
   // tracking events that came from it go with it. Returns the number of cards changed.
@@ -41,6 +41,35 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     }
     return n;
   }
+  // 4 (2026-10-27): every scan after a restart made a NEW card from a mail whose card had lost its number, so one mail ended on 3 cards.
+  // Cards that share a mail id are the same parcel: keep the one with the most tracking history, fold the others into it (numbers,
+  // history, mail ids), drop a number that equals the card's own order id and a "PH"-prefixed twin of a plain number, and drop the
+  // known junk Amazon link id with its old events (a Milan parcel from 6 Oct on a 24 Oct order) even if a carrier was set on it.
+  function dedupeByMail(items, t) {
+    let n = 0;
+    const by = new Map();
+    for (const s of items) for (const id of (s.msgIds || [])) { if (!by.has(id)) by.set(id, []); by.get(id).push(s); }
+    const gone = new Set();
+    for (const group of by.values()) {
+      const live = group.filter((x) => !gone.has(x));
+      if (live.length < 2) continue;
+      live.sort((a, b) => ((b.events || []).length - (a.events || []).length) || ((b.numbers.length ? 1 : 0) - (a.numbers.length ? 1 : 0)) || ((a.added || 0) - (b.added || 0)));
+      const keep = live[0];
+      for (const o of live.slice(1)) { if (!!o.split !== !!keep.split && o.source === "manual") continue; M.mergeShipments(keep, o, t); gone.add(o); n++; }
+    }
+    for (const s of items) {
+      if (gone.has(s)) continue;
+      const before = s.numbers.length;
+      s.numbers = s.numbers.filter((x) => !(s.orderId && M.normNumber(s.orderId) === x.no) && !(/^PH\d+$/i.test(x.no) && s.numbers.some((y) => y.no === x.no.slice(2))));
+      if (s.merchant === "Amazon" && s.numbers.some((x) => KNOWN_JUNK.has(x.no))) {
+        s.numbers = s.numbers.filter((x) => !KNOWN_JUNK.has(x.no));
+        if (!s.numbers.length) { s.events = []; s.lastEvent = null; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.carrier = "other"; s.polledAt = null; }
+      }
+      if (s.numbers.length !== before) { s.updated = t; n++; }
+    }
+    for (let i = items.length - 1; i >= 0; i--) if (gone.has(items[i])) items.splice(i, 1);
+    return n;
+  }
   function loadStore() {
     const raw = readStore(file, { items: [] }, notices, "Shipments");
     let items = (Array.isArray(raw.items) ? raw.items : []).filter((x) => x && typeof x === "object").map((x) => M.makeShipment(x, clock()));
@@ -52,9 +81,11 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   // One-shot and idempotent: runs once per store file (flag `migrated` in the file), backs the file up BEFORE writing anything.
   function migrate(st) {
     try {
-      const r = M.migrateWrongNumbers(st.items, clock());
+      const r = st.migrated < 2 ? M.migrateWrongNumbers(st.items, clock()) : { changed: false, moved: [], fixed: [] };
       const junk = st.migrated < 3 ? junkAmazon(st.items, clock()) : 0;
-      if (junk) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; }
+      const dd = st.migrated < 4 ? dedupeByMail(st.items, clock()) : 0;
+      if (dd) { r.changed = true; log("shipments: merged " + dd + " duplicate card(s) made from the same mail"); }
+      if (junk || dd) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; }
       if (r.changed) {
         const d = new Date(clock()), z = (n) => String(n).padStart(2, "0");
         const bak = file + ".bak_" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "_" + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + "_before_numberfix";

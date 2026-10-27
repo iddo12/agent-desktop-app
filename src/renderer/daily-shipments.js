@@ -236,7 +236,7 @@
         // 2026-10-27: ONE tools block per order, on its FIRST open card (the one a card needing action shows at the top of the list)
         if (!archived && s.orderId && s.merchant) {
           const sameOrder = ((data && data.items) || []).filter((x) => x.orderId === s.orderId && !x.archived);
-          if (sameOrder[0] && sameOrder[0].id === s.id) main.append(orderTools(s));
+          if ((sameOrder[0] && sameOrder[0].id === s.id) || s.needsNumber) main.append(orderTools(s));   // a later card still waiting for its number gets the screenshot box too
         }
         if (!archived && s.needsNumber) main.append(numberBox(s));
         else if (!archived && s.cantTrack) main.append(carrierBox(s));
