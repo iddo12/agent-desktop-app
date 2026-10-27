@@ -214,6 +214,7 @@ function makeShipment(input, now) {
     pickupBy: isoOrNull(inp.pickupBy),
     note: clean(inp.note, 200),
     review: !!inp.review,
+    split: !!inp.split,   // user split this order into several parcels: never merge by order id alone (findMatch)
     pickedUp: !!inp.pickedUp,
     archived: !!inp.archived, archivedAt: atMs(inp.archivedAt),
     added: atMs(inp.added) || t, updated: atMs(inp.updated) || t,
@@ -332,6 +333,7 @@ function findMatch(list, cand) {
   if (cand.orderId) {
     const o = String(cand.orderId).toLowerCase();
     for (const s of list) {
+      if (s.split && s.numbers.length && (cand.numbers || []).length) continue;   // split order: a different number is a different parcel
       if (s.orderId && s.orderId.toLowerCase() === o && (!cand.merchant || !s.merchant || s.merchant.toLowerCase() === String(cand.merchant).toLowerCase())) return s;
     }
   }

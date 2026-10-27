@@ -200,6 +200,15 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         const lr = lastReason(r.shipment);
         return { ok: true, id: r.shipment.id, created: r.created, note: lr ? lr.text : "" };
       }
+      case "split": {
+        const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." };
+        if (!s.orderId) return { ok: false, reason: "This parcel has no order id to split." };
+        const sib = M.makeShipment({ orderId: s.orderId, merchant: s.merchant, title: s.title, carrier: s.carrier, state: s.state === "ordered" ? "ordered" : "shipped", eta: s.eta, source: "manual", split: true, at: t }, t);
+        s.split = true; s.updated = t;
+        st.items.push(sib);
+        save(st);
+        return { ok: true, id: sib.id };
+      }
       case "review": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; s.review = !!args.on; s.updated = t; break; }
       case "archive": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; M.archiveShipment(s, t, "manual"); break; }
       case "unarchive": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; M.unarchiveShipment(s, t); break; }

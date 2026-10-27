@@ -129,6 +129,10 @@
         const l1 = el("div", "ship-l1");
         const name = s.title || s.merchant || (s.numbers[0] ? s.carrierName : "Parcel");
         l1.append(el("b", "ship-name", name), chipEl(s.effective));
+        if (s.split && s.orderId) {
+          const sibs = ((data && data.items) || []).filter((x) => x.split && x.orderId === s.orderId && !x.archived);
+          if (sibs.length > 1) l1.append(el("span", "ship-chip mute", "Parcel " + (sibs.findIndex((x) => x.id === s.id) + 1) + " of " + sibs.length));
+        }
         if (s.review) l1.append(el("span", "ship-chip mute", "Review sample"));
         if (s.merchant && s.title && s.merchant !== s.title) l1.append(el("span", "ship-merch", s.merchant));
         const l2 = el("div", "ship-l2");
@@ -153,6 +157,7 @@
           main.append(l3);
         } else if (!archived) main.append(reasonLine(s));
         if (!archived && ev && ev.text && s.reason && PROBLEM.has(s.reason.reason)) main.append(el("div", "ship-ev ship-warnline", s.reason.text));
+        if (!archived && s.orderId && s.merchant) main.append(btn("+ Another parcel for this order", "daily-btn sm", () => act("split", s.id, null, "Added a second card for this order. Paste its tracking number.")));
         if (!archived && s.needsNumber) main.append(numberBox(s));
         else if (!archived && s.cantTrack) main.append(carrierBox(s));
         if (s.events && s.events.length > 1) {
