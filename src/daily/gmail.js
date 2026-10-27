@@ -46,20 +46,27 @@ function request(method, urlStr, { headers, body, timeoutMs } = {}) {
   });
 }
 
-// True only when Gmail itself (authserv-id mx.google.com, never an attacker-supplied copy of the header) reports dmarc=pass for the
-// very domain in the From address, i.e. an aligned DKIM or SPF pass. A bare dkim=pass for some other domain does not count.
+// -> the verified sender domain, or "" . Only Gmail's own TOPMOST Authentication-Results header (authserv-id mx.google.com; every later
+// copy is ignored, it could be attacker-supplied) counts, and only with dmarc=pass for the very domain in From. The From header must be ONE plain
+// address (no quotes, comments or second address) so this check and shipments-email read the same domain.
 function senderVerified(msg) {
-  const fromDom = ((/@([^>\s;]+)/.exec(headerOf(msg, "From")) || [])[1] || "").toLowerCase().replace(/\.$/, "");
-  if (!fromDom) return false;
+  const from = headerOf(msg, "From").trim();
+  const m0 = /^(?:[^"()<>,;@]*<([^<>@\s"(),;]+@([^<>@\s"(),;]+))>|([^<>@\s"(),;]+@([^<>@\s"(),;]+)))\s*$/.exec(from);
+  const fromDom = m0 ? String(m0[2] || m0[4] || "").toLowerCase().replace(/\.$/, "") : "";
+  if (!fromDom) return "";
   const hs = (msg && msg.payload && msg.payload.headers) || [];
-  for (const h of hs) {
-    if (!h || String(h.name).toLowerCase() !== "authentication-results") continue;
-    const v = String(h.value || "").trim();
-    if (!/^mx\.google\.com\s*;/i.test(v)) continue;
-    const m = /\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;)]+)/i.exec(v);
-    if (m && m[1].toLowerCase().replace(/\.$/, "") === fromDom) return true;
+  const top = hs.find((h) => h && String(h.name).toLowerCase() === "authentication-results");
+  const v = top ? String(top.value || "").trim() : "";
+  if (!/^mx\.google\.com\s*;/i.test(v)) return "";
+  // clause by clause (comments and quoted strings removed first): the clause must be exactly "dmarc=pass ..." and carry its own header.from
+  const clean = v.replace(/\([^()]*\)/g, " ").replace(/"[^"]*"/g, " ");
+  for (const clause of clean.split(";").slice(1)) {
+    const toks = clause.trim().split(/\s+/);
+    if (!/^dmarc=pass$/i.test(toks[0] || "")) continue;
+    const hf = toks.slice(1).map((t) => /^header\.from=(.+)$/i.exec(t)).find(Boolean);
+    if (hf && hf[1].toLowerCase().replace(/\.$/, "") === fromDom) return fromDom;
   }
-  return false;
+  return "";
 }
 function headerOf(msg, name) {
   const hs = (msg && msg.payload && msg.payload.headers) || [];

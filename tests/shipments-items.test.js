@@ -38,7 +38,7 @@ t("pairImages: equal count, or one extra (logo first); anything else gives no pi
 });
 t("extractShipments: B&H mail (html) gives items, count and paired pictures; number unchanged", () => {
   const html = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 3</td>";
-  const c = E.extractShipments({ from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-04-28T10:00:00Z", messageId: "m1", verified: true, images: ["https://i/logo.png", "https://i/a.jpg", "https://i/b.jpg"], body: html }, NOW)[0];
+  const c = E.extractShipments({ from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-04-28T10:00:00Z", messageId: "m1", verified: "bhphotovideo.com", images: ["https://i/logo.png", "https://i/a.jpg", "https://i/b.jpg"], body: html }, NOW)[0];
   assert.deepStrictEqual(c.items.map((x) => [x.name, x.qty, x.src]), [["Thing A", 1, "https://i/a.jpg"], ["Thing B", 3, "https://i/b.jpg"]]);
   assert.strictEqual(c.itemCount, 4);
   assert.strictEqual(c.numbers[0].no, "524349476473");
@@ -66,7 +66,7 @@ t("service: scan fetches each picture once into a local file name, drops src, a 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-items-"));
   const file = path.join(dir, "shipments.json");
   const calls = [];
-  const mail = { from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-10-27T08:00:00Z", messageId: "m9", verified: true, images: ["https://i/a.jpg", "https://i/bad.jpg"], body: "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 1</td>" };
+  const mail = { from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-10-27T08:00:00Z", messageId: "m9", verified: "bhphotovideo.com", images: ["https://i/a.jpg", "https://i/bad.jpg"], body: "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 1</td>" };
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [mail], makeThumb: async (url, id) => { calls.push(url); if (/bad/.test(url)) throw new Error("nope"); return id + ".png"; }, now: () => NOW, notices: [], say: () => {}, testMode: false });
   await svc.refreshNow();
   await svc.refreshNow();
@@ -95,12 +95,17 @@ t("senderVerified: needs Gmail's own dmarc=pass for the From domain; foreign dki
   const G = require("../src/daily/gmail.js");
   const mk = (from, ...ars) => ({ payload: { headers: [{ name: "From", value: from }, ...ars.map((v) => ({ name: "Authentication-Results", value: v }))] } });
   const good = "mx.google.com; dkim=pass header.i=@bhphotovideo.com; spf=pass smtp.mailfrom=x@bhphotovideo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=bhphotovideo.com";
-  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", good)), true);
-  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; dmarc=fail header.from=bhphotovideo.com")), false);
-  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; spf=pass")), false);
-  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "evil.example; dmarc=pass header.from=bhphotovideo.com")), false);
-  assert.strictEqual(G.senderVerified(mk("x <a@evil.example>", good)), false);
-  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>")), false);
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", good)), "bhphotovideo.com");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; spf=pass", good)), "", "only the topmost header counts");
+  assert.strictEqual(G.senderVerified(mk("evil <a@evil.example>, B&H <orders@bhphotovideo.com>", good)), "", "two addresses");
+  assert.strictEqual(G.senderVerified(mk("\"x <orders@bhphotovideo.com>\" <a@evil.example>", good)), "", "quoted decoy");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; dmarc=fail header.from=bhphotovideo.com")), "");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; spf=pass")), "");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "evil.example; dmarc=pass header.from=bhphotovideo.com")), "");
+  assert.strictEqual(G.senderVerified(mk("x <a@evil.example>", good)), "");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example (dmarc=pass header.from=bhphotovideo.com); dmarc=fail header.from=bhphotovideo.com")), "", "text inside a comment is not a verdict");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass x=dmarc=pass header.from=bhphotovideo.com")), "", "method must be dmarc");
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>")), "");
 });
 t("pictures are only taken from a known shop sender; hostile html stays fast", () => {
   const body = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td>";
