@@ -38,7 +38,7 @@ t("pairImages: equal count, or one extra (logo first); anything else gives no pi
 });
 t("extractShipments: B&H mail (html) gives items, count and paired pictures; number unchanged", () => {
   const html = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 3</td>";
-  const c = E.extractShipments({ from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-04-28T10:00:00Z", messageId: "m1", images: ["https://i/logo.png", "https://i/a.jpg", "https://i/b.jpg"], body: html }, NOW)[0];
+  const c = E.extractShipments({ from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-04-28T10:00:00Z", messageId: "m1", verified: true, images: ["https://i/logo.png", "https://i/a.jpg", "https://i/b.jpg"], body: html }, NOW)[0];
   assert.deepStrictEqual(c.items.map((x) => [x.name, x.qty, x.src]), [["Thing A", 1, "https://i/a.jpg"], ["Thing B", 3, "https://i/b.jpg"]]);
   assert.strictEqual(c.itemCount, 4);
   assert.strictEqual(c.numbers[0].no, "524349476473");
@@ -66,7 +66,7 @@ t("service: scan fetches each picture once into a local file name, drops src, a 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-items-"));
   const file = path.join(dir, "shipments.json");
   const calls = [];
-  const mail = { from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-10-27T08:00:00Z", messageId: "m9", images: ["https://i/a.jpg", "https://i/bad.jpg"], body: "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 1</td>" };
+  const mail = { from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1128625557 Shipped", date: "2026-10-27T08:00:00Z", messageId: "m9", verified: true, images: ["https://i/a.jpg", "https://i/bad.jpg"], body: "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td><td>Thing B</td><td>B&amp;H #AB2</td><td>QTY: 1</td>" };
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [mail], makeThumb: async (url, id) => { calls.push(url); if (/bad/.test(url)) throw new Error("nope"); return id + ".png"; }, now: () => NOW, notices: [], say: () => {}, testMode: false });
   await svc.refreshNow();
   await svc.refreshNow();
@@ -85,6 +85,12 @@ t("renderer + css wiring: contents block, textContent only, local pictures", () 
   assert.ok(/\.ship-pic\b/.test(css) && /\.ship-items\b/.test(css));
 });
 
+t("no pictures when the sender did not pass DKIM/SPF, even from a shop address", () => {
+  const html = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td>";
+  const c = E.extractShipments({ from: "B&H Photo <orders@bhphotovideo.com>", subject: "B&H Photo Order #1 Shipped", date: "2026-10-27T08:00:00Z", messageId: "f1", verified: false, images: ["https://i/a.jpg"], body: html }, NOW)[0];
+  assert.strictEqual(c.items[0].name, "Thing A");
+  assert.ok(!c.items[0].src);
+});
 t("pictures are only taken from a known shop sender; hostile html stays fast", () => {
   const body = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td>";
   const c = E.extractShipments({ from: "x <a@evil.example>", subject: "Your order has shipped tracking 524349476473", date: "2026-10-27T08:00:00Z", messageId: "e1", images: ["https://evil.example/p.gif"], body }, NOW)[0];

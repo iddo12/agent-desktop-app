@@ -248,7 +248,7 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
         const mails = [];
         for (const m of msgs) {
           if (!m) continue;
-          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
+          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), verified: /(?:dkim|spf)=pass/i.test(headerOf(m, "Authentication-Results") || ""), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
         }
         shipCache.set(a.email, { at: Date.now(), mails });
         out.push(...mails);
