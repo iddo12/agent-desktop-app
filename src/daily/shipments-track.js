@@ -90,27 +90,52 @@ function create17Track({ getKey, request, sleep }) {
     return r.json.data || {};
   };
   const alreadyRegistered = (rej) => !!rej && (/registered/i.test(String(rej.error && rej.error.message)) || (rej.error && rej.error.code === -18019901));
+  const systemError = (e) => /rate|refused|no key/i.test(String(e && e.message));
   return {
     id: "17track", label: "17TRACK", needsKey: true, enabled: () => !!getKey(),
+    // Extra output beside results/errors: info[number] = { status, sub } (17TRACK's own "NotFound" etc.), codes[number] = error code.
     async track(items) {
-      const out = { results: {}, errors: {} };
+      const out = { results: {}, errors: {}, info: {}, codes: {} };
       const list = items.filter((i) => i && i.number);
       for (let i = 0; i < list.length; i += BATCH) {
         const batch = list.slice(i, i + BATCH);
+        // 2026-10-27: the owner set a carrier for a number that is already registered -> move it to that carrier. changecarrier is
+        // tried first; when 17TRACK refuses (or the carrier is "auto-detect") the number is deleted and registered again.
+        const re = batch.filter((b) => b.recarrier);
+        if (re.length) {
+          try {
+            const withCode = re.filter((b) => M.CARRIER_BY_ID[b.carrier] && M.CARRIER_BY_ID[b.carrier].t17);
+            let redo = re.filter((b) => !withCode.includes(b));
+            if (withCode.length) {
+              try {
+                const r = await post("changecarrier", withCode.map((b) => ({ number: b.number, carrier: M.CARRIER_BY_ID[b.carrier].t17 })));
+                const bad = new Set((r.rejected || []).map((x) => x.number));
+                redo = redo.concat(withCode.filter((b) => bad.has(b.number)));
+              } catch (e) { if (systemError(e)) throw e; redo = redo.concat(withCode); }
+              await wait(MIN_GAP_MS);
+            }
+            if (redo.length) { await post("deletetrack", redo.map((b) => ({ number: b.number }))); await wait(MIN_GAP_MS); }
+          } catch (e) {
+            if (systemError(e)) { for (const b of batch) out.errors[b.number] = clean(e && e.message, 120); break; }
+            /* a failed re-carrier is not fatal: register below still runs */
+          }
+        }
         const payload = batch.map((b) => { const o = { number: b.number }; const c = M.CARRIER_BY_ID[b.carrier]; if (c && c.t17) o.carrier = c.t17; return o; });
         try {
           const reg = await post("register", payload);
-          for (const rej of reg.rejected || []) if (!alreadyRegistered(rej)) out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected";
+          for (const rej of reg.rejected || []) if (!alreadyRegistered(rej)) { out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected"; if (rej.error && rej.error.code != null) out.codes[rej.number] = rej.error.code; }
           await wait(MIN_GAP_MS);
           const info = await post("gettrackinfo", batch.map((b) => ({ number: b.number })));
           for (const acc of info.accepted || []) {
             const parsed = parseTrackInfo(acc);
             if (parsed) out.results[acc.number] = parsed;
+            const ls = acc && acc.track_info && acc.track_info.latest_status;
+            if (ls) out.info[acc.number] = { status: clean(ls.status, 40), sub: clean(ls.sub_status, 60) };
           }
-          for (const rej of info.rejected || []) if (!out.errors[rej.number]) out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected";
+          for (const rej of info.rejected || []) if (!out.errors[rej.number]) { out.errors[rej.number] = clean(rej.error && rej.error.message, 120) || "rejected"; if (rej.error && rej.error.code != null) out.codes[rej.number] = rej.error.code; }
         } catch (e) {
           for (const b of batch) out.errors[b.number] = clean(e && e.message, 120);
-          if (/rate|refused|no key/i.test(String(e && e.message))) break;
+          if (systemError(e)) break;
         }
         if (i + BATCH < list.length) await wait(MIN_GAP_MS);
       }
@@ -177,6 +202,29 @@ function createFake(script) {
   } };
 }
 
+// ---------------------------------------------------------------- why is there nothing to show? (persisted per number)
+// -> { reason, reasonText } for a number that came back without events. `err` is the provider's message for it, `info` its
+// { status, sub } as 17TRACK reported it, `ageMs` how long the number has been registered, `code` 17TRACK's error code.
+const DAY_MS = 86400000;
+function classifyReason(err, info, ageMs, code) {
+  const e = String(err || "");
+  if (e) {
+    if (/refused|no key/i.test(e)) return { reason: "key_refused", reasonText: "17TRACK refused the key - check it under Tracking key." };
+    if (/rate/i.test(e)) return { reason: "rate", reasonText: "17TRACK was busy (rate limit) - it will be asked again." };
+    if (/quota|insufficient|balance|exceed/i.test(e)) return { reason: "quota", reasonText: "The 17TRACK quota is used up, so this number cannot be tracked." };
+    if (/invalid|illegal|format|incorrect/i.test(e)) return { reason: "invalid", reasonText: "17TRACK says this is not a valid tracking number (" + clean(e, 80) + ")." };
+    if (/carrier|detect|identif|rejected/i.test(e) || code != null) return { reason: "rejected", reasonText: "17TRACK did not accept this number: " + clean(e, 100) + "." };
+    return { reason: "error", reasonText: "The tracking lookup failed: " + clean(e, 100) + "." };
+  }
+  const st = String((info && info.status) || ""), sub = String((info && info.sub) || "");
+  if (st === "NotFound") {
+    if (/Invalid/i.test(sub)) return { reason: "invalid", reasonText: "17TRACK says this is not a valid tracking number." };
+    if (ageMs != null && ageMs < DAY_MS) return { reason: "waiting", reasonText: "Waiting for the first scan - the carrier has not reported anything yet (normal for the first day)." };
+    return { reason: "not_found", reasonText: "17TRACK cannot find this number. The carrier may not have scanned it yet, or it is an order number rather than a tracking number." };
+  }
+  return { reason: "waiting", reasonText: "Waiting for the first scan - 17TRACK has it registered but the carrier has reported nothing yet." };
+}
+
 // ---------------------------------------------------------------- manager
 // Chooses a provider per shipment number and applies the results. Pure of electron: safeStorage is injected.
 function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log }) {
@@ -207,7 +255,7 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
         const p = route(n);
         if (p.id === "manual") continue;
         if (!force && p.id === "dhl" && s.polledAt && now - s.polledAt < DHL_MIN_MS) continue;
-        out.push({ shipment: s, number: n.no, carrier: n.carrier, provider: p });
+        out.push({ shipment: s, number: n.no, carrier: n.carrier, recarrier: !!n.recarrier, ref: n, provider: p });
       }
     }
     return out;
@@ -224,11 +272,22 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
       for (const t of todo) { if (!byProv.has(t.provider)) byProv.set(t.provider, []); byProv.get(t.provider).push(t); }
       for (const [prov, items] of byProv) {
         let r;
-        try { r = await prov.track(items.map((i) => ({ number: i.number, carrier: i.carrier }))); }
+        try { r = await prov.track(items.map((i) => ({ number: i.number, carrier: i.carrier, recarrier: i.recarrier }))); }
         catch (e) { say("shipments " + prov.id + " failed: " + clean(e && e.message, 120)); r = { results: {}, errors: Object.fromEntries(items.map((i) => [i.number, clean(e && e.message, 120)])) }; }
         for (const it of items) {
           res.polled++;
           const hit = r.results[it.number];
+          const err = r.errors[it.number];
+          const ref = it.ref;
+          if (ref) {
+            // keep the owner-chosen carrier request until the provider has really received it (not on key/rate/quota trouble)
+            if (ref.recarrier && !/refused|no key|rate|quota/i.test(String(err || ""))) delete ref.recarrier;
+            if (hit && hit.events && hit.events.length) { delete ref.reason; delete ref.reasonText; delete ref.reasonAt; }
+            else {
+              const c = classifyReason(err, r.info && r.info[it.number], now - (ref.at || it.shipment.added || now), r.codes && r.codes[it.number]);
+              ref.reason = c.reason; ref.reasonText = c.reasonText; ref.reasonAt = now;
+            }
+          }
           if (hit) {
             const before = JSON.stringify([it.shipment.state, it.shipment.lastEvent, it.shipment.eta]);
             M.applyEvents(it.shipment, hit.events, now, { state: hit.state, eta: hit.eta });
@@ -250,4 +309,4 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
   };
 }
 
-module.exports = { createTracker, createKeyStore, create17Track, createDhl, createFake, manualProvider, parseTrackInfo, httpRequest, POLL_MS, DHL_MIN_MS, BATCH };
+module.exports = { classifyReason, createTracker, createKeyStore, create17Track, createDhl, createFake, manualProvider, parseTrackInfo, httpRequest, POLL_MS, DHL_MIN_MS, BATCH };

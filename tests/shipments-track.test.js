@@ -244,7 +244,7 @@ t("service: provider failure never throws and is reported", async () => {
   const boom = { id: "fake", label: "x", needsKey: false, enabled: () => true, async track() { throw new Error("network down"); } };
   const tr = T.createTracker({ dataDir: tmp(), safeStorage: fakeSafe, fakeProvider: boom });
   const svc = S.createService({ file: path.join(dir, "s.json"), readStore: D.readStore, writeJsonAtomic: D.writeJsonAtomic, tracker: tr, getMails: async () => [], now: () => NOW, notices: [], say: () => {} });
-  svc.op({ op: "add", text: "RR123456789IL" });
+  await svc.op({ op: "add", text: "RR123456789IL" });
   const v = await svc.refreshNow();
   assert.strictEqual(v.ok, true);
   assert.strictEqual(v.refresh.errors, 1);

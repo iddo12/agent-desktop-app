@@ -2,6 +2,7 @@
 // Store: <root>/daily/shipments.json { version, items:[shipment], scannedAt, polledAt }. Mail is scanned when the tab opens or on
 // refresh (never on a timer of its own); ONE low-frequency poll timer (12 h) exists only when a tracking key is stored.
 "use strict";
+const fs = require("fs");
 const M = require("./shipments-model");
 const E = require("./shipments-email");
 const T = require("./shipments-track");
@@ -15,15 +16,32 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   let timer = null;
   let scanning = null;
 
+  const MIGRATION = 2;   // 2026-10-27: order numbers that an older scanner stored as tracking numbers (see M.migrateWrongNumbers)
   function loadStore() {
     const raw = readStore(file, { items: [] }, notices, "Shipments");
     let items = (Array.isArray(raw.items) ? raw.items : []).filter((x) => x && typeof x === "object").map((x) => M.makeShipment(x, clock()));
     if (testMode && !items.length && !raw.demoDone && process.env.AGENT_DESKTOP_SHIPMENTS_DEMO === "1") items = M.demoShipments(clock());
-    return { items, scannedAt: Number(raw.scannedAt) || 0, polledAt: Number(raw.polledAt) || 0, lastError: String(raw.lastError || "").slice(0, 160) };
+    const st = { items, scannedAt: Number(raw.scannedAt) || 0, polledAt: Number(raw.polledAt) || 0, lastError: String(raw.lastError || "").slice(0, 160), migrated: Number(raw.migrated) || 0 };
+    if (st.migrated < MIGRATION && Array.isArray(raw.items)) migrate(st);
+    return st;
+  }
+  // One-shot and idempotent: runs once per store file (flag `migrated` in the file), backs the file up BEFORE writing anything.
+  function migrate(st) {
+    try {
+      const r = M.migrateWrongNumbers(st.items, clock());
+      if (r.changed) {
+        const d = new Date(clock()), z = (n) => String(n).padStart(2, "0");
+        const bak = file + ".bak_" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "_" + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + "_before_numberfix";
+        fs.copyFileSync(file, bak);                 // throws -> nothing is written, the migration is retried next load
+        log("shipments: moved " + r.moved.length + " order number(s) out of the tracking numbers, fixed " + r.fixed.length + "; backup " + bak);
+      }
+      st.migrated = MIGRATION;
+      if (r.changed) save(st);   // an unchanged store is not rewritten here (the flag is saved with the next normal save)
+    } catch (e) { log("shipments migration failed (will retry): " + M.clean(e && e.message, 120)); }
   }
   function save(st) {
     M.sweep(st.items, clock());
-    writeJsonAtomic(file, { version: 1, items: st.items, scannedAt: st.scannedAt, polledAt: st.polledAt, lastError: st.lastError || "" });
+    writeJsonAtomic(file, { version: 1, items: st.items, scannedAt: st.scannedAt, polledAt: st.polledAt, lastError: st.lastError || "", migrated: st.migrated || 0 });
   }
   const settings = () => M.cleanSettings(settingsFile ? readStore(settingsFile, {}, null, "Settings").shipments : null);
 
@@ -49,6 +67,20 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     return scanning;
   }
 
+  // the newest per-number tracking result that explains why there is nothing to show -> { reason, text, at } or null
+  function lastReason(s) {
+    const n = s.numbers.slice().reverse().find((x) => x.reason);
+    return n ? { reason: n.reason, text: n.reasonText || "", at: n.reasonAt || null, no: n.no } : null;
+  }
+  // Look at ONE parcel right away (after a number or carrier was entered). Never throws; the key stays inside the tracker.
+  async function pollOne(s) {
+    if (!tracker.hasLiveProvider() || !s || !s.numbers.length) return;
+    try { await tracker.refresh([s], clock(), { force: true }); } catch (e) { log("shipments poll one failed: " + M.clean(e && e.message, 120)); }
+  }
+  const orderLike = (no) => M.looksLikeOrderNumber(no);
+  const ORDER_MSG = "That looks like an order number, not a tracking number. Tracking numbers come in the shipping mail from the carrier (AliExpress order ids are 16 digits).";
+  const pickCarrier = (id) => (id && id !== "auto" && M.CARRIER_BY_ID[id]) ? id : "";
+
   function view(st) {
     const t = clock();
     const sd = settings().stuckDays;
@@ -56,13 +88,17 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     const items = st.items.map((s) => Object.assign({}, s, {
       effective: M.effectiveState(s, t, sd), stuck: M.isStuck(s, t, sd), action: M.actionText(s, t, sd),
       carrierName: M.carrierName(s.carrier),
-      numbers: s.numbers.map((n) => ({ no: n.no, carrier: n.carrier, carrierName: M.carrierName(n.carrier), url: M.trackUrl(n.carrier, n.no) })),
+      numbers: s.numbers.map((n) => ({ no: n.no, carrier: n.carrier, carrierName: M.carrierName(n.carrier), url: M.trackUrl(n.carrier, n.no), reason: n.reason || "", reasonText: n.reasonText || "", reasonAt: n.reasonAt || null })),
+      needsNumber: M.needsNumber(s),
+      orderAt: (s.history && s.history[0] && s.history[0].at) || s.added || null,
+      reason: lastReason(s),
+      cantTrack: !M.needsNumber(s) && !s.archived && !(s.events && s.events.length) && !s.lastEvent && ["not_found", "invalid", "rejected"].includes((lastReason(s) || {}).reason),
       url: s.numbers.length ? M.trackUrl(s.numbers[s.numbers.length - 1].carrier, s.numbers[s.numbers.length - 1].no) : "",
       note2: s.carrier === "amazon" ? "Tracked inside Amazon" : "",
       events: (s.events || []).slice(0, 40),
     }));
     return {
-      ok: true, now: t, items, stuckDays: sd,
+      ok: true, now: t, items, stuckDays: sd, carriers: M.CARRIERS.filter((c) => c.id !== "other").map((c) => ({ id: c.id, name: c.name })),
       counts: { needs: items.filter((x) => !x.archived && ["action_pay", "action_pickup", "exception_stuck"].includes(x.effective)).length, active: items.filter((x) => !x.archived).length, archived: items.filter((x) => x.archived).length },
       provider: { live: tr.live, has17: tr.has17, hasDhl: tr.hasDhl, canEncrypt: tr.canEncrypt, polledAt: st.polledAt || null, nextPollAt: timer && st.polledAt ? st.polledAt + T.POLL_MS : null, scannedAt: st.scannedAt || null, lastError: st.lastError || "" },
       states: M.STATE_LABEL,
@@ -122,7 +158,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     return v;
   }
 
-  function op(a) {
+  async function op(a) {
     const args = a && typeof a === "object" ? a : {};
     const st = loadStore();
     const t = clock();
@@ -131,11 +167,21 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       case "add": {
         const p = E.parseAddInput(args.text);
         if (!p.ok) return { ok: false, reason: p.reason };
-        const r = M.mergeCandidate(st.items, { numbers: p.numbers, carrier: p.carrier, title: p.title, state: "shipped", at: t, source: "manual" }, t);
+        if (p.numbers.some((n) => orderLike(n.no))) return { ok: false, reason: ORDER_MSG };
+        const pc = pickCarrier(args.carrier);
+        const numbers = p.numbers.map((n) => ({ no: n.no, carrier: pc || n.carrier, carrierSet: !!pc, at: t }));
+        const label = M.clean(args.label, 120) || p.title;
+        const r = M.mergeCandidate(st.items, { numbers, carrier: pc || p.carrier, title: label, state: "shipped", at: t, source: "manual" }, t);
         r.shipment.source = r.created ? "manual" : r.shipment.source;
+        if (!r.created && label && !r.shipment.title) r.shipment.title = label;
+        if (args.review) r.shipment.review = true;
+        if (pc) for (const n of r.shipment.numbers) if (numbers.some((x) => x.no === n.no)) { n.carrier = pc; n.carrierSet = true; n.recarrier = !r.created; r.shipment.carrier = pc; }
+        await pollOne(r.shipment);
         save(st);
-        return { ok: true, id: r.shipment.id, created: r.created };
+        const lr = lastReason(r.shipment);
+        return { ok: true, id: r.shipment.id, created: r.created, note: lr ? lr.text : "" };
       }
+      case "review": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; s.review = !!args.on; s.updated = t; break; }
       case "archive": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; M.archiveShipment(s, t, "manual"); break; }
       case "unarchive": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; M.unarchiveShipment(s, t); break; }
       case "picked-up": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; M.markPickedUp(s, t); break; }
@@ -146,16 +192,36 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       }
       case "set-carrier": {
         const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." };
-        if (!M.CARRIER_BY_ID[args.carrier]) return { ok: false, reason: "Unknown carrier." };
-        s.carrier = args.carrier; for (const n of s.numbers) n.carrier = args.carrier; s.updated = t; s.polledAt = null; break;
+        const auto = args.carrier === "auto" || args.carrier === "other" || !args.carrier;
+        if (!auto && !M.CARRIER_BY_ID[args.carrier]) return { ok: false, reason: "Unknown carrier." };
+        const c = auto ? "other" : args.carrier;
+        s.carrier = c;
+        // the carrier is now the owner's choice: remember it, forget the old verdict, and ask 17TRACK to move the number to it
+        for (const n of s.numbers) { n.carrier = c; n.carrierSet = !auto; n.recarrier = true; delete n.reason; delete n.reasonText; delete n.reasonAt; }
+        s.updated = t; s.polledAt = null;
+        await pollOne(s);
+        break;
       }
       case "note": { const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." }; s.note = M.clean(args.note, 200); s.updated = t; break; }
       case "add-number": {
         const s = find(); if (!s) return { ok: false, reason: "That shipment is gone." };
         const p = E.parseAddInput(args.text);
         if (!p.ok) return { ok: false, reason: p.reason };
-        M.mergeCandidate(st.items.filter((x) => x === s), { numbers: p.numbers, orderId: s.orderId, merchant: s.merchant, at: t }, t);
-        s.numbers = s.numbers.slice(0, 6); break;
+        if (p.numbers.some((n) => orderLike(n.no))) return { ok: false, reason: ORDER_MSG };
+        const other = st.items.find((x) => x !== s && x.numbers.some((y) => p.numbers.some((n) => n.no === y.no)));
+        if (other) return { ok: false, reason: "That number is already on another parcel (" + (other.title || other.merchant || other.id) + ")." };
+        const pc = pickCarrier(args.carrier);
+        // 2026-10-27: the old code merged into a throw-away copy of the list, so a number for a parcel with no match was lost
+        for (const x of p.numbers) {
+          if (s.numbers.some((y) => y.no === x.no)) continue;
+          s.numbers.push({ no: x.no, carrier: pc || x.carrier, carrierSet: !!pc, at: t });
+        }
+        s.numbers = s.numbers.slice(-6);
+        s.carrier = s.numbers[s.numbers.length - 1].carrier;
+        if (s.state === "ordered") M.setState(s, "shipped", t, "number added", t);
+        s.updated = t; s.polledAt = null;
+        await pollOne(s);
+        break;
       }
       default: return { ok: false, reason: "Unknown action." };
     }

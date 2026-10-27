@@ -69,6 +69,54 @@ function plausibleNumber(v) {
   return /^[A-Z0-9]{8,30}$/.test(n) && /\d/.test(n) && !/^\d{3}\d{7}\d{7}$/.test(n) /* Amazon order id without dashes is 17 digits: skip */ ? true : false;
 }
 
+// Order numbers / references that must never be used as tracking numbers. `raw` is the text it came from (may carry dashes).
+// AliExpress order ids are 16 digits; Amazon ones are 3-7-7 (17 digits without dashes). Strong carrier formats always win.
+function looksLikeOrderNumber(v) {
+  const raw = String(v == null ? "" : v);
+  const n = normNumber(raw);
+  if (!n) return false;
+  if (/^\d{3}-\d{7}-\d{7}$/.test(raw.trim())) return true;
+  if (CARRIERS.some((c) => !c.weak && c.re.some((r) => r.test(n)))) return false;
+  if (/^\d{17}$/.test(n)) return true;                                   // Amazon order id without dashes
+  if (/^\d{16}$/.test(n)) return true;                                   // AliExpress order ids; no carrier uses 16 plain digits
+  return false;
+}
+// -> true when the parcel has no number that could be sent to a tracker
+function needsNumber(s) { return !s || !Array.isArray(s.numbers) || s.numbers.length === 0; }
+
+// One-shot clean-up (idempotent): numbers that are really order ids move to orderId and the parcel is left needing a number.
+// FIXES is an explicit list of numbers the owner confirmed are mislabelled (DHL 8004100921 is really PH8004100921).
+const NUMBER_FIXES = { "8004100921": "PH8004100921" };
+function migrateWrongNumbers(list, now) {
+  const moved = [], fixed = [];
+  for (const s of list) {
+    if (!s || !Array.isArray(s.numbers)) continue;
+    const keep = [];
+    for (const n of s.numbers) {
+      if (NUMBER_FIXES[n.no]) {
+        const to = NUMBER_FIXES[n.no];
+        keep.push({ no: to, carrier: detectCarrier(to, "").carrier });   // unknown format -> "other": 17TRACK auto-detects
+        fixed.push({ id: s.id, from: n.no, to });
+        continue;
+      }
+      const strong = CARRIERS.some((c) => !c.weak && c.re.some((r) => r.test(n.no)));
+      const market = /aliexpress|alibaba/i.test(s.merchant || "") || n.carrier === "cainiao";
+      const bad = !strong && !n.carrierSet && (looksLikeOrderNumber(n.no) || (market && /^\d{12,20}$/.test(n.no)));
+      if (bad) {
+        if (!s.orderId) s.orderId = clean(n.no, 40);
+        moved.push({ id: s.id, no: n.no });
+      } else keep.push(n);
+    }
+    if (keep.length !== s.numbers.length || fixed.some((f) => f.id === s.id)) {
+      s.numbers = keep;
+      if (!keep.length) { s.events = []; s.lastEvent = null; s.polledAt = null; s.polledOk = null; }
+      else s.carrier = keep[keep.length - 1].carrier;
+      s.updated = now;
+    }
+  }
+  return { moved, fixed, changed: moved.length + fixed.length > 0 };
+}
+
 function trackUrl(carrier, number) {
   const c = CARRIER_BY_ID[carrier];
   if (!c || !c.url) return "";
@@ -108,7 +156,7 @@ function stateFromTrack17(status, subStatus, text) {
     case "Exception":
       if (byText === "action_pay" || byText === "action_pickup") return byText;
       // 2026-10-09: FedEx files "a request was made to change this delivery date" under Exception; that is a reschedule, not a problem
-      if (/(request was made to change (?:this |the )?delivery date|delivery date (?:was |has been )?(?:changed|rescheduled|updated)|rescheduled)/i.test(String(text || ""))) return "in_transit";
+      if (/(request was made to change (?:this |the )?delivery date|delivery date (?:was |has been )?(?:changed|rescheduled|updated)|\brescheduled\b)/i.test(String(text || ""))) return "in_transit";
       // 2026-10-12: 17TRACK keeps the parcel-level status at Exception after an old exception event; when the NEWEST event is plain progress, trust it
       if (byText === "in_transit" || byText === "out_for_delivery" || byText === "customs") return byText;
       return "exception_stuck";
@@ -137,7 +185,7 @@ function makeShipment(input, now) {
     const no = normNumber(typeof x === "string" ? x : x && x.no);
     if (!no || nums.some((y) => y.no === no)) continue;
     const c = (x && x.carrier && CARRIER_BY_ID[x.carrier]) ? x.carrier : detectCarrier(no, inp.carrier).carrier;
-    nums.push({ no, carrier: c });
+    nums.push(cleanNumber(x, no, c));
   }
   const t = now || Date.now();
   const state = STATES.includes(inp.state) ? inp.state : "ordered";
@@ -160,6 +208,7 @@ function makeShipment(input, now) {
     amountDue: clean(inp.amountDue, 40),
     pickupBy: isoOrNull(inp.pickupBy),
     note: clean(inp.note, 200),
+    review: !!inp.review,
     pickedUp: !!inp.pickedUp,
     archived: !!inp.archived, archivedAt: atMs(inp.archivedAt),
     added: atMs(inp.added) || t, updated: atMs(inp.updated) || t,
@@ -169,6 +218,19 @@ function makeShipment(input, now) {
   if (Array.isArray(inp.history)) s.history = inp.history.filter((h) => h && STATES.includes(h.state)).map((h) => ({ at: atMs(h.at) || t, state: h.state, why: clean(h.why, 60) })).slice(-60);
   if (!s.history.length) s.history.push({ at: s.stateAt, state: s.state, why: s.source });
   return s;
+}
+// A tracking number record: { no, carrier, reason?, reasonText?, reasonAt?, recarrier?, carrierSet?, at? }.
+// reason = why 17TRACK has nothing to show (see REASONS); persisted so the card can say it instead of a generic line.
+const REASONS = ["waiting", "not_found", "invalid", "rejected", "quota", "key_refused", "rate", "error"];
+function cleanNumber(x, no, carrier) {
+  const o = { no, carrier };
+  if (x && typeof x === "object") {
+    if (REASONS.includes(x.reason)) { o.reason = x.reason; o.reasonText = clean(x.reasonText, 200); o.reasonAt = atMs(x.reasonAt); }
+    if (x.recarrier) o.recarrier = true;
+    if (x.carrierSet) o.carrierSet = true;
+    if (atMs(x.at)) o.at = atMs(x.at);
+  }
+  return o;
 }
 function cleanEvent(e) {
   if (!e || typeof e !== "object") return null;
@@ -287,7 +349,7 @@ function mergeCandidate(list, cand, now) {
   for (const x of cand.numbers || []) {
     const no = normNumber(typeof x === "string" ? x : x.no);
     if (!no || s.numbers.some((y) => y.no === no)) continue;
-    s.numbers.push({ no, carrier: (x && x.carrier && CARRIER_BY_ID[x.carrier]) ? x.carrier : detectCarrier(no, cand.carrier).carrier });
+    s.numbers.push({ no, carrier: (x && x.carrier && CARRIER_BY_ID[x.carrier]) ? x.carrier : detectCarrier(no, cand.carrier).carrier, at: now });
     changed = true;
   }
   // The newest number is normally the one to show (the final-leg carrier)
@@ -382,7 +444,7 @@ function demoShipments(now) {
 
 module.exports = {
   STATES, STATE_LABEL, NEEDS_ACTION, CARRIERS, CARRIER_BY_ID, STUCK_DAYS_DEFAULT, ARCHIVE_KEEP_DAYS, MAX_ITEMS,
-  rankState, clean, normNumber, detectCarrier, plausibleNumber, trackUrl, carrierName,
+  REASONS, looksLikeOrderNumber, needsNumber, migrateWrongNumbers, NUMBER_FIXES, rankState, clean, normNumber, detectCarrier, plausibleNumber, trackUrl, carrierName,
   stateFromText, stateFromTrack17, makeShipment, cleanEvent, setState, applyEvents, effectiveState, isStuck,
   archiveShipment, unarchiveShipment, markPickedUp, sweep, findMatch, mergeCandidate, mergeShipments,
   groupShipments, actionText, cleanSettings, demoShipments,

@@ -71,23 +71,42 @@ const LABELLED = /(?:tracking|track(?:ing)?\s*(?:number|no\.?|id|code|#)|waybill
 const STRONG = [/\b(1Z[0-9A-Z]{16})\b/g, /\b([A-Z]{2}\d{9}[A-Z]{2})\b/g, /\b(LP\d{10,20}[A-Z]{0,2})\b/g, /\b(TB[ACM]\d{12})\b/g, /\b((?:JJD|JVGL)[0-9A-Z]{10,24})\b/g, /\b(YT\d{16})\b/g];
 const AMAZON_ORDER = /\b(\d{3}-\d{7}-\d{7})\b/;
 
-function pushNum(out, raw, why, hint) {
+// 2026-10-27: values that follow an order label ("Order number: 1123450589717403", "Order ID", "הזמנה") are references, never
+// tracking numbers. They are collected first and pushNum refuses them, so no later rule can pick them up by accident.
+const ORDER_LABEL = /(?:order\s*(?:number|no\.?|id|#|ref(?:erence)?)|reference\s*(?:number|no\.?)|הזמנה(?: מספר)?|מספר הזמנה)\s*[:#\-]?\s*(?:is\s*)?([A-Z0-9][A-Z0-9\- ]{5,30}[A-Z0-9])/gi;
+function orderRefs(whole) {
+  const set = new Set();
+  let m;
+  ORDER_LABEL.lastIndex = 0;
+  while ((m = ORDER_LABEL.exec(whole))) {
+    const tok = m[1].trim().split(/\s+/);
+    set.add(M.normNumber(tok[0]));
+    if (/^\d{1,4}$/.test(tok[0]) && tok.length > 1) set.add(M.normNumber(tok.slice(0, 4).join("")));
+  }
+  for (const a of whole.matchAll(/\b(\d{3}-\d{7}-\d{7})\b/g)) set.add(M.normNumber(a[1]));
+  return set;
+}
+function pushNum(out, raw, why, hint, refs) {
   const no = M.normNumber(raw);
   if (!no || no.length < 8) return;
-  if (/^\d{3}\d{7}\d{7}$/.test(no) && AMAZON_ORDER.test(String(raw))) return;   // an Amazon order id, not a parcel number
+  if (refs && refs.has(no)) return;                                                // labelled as an order number in this mail
+  if (M.looksLikeOrderNumber(raw)) return;                                         // an order id by format (Amazon 3-7-7, AliExpress 16 digits)
   if (/^(19|20)\d{6,}$/.test(no) && no.length <= 8) return;                        // a date
   if (out.some((x) => x.no === no)) return;
   const d = M.detectCarrier(no, hint);
   out.push({ no, carrier: d.carrier, confidence: d.confidence, why });
 }
 
-function extractNumbers(text, subject, hint) {
+// opts.fromMail + opts.isCarrier: in a mail from a shop (not a carrier) an unlabelled bare digit run is never a tracking number.
+function extractNumbers(text, subject, hint, opts) {
   const out = [];
   const whole = subject + "\n" + text;
+  const refs = orderRefs(whole);
+  const o = opts || {};
   let m;
   URL_PARAMS.lastIndex = 0;
-  while ((m = URL_PARAMS.exec(whole))) pushNum(out, m[1], "link", hint);
-  for (const re of STRONG) { re.lastIndex = 0; while ((m = re.exec(whole.toUpperCase()))) pushNum(out, m[1], "format", hint); }
+  while ((m = URL_PARAMS.exec(whole))) pushNum(out, m[1], "link", hint, refs);
+  for (const re of STRONG) { re.lastIndex = 0; while ((m = re.exec(whole.toUpperCase()))) pushNum(out, m[1], "format", hint, refs); }
   LABELLED.lastIndex = 0;
   while ((m = LABELLED.exec(whole))) {
     // a labelled value is a number only when it has digits and (after trimming trailing words) looks like one
@@ -95,16 +114,17 @@ function extractNumbers(text, subject, hint) {
     let cand = tok[0];
     if (/^\d{1,4}$/.test(cand) && tok.length > 1) { cand = tok.slice(0, 4).join(""); }   // "8782 4785 3307"
     const n = M.normNumber(cand);
-    if (/\d/.test(n) && n.length >= 8 && n.length <= 30) pushNum(out, cand, "label", hint);
+    if (/\d/.test(n) && n.length >= 8 && n.length <= 30) pushNum(out, cand, "label", hint, refs);
   }
   // FedEx / DHL / UPS subjects such as "You're getting a shipment 878247853307": a bare long digit run next to a shipment word
-  const subj = /(?:shipment|package|parcel|tracking|delivery|order)\D{0,12}(\d{10,22})\b/i.exec(subject);
-  if (subj) pushNum(out, subj[1], "subject", hint);
+  // ("order" was removed from this list on 2026-10-27: "Your order 1123450589717403 has shipped" carries the ORDER number)
+  const subj = /(?:shipment|package|parcel|tracking|delivery)\D{0,12}(\d{10,22})\b/i.exec(subject);
+  if (subj && !/\border\b[^\d]{0,12}$/i.test(subject.slice(0, subj.index + subj[0].length - subj[1].length))) pushNum(out, subj[1], "subject", hint, refs);
   // a mail from a carrier that has a bare digit number in the body but no label
-  if (!out.length && hint && ["fedex", "dhl"].includes(hint)) {
+  if (!out.length && hint && ["fedex", "dhl"].includes(hint) && !(o.fromMail && !o.isCarrier)) {
     const bare = new RegExp("\\b(\\d{" + (hint === "dhl" ? "10,11" : "12,15") + "})\\b", "g");
     const stripped = whole.replace(/\b(?:\+?\d[\d\-() ]{8,}\d)\b(?=\s*(?:phone|tel|fax))/gi, "");
-    while ((m = bare.exec(stripped))) { if (!/^(19|20)\d{2}/.test(m[1])) { pushNum(out, m[1], "bare", hint); break; } }
+    while ((m = bare.exec(stripped))) { if (!/^(19|20)\d{2}/.test(m[1])) { pushNum(out, m[1], "bare", hint, refs); if (out.length) break; } }
   }
   return out;
 }
@@ -216,7 +236,7 @@ function extractShipments(mail, now) {
   const at = Number.isFinite(Date.parse(mail.date)) ? Date.parse(mail.date) : (now || Date.now());
   const text = body.replace(/[ \t]+/g, " ");
   const hint = (sInfo && sInfo.carrier) || hostCarrier(body) || bodyCarrier(subject + " " + text.slice(0, 1500)) || "";
-  const nums = extractNumbers(text, subject, hint);
+  const nums = extractNumbers(text, subject, hint, { fromMail: true, isCarrier: !!(sInfo && sInfo.isCarrier) });
   const orderId = extractOrderId(text, subject);
   const state = M.stateFromText(subject) || M.stateFromText(text.slice(0, 1200)) || (nums.length ? "shipped" : null);
   if (!nums.length && !(orderId && sInfo && state)) return [];

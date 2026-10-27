@@ -58,6 +58,56 @@
         return r;
       }
 
+      // Carrier list comes from the main process (data.carriers); "" = let 17TRACK / the number format decide.
+      function carrierSelect(selected) {
+        const sel = el("select", "daily-input ship-sel");
+        sel.append(Object.assign(el("option", null, "Carrier: auto-detect"), { value: "" }));
+        for (const c of (data && data.carriers) || []) {
+          const o = el("option", null, c.name); o.value = c.id;
+          if (c.id === selected) o.selected = true;
+          sel.append(o);
+        }
+        sel.title = "Optional. Leave on auto-detect unless you know the carrier.";
+        return sel;
+      }
+      const shortDay = (ms) => { const d = new Date(ms); return Number.isFinite(d.getTime()) ? `${d.getDate()} ${MONTHS[d.getMonth()]}` : ""; };
+      // what the owner sees to tell parcels apart: merchant, product, order id, order date
+      const orderLabel = (s) => [s.merchant, s.title && s.title !== s.merchant ? s.title : "", s.orderId ? "order " + s.orderId : "", s.orderAt ? "ordered " + shortDay(s.orderAt) : ""].filter(Boolean).join(" - ");
+
+      // A parcel that has no valid tracking number yet (only an order number came by mail): box to paste the real one.
+      function numberBox(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Tracking number for: " + (orderLabel(s) || "this parcel")));
+        const line = el("div", "ship-add");
+        const inp = el("input", "daily-input grow");
+        inp.placeholder = "Paste the tracking number (not the order number)";
+        inp.maxLength = 400; inp.setAttribute("dir", "auto");
+        const sel = carrierSelect("");
+        const go = () => { const v = inp.value.trim(); if (v) act("add-number", s.id, { text: v, carrier: sel.value }, "Tracking number saved."); };
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+        line.append(inp, sel, btn("Save number", "daily-btn sm pri", go));
+        w.append(line);
+        return w;
+      }
+      // 17TRACK could not identify or find the number: say so plainly and let the owner set the carrier later.
+      function carrierBox(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Once you know the carrier, pick it here and the number is registered again with it."));
+        const line = el("div", "ship-add");
+        const sel = carrierSelect(s.carrier === "other" ? "" : s.carrier);
+        line.append(sel, btn("Set carrier", "daily-btn sm pri", () => act("set-carrier", s.id, { carrier: sel.value || "auto" }, "Carrier set. Checking again...")));
+        w.append(line);
+        return w;
+      }
+      // the line that says WHY there is no live state (replaces the old generic "state comes from the email" text)
+      function reasonLine(s) {
+        if (s.needsNumber) return el("div", "ship-ev ship-warnline", "No tracking number yet - the email only had the order number. Paste the real tracking number below.");
+        if (s.cantTrack) return el("div", "ship-ev ship-warnline", "Can't track this package yet - ask the sender which carrier they use.");
+        if (s.reason && s.reason.text) return el("div", "ship-ev ship-muted", s.reason.text);
+        return el("div", "ship-ev ship-muted", s.source === "email" ? "Not checked by the tracking service yet." : "Waiting for the first tracking event.");
+      }
+      const PROBLEM = new Set(["quota", "key_refused", "rate", "error"]);
+
       function row(s, now, archived) {
         const r = el("div", "ship-row" + (archived ? " archived" : ""));
         const ico = el("div", "ship-ico", CARRIER_ICON[s.carrier] || "?");
@@ -66,9 +116,11 @@
         const l1 = el("div", "ship-l1");
         const name = s.title || s.merchant || (s.numbers[0] ? s.carrierName : "Parcel");
         l1.append(el("b", "ship-name", name), chipEl(s.effective));
+        if (s.review) l1.append(el("span", "ship-chip mute", "Review sample"));
         if (s.merchant && s.title && s.merchant !== s.title) l1.append(el("span", "ship-merch", s.merchant));
         const l2 = el("div", "ship-l2");
-        l2.append(el("span", "ship-carrier", s.carrierName));
+        if (!s.needsNumber) l2.append(el("span", "ship-carrier", s.carrierName));
+        else if (s.orderId) l2.append(el("span", "ship-carrier", "Order " + s.orderId + (s.orderAt ? ", " + shortDay(s.orderAt) : "")));
         for (const n of s.numbers.slice(0, 3)) {
           const nb = btn(n.no, "ship-no", () => { copyText(n.no); say("Tracking number copied."); });
           nb.title = `${n.carrierName} - click to copy`;
@@ -86,7 +138,10 @@
           const tail = [ev.place, ev.at ? ago(ev.at, now) : ""].filter(Boolean).join(" - ");
           if (tail) { const p = el("span", "ship-ev-p", " (" + tail + ")"); p.setAttribute("dir", "auto"); l3.append(p); }
           main.append(l3);
-        } else if (!archived) main.append(el("div", "ship-ev ship-muted", s.source === "email" ? "No live tracking yet - state comes from the email." : "Waiting for the first tracking event."));
+        } else if (!archived) main.append(reasonLine(s));
+        if (!archived && ev && ev.text && s.reason && PROBLEM.has(s.reason.reason)) main.append(el("div", "ship-ev ship-warnline", s.reason.text));
+        if (!archived && s.needsNumber) main.append(numberBox(s));
+        else if (!archived && s.cantTrack) main.append(carrierBox(s));
         if (s.events && s.events.length > 1) {
           const det = el("details", "ship-hist");
           det.append(el("summary", "ship-muted", "Tracking history (" + s.events.length + " steps)"));
@@ -126,22 +181,49 @@
         return g;
       }
 
+      // + Add shipment: only the number is required. Carrier is optional (17TRACK auto-detects), label and "Review sample" are optional.
+      // While a number is typed, parcels still waiting for a number are listed so it can be attached to the right order.
       function addBar() {
+        const box = el("div", "daily-card ship-addcard");
         const w = el("div", "ship-add");
         const inp = el("input", "daily-input grow");
-        inp.placeholder = "Paste a tracking number, a tracking link or an SMS - or dictate it";
+        inp.placeholder = "Tracking number (or paste a tracking link or an SMS)";
         inp.maxLength = 400;
         inp.setAttribute("dir", "auto");
+        const w2 = el("div", "ship-add");
+        const sel = carrierSelect("");
+        const label = el("input", "daily-input grow");
+        label.placeholder = "Sender or product (optional)";
+        label.maxLength = 120; label.setAttribute("dir", "auto");
+        const rv = document.createElement("input"); rv.type = "checkbox";
+        const rvl = el("label", "ship-chk"); rvl.append(rv, document.createTextNode(" Review sample"));
+        rvl.title = "Tag this parcel as a product sent to you for review";
+        const pick = el("div", "ship-pick");
         const go = async () => {
           const v = inp.value.trim();
           if (!v) return;
-          const r = await act("add", null, { text: v }, "Added.");
-          if (r && r.ok) { showAdd = false; ctx.rerender(); }
+          const r = await act("add", null, { text: v, carrier: sel.value, label: label.value.trim(), review: rv.checked }, "Added.");
+          if (r && r.ok) { showAdd = false; ctx.rerender(); if (r.note) say(r.note); }
         };
+        const showPick = () => {
+          pick.textContent = "";
+          const v = inp.value.trim();
+          const open = (data && data.items || []).filter((s) => s.needsNumber && !s.archived);
+          if (!v || !open.length) return;
+          pick.append(el("div", "ship-muted sm", "Which order is this? These parcels are still waiting for a tracking number:"));
+          for (const s of open.slice(0, 12)) {
+            const line = el("div", "ship-pickrow");
+            line.append(el("span", "ship-pickt", orderLabel(s) || "Parcel"), btn("This one", "daily-btn sm", () => act("add-number", s.id, { text: v, carrier: sel.value }, "Tracking number attached.").then((r) => { if (r && r.ok) { showAdd = false; ctx.rerender(); } })));
+            pick.append(line);
+          }
+        };
+        inp.addEventListener("input", showPick);
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); if (e.key === "Escape") { showAdd = false; ctx.rerender(); } });
-        w.append(inp, btn("Add", "daily-btn pri", go), btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
+        w.append(inp, sel);
+        w2.append(label, rvl, btn("Add", "daily-btn pri", go), btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
+        box.append(w, w2, pick);
         setTimeout(() => inp.focus(), 0);
-        return w;
+        return box;
       }
 
       // Password field -> IPC -> safeStorage in the main process. The key is never shown again, only "key stored".

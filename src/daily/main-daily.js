@@ -370,7 +370,7 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
   if (!testMode) shipments.syncTimer();
   ipcMain.handle("daily-shipments-load", async (e, args) => { try { return await shipments.load(args); } catch (err) { say("shipments load failed: " + err.message); return { ok: false, reason: err.message }; } });
   ipcMain.handle("daily-shipments-refresh", async () => { try { return await shipments.refreshNow(); } catch (err) { return { ok: false, reason: err.message }; } });
-  ipcMain.handle("daily-shipments-op", (e, args) => { try { return shipments.op(args); } catch (err) { return { ok: false, reason: err.message }; } });
+  ipcMain.handle("daily-shipments-op", async (e, args) => { try { return await shipments.op(args); } catch (err) { return { ok: false, reason: err.message }; } });
   ipcMain.handle("daily-shipments-key", (e, args) => { try { return shipments.setKey(args); } catch (err) { return { ok: false, reason: err.message }; } });
   // Decisions (v1.78.0): open tasks that need the owner, of every agent; an answer is delivered to that agent (verified path injected from main.js).
   // Test mode reads fixtures and never updates the real task store; with no delivery function nothing can be answered.
