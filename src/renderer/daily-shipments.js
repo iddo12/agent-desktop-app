@@ -169,6 +169,33 @@
       }
       const PROBLEM = new Set(["quota", "key_refused", "rate", "error"]);
 
+      // Contents of a parcel (best effort: only what the shop's mail said). Pictures are local thumbnails fetched once by the main process.
+      const picCache = new Map();   // thumb file name -> data URL ("" while loading / missing)
+      function wantPics(list) {
+        const need = [];
+        for (const s of list) for (const it of (s.items || [])) if (it.thumb && !picCache.has(it.thumb)) { picCache.set(it.thumb, ""); need.push(it.thumb); }
+        if (need.length && api.thumbs) api.thumbs(need.slice(0, 100)).then((m) => { let any = false; for (const k of Object.keys(m || {})) { picCache.set(k, m[k]); any = true; } if (any) ctx.rerender(); }).catch(() => {});
+      }
+      function contentsBlock(s) {
+        const items = Array.isArray(s.items) ? s.items : [];
+        const box = el("div", "ship-items");
+        let any = false;
+        if (items.length) {
+          any = true;
+          for (const it of items) {
+            const one = el("div", "ship-item");
+            const src = it.thumb && picCache.get(it.thumb);
+            if (src) { const im = document.createElement("img"); im.className = "ship-pic"; im.src = src; im.alt = ""; one.append(im); }
+            one.append(el("span", "ship-item-t", (it.qty > 1 ? it.qty + " x " : "") + it.name));
+            box.append(one);
+          }
+        }
+        const total = s.itemCount || 0;
+        if (s.orderCount && total && s.orderCount > total) { any = true; box.append(el("div", "ship-muted", `This parcel has ${total} of the ${s.orderCount} items ordered; ${s.orderCount - total} not shipped yet.`)); }
+        else if (!items.length && total) { any = true; box.append(el("div", "ship-muted", total + (total === 1 ? " item" : " items"))); }
+        return any ? box : null;
+      }
+
       function row(s, now, archived) {
         const r = el("div", "ship-row" + (archived ? " archived" : ""));
         const ico = el("div", "ship-ico", CARRIER_ICON[s.carrier] || "?");
@@ -193,6 +220,7 @@
         }
         if (s.eta && !archived) l2.append(el("span", "ship-eta", "ETA " + dayText(s.eta, now)));
         main.append(l1, l2);
+        { const cb = contentsBlock(s); if (cb) main.append(cb); }
         if (s.action && !archived) main.append(el("div", "ship-action " + (CHIP[s.effective] || [0, ""])[1], s.action + " !"));
         const ev = s.lastEvent;
         if (ev && ev.text) {
@@ -348,6 +376,7 @@
           if (!data) { wrap.append(el("div", "daily-muted daily-pad", "Loading shipments...")); return wrap; }
         }
         const now = data.now;
+        wantPics(data.items || []);
         const p = data.provider;
         const bar = el("div", "ship-bar");
         bar.append(btn("+ Add shipment", "daily-btn pri", () => { showAdd = !showAdd; ctx.rerender(); }));

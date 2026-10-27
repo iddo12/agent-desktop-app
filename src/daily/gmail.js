@@ -208,11 +208,29 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
     const mt = String(payload.mimeType || "");
     if (payload.body && payload.body.data && (mt === "text/plain" || (mt === "text/html" && !(payload.parts || []).length))) {
       let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
-      return mt === "text/html" ? t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ") : t;
+      return mt === "text/html" ? t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<\/(?:p|div|tr|td|li|h\d|table)>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ") : t;
     }
     let plain = "", other = "";
     for (const p of payload.parts || []) { const x = bodyText(p, (depth || 0) + 1); if (String(p.mimeType) === "text/plain") plain += x + "\n"; else other += x + "\n"; }
     return (plain.trim() ? plain : other).slice(0, 40000);
+  }
+  // Picture urls of a message, in document order (https only, at most 24): product photos in parcel mails. Fetched later by the Shipments service.
+  function htmlImages(payload, depth, out) {
+    out = out || [];
+    if (!payload || (depth || 0) > 6 || out.length >= 24) return out;
+    if (String(payload.mimeType) === "text/html" && payload.body && payload.body.data) {
+      let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
+      const re = /<img\b[^>]*?\bsrc\s*=\s*["'](https:\/\/[^"'\s]{4,400})["'][^>]*>/gi;
+      let m;
+      while ((m = re.exec(t)) && out.length < 24) {
+        const w = /\bwidth\s*=\s*["']?(\d+)/i.exec(m[0]);
+        if (w && +w[1] < 60) continue;                                   // icons and tracking pixels
+        const u = m[1].replace(/&amp;/g, "&");
+        if (!out.includes(u)) out.push(u);
+      }
+    }
+    for (const p of payload.parts || []) htmlImages(p, (depth || 0) + 1, out);
+    return out;
   }
   async function shipmentMails(now, opts) {
     const accts = readAccounts();
@@ -229,7 +247,7 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
         const mails = [];
         for (const m of msgs) {
           if (!m) continue;
-          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
+          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
         }
         shipCache.set(a.email, { at: Date.now(), mails });
         out.push(...mails);

@@ -182,6 +182,21 @@ const newId = (now) => "s" + (now || Date.now()).toString(36) + (++idSeq).toStri
 function isoOrNull(v) { const t = typeof v === "number" ? v : Date.parse(v); return Number.isFinite(t) ? new Date(t).toISOString() : null; }
 function atMs(v) { const t = typeof v === "number" ? v : Date.parse(v); return Number.isFinite(t) ? t : null; }
 
+// What is in the parcel: [{name, qty, src?, thumb?}] (src = remote picture url waiting to be fetched, thumb = local file once fetched).
+function cleanCount(v) { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 && n < 1000 ? n : 0; }
+function cleanItems(v) {
+  const out = [];
+  for (const x of Array.isArray(v) ? v : []) {
+    const name = clean(x && x.name, 100);
+    if (!name || out.length >= 12) continue;
+    const it = { name, qty: Math.min(99, cleanCount(x.qty) || 1) };
+    if (typeof x.src === "string" && /^https:\/\/[^\s]{4,400}$/i.test(x.src)) it.src = x.src;
+    if (typeof x.thumb === "string" && /^[\w-]+\.png$/.test(x.thumb)) it.thumb = x.thumb;
+    out.push(it);
+  }
+  return out;
+}
+
 // Build a clean shipment from loose input. numbers: [{no, carrier}] (carrier optional -> detected).
 function makeShipment(input, now) {
   const inp = input || {};
@@ -213,6 +228,7 @@ function makeShipment(input, now) {
     amountDue: clean(inp.amountDue, 40),
     pickupBy: isoOrNull(inp.pickupBy),
     note: clean(inp.note, 200),
+    items: cleanItems(inp.items), itemCount: cleanCount(inp.itemCount), orderCount: cleanCount(inp.orderCount),
     review: !!inp.review,
     split: !!inp.split,   // user split this order into several parcels: never merge by order id alone (findMatch)
     pickedUp: !!inp.pickedUp,
@@ -349,6 +365,7 @@ function mergeCandidate(list, cand, now) {
   if (s && cmsg.length && cmsg.every((m) => s.msgIds.includes(m))) return { shipment: s, created: false, changed: false };   // same mail twice
   if (!s) {
     s = makeShipment(Object.assign({}, cand, { state: cand.state || "ordered", stateAt: at, lastChangeAt: at, source: cand.source || "email", msgIds: cmsg, added: now, updated: now }), now);
+    if ((cand.state === "ordered" || !cand.state) && cleanCount(cand.itemCount)) s.orderCount = cleanCount(cand.itemCount);
     if (s.state === "delivered") archiveShipment(s, now, "delivered");
     list.push(s);
     return { shipment: s, created: true, changed: true };
@@ -363,6 +380,11 @@ function mergeCandidate(list, cand, now) {
   // The newest number is normally the one to show (the final-leg carrier)
   if (changed) s.carrier = s.numbers[s.numbers.length - 1].carrier;
   for (const k of ["orderId", "merchant", "title", "from", "to", "amountDue"]) { if (cand[k] && !s[k]) { s[k] = clean(cand[k], 120); changed = true; } }
+  // contents: an "ordered" mail gives the order size, a shipped/transit mail gives what is in THIS parcel (and replaces category-only guesses)
+  if (cand.state === "ordered" || !cand.state) { const c = cleanCount(cand.itemCount); if (c && c !== s.orderCount) { s.orderCount = c; changed = true; } }
+  else if (cand.items && cand.items.length && !(s.items || []).some((x) => x.thumb) && JSON.stringify((s.items || []).map((x) => [x.name, x.qty])) !== JSON.stringify(cleanItems(cand.items).map((x) => [x.name, x.qty]))) {
+    s.items = cleanItems(cand.items); s.itemCount = cleanCount(cand.itemCount) || s.items.reduce((a, x) => a + x.qty, 0); changed = true;
+  }
   if (cand.eta) { const e = isoOrNull(cand.eta); if (e && (!s.eta || at >= s.stateAt)) { if (s.eta !== e) { s.eta = e; changed = true; } } }
   if (cand.pickupBy) { const e = isoOrNull(cand.pickupBy); if (e && e !== s.pickupBy) { s.pickupBy = e; changed = true; } }
   if (cand.amountDue && cand.state === "action_pay" && s.amountDue !== clean(cand.amountDue, 40)) { s.amountDue = clean(cand.amountDue, 40); changed = true; }
@@ -451,6 +473,7 @@ function demoShipments(now) {
 }
 
 module.exports = {
+  cleanItems, cleanCount,
   STATES, STATE_LABEL, NEEDS_ACTION, CARRIERS, CARRIER_BY_ID, STUCK_DAYS_DEFAULT, ARCHIVE_KEEP_DAYS, MAX_ITEMS,
   REASONS, looksLikeOrderNumber, needsNumber, migrateWrongNumbers, NUMBER_FIXES, rankState, clean, normNumber, detectCarrier, plausibleNumber, trackUrl, carrierName,
   stateFromText, stateFromTrack17, makeShipment, cleanEvent, setState, applyEvents, effectiveState, isStuck,

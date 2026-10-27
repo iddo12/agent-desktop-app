@@ -11,7 +11,7 @@ const V = require("./shipments-vision");
 const SCAN_MIN_MS = 10 * 60000;
 const MAX_MAILS = 400;
 
-function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, now, say, notices, testMode }) {
+function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, makeThumb, now, say, notices, testMode }) {
   const clock = typeof now === "function" ? now : () => Date.now();
   const log = typeof say === "function" ? say : () => {};
   let timer = null;
@@ -71,6 +71,27 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   }
   const settings = () => M.cleanSettings(settingsFile ? readStore(settingsFile, {}, null, "Settings").shipments : null);
 
+  // Product pictures from parcel mails: fetch each remote picture ONCE into a small local PNG (nothing is hot-linked at render time).
+  // A picture that cannot be fetched is dropped (no endless retries); at most MAX_PICS per scan keeps a scan short.
+  const MAX_PICS = 12;
+  async function fetchPictures(st) {
+    if (typeof makeThumb !== "function") return 0;
+    let n = 0, tried = 0;
+    for (const s of st.items) {
+      for (let i = 0; i < (s.items || []).length; i++) {
+        const it = s.items[i];
+        if (!it.src || it.thumb) continue;
+        if (tried++ >= MAX_PICS) return n;
+        try {
+          const f = await makeThumb(it.src, "ship-" + String(s.id).replace(/[^\w-]/g, "") + "-" + i);
+          if (f && /^[\w-]+\.png$/.test(f)) { it.thumb = f; n++; }
+        } catch (e) { log("shipments picture failed: " + M.clean(e && e.message, 100)); }
+        delete it.src;
+      }
+    }
+    return n;
+  }
+
   // Read mail through the existing read-only mail code, extract parcels, merge. Returns the number of new/changed parcels.
   async function scan(st, force) {
     if (!force && st.scannedAt && clock() - st.scannedAt < SCAN_MIN_MS) return 0;
@@ -85,6 +106,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
             if (r.created || r.changed) changed++;
           }
         }
+        changed += await fetchPictures(st);
         st.scannedAt = clock();
         st.lastError = "";
       } catch (e) { st.lastError = M.clean(e && e.message, 120); log("shipments mail scan failed: " + st.lastError); }

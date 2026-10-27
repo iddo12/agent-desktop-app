@@ -303,6 +303,10 @@ button.daily-st { border: 0; font: inherit; font-size: 11px; font-weight: 600; c
 .ship-l1, .ship-l2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .ship-name { overflow-wrap: anywhere; }
 .ship-merch, .ship-carrier, .ship-eta, .ship-muted, .ship-from { color: var(--text-muted); font-size: 12.5px; }
+.ship-items { display: flex; flex-direction: column; gap: 4px; margin: 2px 0; }
+.ship-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+.ship-item-t { overflow-wrap: anywhere; }
+.ship-pic { flex: none; width: 40px; height: 40px; object-fit: contain; border-radius: 4px; background: #fff; border: 1px solid var(--border, rgba(128,128,128,.3)); }
 .ship-eta { font-weight: 600; color: var(--text); }
 .ship-no { font: inherit; font-size: 12.5px; font-family: Consolas, monospace; background: var(--bg-hover); border: 0; border-radius: 5px; padding: 1px 6px; color: var(--text); cursor: copy; }
 .ship-no:hover { background: var(--bg-active); }

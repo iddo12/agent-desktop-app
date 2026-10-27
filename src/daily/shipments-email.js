@@ -225,6 +225,38 @@ function bodyCarrier(text) {
   return "";
 }
 
+
+// ---------------------------------------------------------------- what is in the parcel (2026-10-27, best effort)
+// B&H shipped mails list "<name> / B&H #SKU / QTY: n" per item; Amazon says "Shipped 2 items: Headphone Accessories, Adhesives"
+// (categories, not names) or, for a single item, the product name in quotes. -> { items:[{name,qty}], count } (count 0 = unknown).
+function extractItems(text, subject) {
+  const lines = String(text || "").split(/\n+/).map((l) => l.replace(/[ \t]+/g, " ").trim()).filter(Boolean);
+  const items = [];
+  for (let i = 1; i < lines.length && items.length < 12; i++) {
+    if (!/^B&H #[A-Z0-9-]+/i.test(lines[i])) continue;
+    const name = lines[i - 1];
+    let qty = 1;
+    for (let j = i + 1; j <= i + 2 && j < lines.length; j++) { const q = /^QTY:?\s*(\d{1,3})\b/i.exec(lines[j]); if (q) { qty = +q[1]; break; } }
+    if (name.length >= 3 && name.length <= 200 && !/^(?:QTY|B&H #)/i.test(name)) items.push({ name: M.clean(name, 100), qty });
+  }
+  if (items.length) return { items, count: items.reduce((a, x) => a + x.qty, 0) };
+  const whole = String(subject || "") + "\n" + lines.join("\n");
+  let m = /\b(?:ordered|shipped|delivered)\s*:?\s*(\d{1,3})\s+items?\s*:?\s*([^\n]{0,200})/i.exec(whole);
+  if (m) {
+    const names = m[2].split(/,\s*(?:and\s+)?|\s+and\s+/i).map((x) => x.replace(/[.\s]+$/, "").trim()).filter((x) => x && !/^more$/i.test(x) && x.length <= 60 && !/^https?:/i.test(x)).slice(0, 8);
+    return { items: names.map((n) => ({ name: M.clean(n, 100), qty: 1 })), count: +m[1] };
+  }
+  m = /\b(?:ordered|shipped|delivered)\s*:\s*["“']([^"”\n]{3,120})["”']/i.exec(whole);
+  if (m) return { items: [{ name: M.clean(m[1].replace(/…|\.\.\.$/g, ""), 100), qty: 1 }], count: 1 };
+  return { items: [], count: 0 };
+}
+// Pair picture URLs with items only when it is unambiguous: same number of pictures as items, or one extra (a logo first).
+function pairImages(items, urls) {
+  const good = (Array.isArray(urls) ? urls : []).filter((u) => /^https:\/\//i.test(u) && u.length <= 400 && !/(logo|banner|spacer|pixel|track|facebook|twitter|instagram|youtube|icon|badge|footer)/i.test(u));
+  const pick = good.length === items.length ? good : (good.length === items.length + 1 ? good.slice(1) : []);
+  return items.map((it, i) => (pick[i] ? Object.assign({}, it, { src: pick[i] }) : it));
+}
+
 // ---------------------------------------------------------------- main entry
 // -> array of candidates for M.mergeCandidate (usually 0 or 1; several numbers in one mail are the SAME parcel unless the
 // subject says otherwise), each { numbers:[{no,carrier}], carrier, orderId, merchant, from, to, eta, state, pickupBy,
@@ -233,7 +265,7 @@ function extractShipments(mail, now) {
   if (!mail || typeof mail !== "object") return [];
   const subject = M.clean(mail.subject, 200);
   let body = String(mail.body != null ? mail.body : mail.snippet || "").slice(0, MAX_BODY);
-  body = body.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+  body = body.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<\/(?:p|div|tr|td|li|h\d|table)>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
   const sInfo = senderInfo(mail.from);
   if (!looksLikeShipment(mail) && !(sInfo)) return [];
   const at = Number.isFinite(Date.parse(mail.date)) ? Date.parse(mail.date) : (now || Date.now());
@@ -250,7 +282,9 @@ function extractShipments(mail, now) {
   const { eta, etaText } = extractEta(subject + "\n" + text, at);
   const merchant = sInfo ? sInfo.merchant : "";
   const from = extractFrom(text, merchant, sInfo && sInfo.isCarrier);
+  const got = extractItems(body, subject);
   const cand = {
+    items: pairImages(got.items, mail.images), itemCount: got.count,
     numbers: nums.map((n) => ({ no: n.no, carrier: n.carrier })),
     carrier: nums.length ? nums[nums.length - 1].carrier : (hint || "other"),
     orderId, merchant, from, to: extractTo(text), eta, etaText,
@@ -286,4 +320,4 @@ function parseAddInput(raw) {
   return { ok: true, numbers: nums.map((n) => ({ no: n.no, carrier: n.carrier })), carrier: nums[nums.length - 1].carrier, title: M.clean(title, 80) };
 }
 
-module.exports = { looksLikeShipment, extractShipments, extractNumbers, parseDateText, parseAddInput, senderInfo, domainOf, SENDERS };
+module.exports = { extractItems, pairImages, looksLikeShipment, extractShipments, extractNumbers, parseDateText, parseAddInput, senderInfo, domainOf, SENDERS };

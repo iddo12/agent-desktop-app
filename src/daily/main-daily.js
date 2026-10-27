@@ -387,7 +387,7 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
     }),
   });
   const shipments = shipMain.createService({
-    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow, readScreenshot: shotReader.read,
+    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow, readScreenshot: shotReader.read, makeThumb: (url, id) => makeThumbFor(url, id),
     getMails: async (now) => {
       if (testMode) return [];
       const out = [];
