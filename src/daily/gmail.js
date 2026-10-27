@@ -46,6 +46,21 @@ function request(method, urlStr, { headers, body, timeoutMs } = {}) {
   });
 }
 
+// True only when Gmail itself (authserv-id mx.google.com, never an attacker-supplied copy of the header) reports dmarc=pass for the
+// very domain in the From address, i.e. an aligned DKIM or SPF pass. A bare dkim=pass for some other domain does not count.
+function senderVerified(msg) {
+  const fromDom = ((/@([^>\s;]+)/.exec(headerOf(msg, "From")) || [])[1] || "").toLowerCase().replace(/\.$/, "");
+  if (!fromDom) return false;
+  const hs = (msg && msg.payload && msg.payload.headers) || [];
+  for (const h of hs) {
+    if (!h || String(h.name).toLowerCase() !== "authentication-results") continue;
+    const v = String(h.value || "").trim();
+    if (!/^mx\.google\.com\s*;/i.test(v)) continue;
+    const m = /\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;)]+)/i.exec(v);
+    if (m && m[1].toLowerCase().replace(/\.$/, "") === fromDom) return true;
+  }
+  return false;
+}
 function headerOf(msg, name) {
   const hs = (msg && msg.payload && msg.payload.headers) || [];
   const h = hs.find((x) => x && String(x.name).toLowerCase() === name.toLowerCase());
@@ -248,7 +263,7 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
         const mails = [];
         for (const m of msgs) {
           if (!m) continue;
-          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), verified: /(?:dkim|spf)=pass/i.test(headerOf(m, "Authentication-Results") || ""), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
+          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), verified: senderVerified(m), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
         }
         shipCache.set(a.email, { at: Date.now(), mails });
         out.push(...mails);
@@ -301,4 +316,4 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
   };
 }
 
-module.exports = { create, classifyThread, SCOPE };
+module.exports = { create, classifyThread, SCOPE, senderVerified };

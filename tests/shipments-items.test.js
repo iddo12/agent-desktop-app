@@ -91,6 +91,17 @@ t("no pictures when the sender did not pass DKIM/SPF, even from a shop address",
   assert.strictEqual(c.items[0].name, "Thing A");
   assert.ok(!c.items[0].src);
 });
+t("senderVerified: needs Gmail's own dmarc=pass for the From domain; foreign dkim pass or a forged header copy does not count", () => {
+  const G = require("../src/daily/gmail.js");
+  const mk = (from, ...ars) => ({ payload: { headers: [{ name: "From", value: from }, ...ars.map((v) => ({ name: "Authentication-Results", value: v }))] } });
+  const good = "mx.google.com; dkim=pass header.i=@bhphotovideo.com; spf=pass smtp.mailfrom=x@bhphotovideo.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=bhphotovideo.com";
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", good)), true);
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; dmarc=fail header.from=bhphotovideo.com")), false);
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "mx.google.com; dkim=pass header.i=@evil.example; spf=pass")), false);
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>", "evil.example; dmarc=pass header.from=bhphotovideo.com")), false);
+  assert.strictEqual(G.senderVerified(mk("x <a@evil.example>", good)), false);
+  assert.strictEqual(G.senderVerified(mk("B&H <orders@bhphotovideo.com>")), false);
+});
 t("pictures are only taken from a known shop sender; hostile html stays fast", () => {
   const body = "<td>Tracking # 524349476473</td><td>Thing A</td><td>B&amp;H #AA1</td><td>QTY: 1</td>";
   const c = E.extractShipments({ from: "x <a@evil.example>", subject: "Your order has shipped tracking 524349476473", date: "2026-10-27T08:00:00Z", messageId: "e1", images: ["https://evil.example/p.gif"], body }, NOW)[0];
