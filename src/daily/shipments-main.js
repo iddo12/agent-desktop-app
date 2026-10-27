@@ -6,17 +6,33 @@ const fs = require("fs");
 const M = require("./shipments-model");
 const E = require("./shipments-email");
 const T = require("./shipments-track");
+const V = require("./shipments-vision");
 
 const SCAN_MIN_MS = 10 * 60000;
 const MAX_MAILS = 400;
 
-function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, now, say, notices, testMode }) {
+function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, now, say, notices, testMode }) {
   const clock = typeof now === "function" ? now : () => Date.now();
   const log = typeof say === "function" ? say : () => {};
   let timer = null;
   let scanning = null;
 
-  const MIGRATION = 2;   // 2026-10-27: order numbers that an older scanner stored as tracking numbers (see M.migrateWrongNumbers)
+  const MIGRATION = 3;   // 2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
+  // 3 (2026-10-27): Amazon shop mails carry link ids that were taken for a carrier number (2367361581 -> an old Milan parcel).
+  // Drop a number from an Amazon email card when its format is only a weak guess and the owner never chose its carrier; the
+  // tracking events that came from it go with it. Returns the number of cards changed.
+  function junkAmazon(items, t) {
+    let n = 0;
+    for (const s of items) {
+      if (!s || s.merchant !== "Amazon" || s.source !== "email" || !s.numbers.length) continue;
+      const bad = s.numbers.filter((x) => !x.carrierSet && (x.carrier === "other" || (M.CARRIER_BY_ID[x.carrier] && M.CARRIER_BY_ID[x.carrier].weak)));
+      if (!bad.length) continue;
+      s.numbers = s.numbers.filter((x) => !bad.includes(x));
+      if (!s.numbers.length) { s.events = []; s.lastEvent = null; s.carrier = "other"; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.eta = s.eta && Date.parse(s.eta) > t ? s.eta : null; s.polledAt = null; }
+      s.updated = t; n++;
+    }
+    return n;
+  }
   function loadStore() {
     const raw = readStore(file, { items: [] }, notices, "Shipments");
     let items = (Array.isArray(raw.items) ? raw.items : []).filter((x) => x && typeof x === "object").map((x) => M.makeShipment(x, clock()));
@@ -29,6 +45,8 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   function migrate(st) {
     try {
       const r = M.migrateWrongNumbers(st.items, clock());
+      const junk = st.migrated < 3 ? junkAmazon(st.items, clock()) : 0;
+      if (junk) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; }
       if (r.changed) {
         const d = new Date(clock()), z = (n) => String(n).padStart(2, "0");
         const bak = file + ".bak_" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "_" + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + "_before_numberfix";
@@ -250,6 +268,17 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         s.updated = t; s.polledAt = null;
         await pollOne(s);
         break;
+      }
+      case "screenshot": {
+        // 2026-10-27: a pasted screenshot of the order / Track-package page: numbers AND which items are in which parcel
+        if (typeof readScreenshot !== "function") return { ok: false, reason: "Reading screenshots is not available here." };
+        const rd = await readScreenshot(args.image, M.clean(args.orderId, 40));
+        if (!rd.ok) return { ok: false, reason: rd.reason };
+        const r = V.applyReading(st.items, rd, t, M.clean(args.orderId, 40));
+        if (!r.ok) return { ok: false, reason: r.reason };
+        for (const s of st.items) if (!s.archived && s.numbers.length && !s.polledAt) await pollOne(s);
+        save(st);
+        return { ok: true, summary: r.summary, created: r.created, changed: r.changed };
       }
       default: return { ok: false, reason: "Unknown action." };
     }

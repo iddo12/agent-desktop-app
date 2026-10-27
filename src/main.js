@@ -5497,6 +5497,7 @@ try {
     // v1.78.0 Decisions tab: answers reach the agent through the same verified path as Keep going (message channel, pty fallback, transcript check)
     deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Daily decision answer", { ttlSec: 600 }),
     knownAgent: (agentPath) => kgKnownAgent(agentPath),
+    privateCliDir,   // 2026-10-27: Shipments reads order screenshots through the private Claude CLI
   });
 } catch (e) {
   console.error("my daily failed to load:", e);

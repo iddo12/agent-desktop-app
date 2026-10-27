@@ -102,6 +102,46 @@
         w.append(line);
         return w;
       }
+      // A picture (clipboard / file) -> JPEG data URL, longest side <= 1800 px so a 4K screen stays small and readable.
+      async function imageToDataUrl(blob) {
+        const bmp = await createImageBitmap(blob);
+        const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+        const c = document.createElement("canvas");
+        c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+        c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+        return c.toDataURL("image/jpeg", 0.88);
+      }
+      // Screenshot of the shop's order / Track-package page: the app reads the tracking numbers AND which items are in which parcel.
+      function orderTools(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Order " + s.orderId + ": paste a screenshot of its \"Track package\" or order page and the tracking numbers and items are filled in for you."));
+        const status = el("div", "ship-muted sm", "");
+        const line = el("div", "ship-add");
+        async function send(blob) {
+          if (busy) return;
+          status.textContent = "Reading the picture (about 20 seconds)...";
+          try {
+            const image = await imageToDataUrl(blob);
+            const r = await act("screenshot", s.id, { image, orderId: s.orderId }, null);
+            if (r && r.ok) say("Read the screenshot: " + (r.summary || []).join("; "));
+            else status.textContent = (r && r.reason) || "That did not work.";
+          } catch (e) { status.textContent = "Could not use that picture."; }
+        }
+        const zone = el("div", "daily-input grow", "Click here, then press Ctrl+V to paste a screenshot");
+        zone.tabIndex = 0;
+        zone.addEventListener("paste", (e) => {
+          const f = Array.from((e.clipboardData && e.clipboardData.items) || []).find((i) => /^image\//.test(i.type));
+          if (!f) { status.textContent = "No picture on the clipboard."; return; }
+          e.preventDefault(); send(f.getAsFile());
+        });
+        const file = el("input", null); file.type = "file"; file.accept = "image/*"; file.hidden = true;
+        file.addEventListener("change", () => { if (file.files && file.files[0]) send(file.files[0]); file.value = ""; });
+        const pick = btn("Choose image...", "daily-btn sm", () => file.click());
+        const more = btn("+ Another parcel (type number)", "daily-btn sm", () => act("split", s.id, null, "Added a card for this order. Paste its tracking number."));
+        line.append(zone, pick, file, more);
+        w.append(line, status);
+        return w;
+      }
       // 17TRACK could not identify or find the number: say so plainly and let the owner set the carrier later.
       function carrierBox(s) {
         const w = el("div", "ship-numbox");
@@ -157,7 +197,11 @@
           main.append(l3);
         } else if (!archived) main.append(reasonLine(s));
         if (!archived && ev && ev.text && s.reason && PROBLEM.has(s.reason.reason)) main.append(el("div", "ship-ev ship-warnline", s.reason.text));
-        if (!archived && s.orderId && s.merchant) main.append(btn("+ Another parcel for this order", "daily-btn sm", () => act("split", s.id, null, "Added a second card for this order. Paste its tracking number.")));
+        // 2026-10-27: ONE tools block per order (on its last open card), not one button on every card
+        if (!archived && s.orderId && s.merchant) {
+          const sameOrder = ((data && data.items) || []).filter((x) => x.orderId === s.orderId && !x.archived);
+          if (sameOrder[sameOrder.length - 1] && sameOrder[sameOrder.length - 1].id === s.id) main.append(orderTools(s));
+        }
         if (!archived && s.needsNumber) main.append(numberBox(s));
         else if (!archived && s.cantTrack) main.append(carrierBox(s));
         if (s.events && s.events.length > 1) {

@@ -239,7 +239,10 @@ function extractShipments(mail, now) {
   const at = Number.isFinite(Date.parse(mail.date)) ? Date.parse(mail.date) : (now || Date.now());
   const text = body.replace(/[ \t]+/g, " ");
   const hint = (sInfo && sInfo.carrier) || hostCarrier(body) || bodyCarrier(subject + " " + text.slice(0, 1500)) || "";
-  const nums = extractNumbers(text, subject, hint, { fromMail: true, isCarrier: !!(sInfo && sInfo.isCarrier) });
+  let nums = extractNumbers(text, subject, hint, { fromMail: true, isCarrier: !!(sInfo && sInfo.isCarrier) });
+  // 2026-10-27: Amazon's mails carry shipment/link ids that are not carrier numbers (2367361581 matched an old Milan parcel). A number
+  // from an Amazon shop mail counts only when its format names a real carrier; otherwise the owner supplies it (typed or screenshot).
+  if (sInfo && sInfo.merchant === "Amazon" && !sInfo.isCarrier) nums = nums.filter((n) => n.carrier && n.carrier !== "other" && !(M.CARRIER_BY_ID[n.carrier] && M.CARRIER_BY_ID[n.carrier].weak));
   const orderId = extractOrderId(text, subject);
   const state = M.stateFromText(subject) || M.stateFromText(text.slice(0, 1200)) || (nums.length ? "shipped" : null);
   if (!nums.length && !(orderId && sInfo && state)) return [];

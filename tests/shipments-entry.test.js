@@ -1,4 +1,4 @@
-// node tests/shipments-entry.test.js - 2026-10-27: order numbers are never tracking numbers, the one-shot migration, the manual
+﻿// node tests/shipments-entry.test.js - 2026-10-27: order numbers are never tracking numbers, the one-shot migration, the manual
 // entry flow (number / carrier / label / review tag), and the persisted per-number reason. Uses temp folders only, never the
 // real daily\shipments.json and never a real key.
 "use strict";
@@ -64,7 +64,7 @@ t("parser: an AliExpress mail with only an ORDER number gives a parcel with no t
 t("parser: 'Order ID' / Hebrew order labels and the order number in the subject are not picked up", () => {
   const c1 = E.extractShipments(aliMail({ subject: "Shipment update for order 1123450589717403", body: "Order ID: 1123450589717403\nYour parcel is on its way." }), NOW);
   assert.deepStrictEqual(c1[0].numbers, []);
-  const c2 = E.extractShipments(aliMail({ body: "הזמנה מספר: 00100086960111\nהחבילה בדרך אליך" }), NOW);
+  const c2 = E.extractShipments(aliMail({ body: "×”×–×ž× ×” ×ž×¡×¤×¨: 00100086960111\n×”×—×‘×™×œ×” ×‘×“×¨×š ××œ×™×š" }), NOW);
   assert.ok(!c2.length || c2[0].numbers.length === 0);
 });
 t("parser: the real LP number in the same mail is still found, the order number is not", () => {
@@ -118,7 +118,7 @@ t("migration (service): backs up shipments.json first, writes once, flag set, se
   assert.strictEqual(baks.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(dir, baks[0]), "utf8"), before, "backup is the untouched original");
   const saved = raw(file);
-  assert.strictEqual(saved.migrated, 2);
+  assert.strictEqual(saved.migrated, 3);
   assert.deepStrictEqual(v.items.find((x) => x.id === "a1").numbers, []);
   assert.strictEqual(v.items.find((x) => x.id === "a1").needsNumber, true);
   await svc.load({});
@@ -132,7 +132,7 @@ t("migration (service): a failed backup writes nothing and is retried", async ()
   try { await svc._loadStore(); } finally { fs.copyFileSync = orig; }
   assert.strictEqual(fs.readFileSync(file, "utf8"), before);
   await svc.load({});
-  assert.strictEqual(raw(file).migrated, 2);
+  assert.strictEqual(raw(file).migrated, 3);
 });
 t("a later mail with the real number for the same order fills the empty parcel (matched by order id)", () => {
   const list = [M.makeShipment({ id: "p", merchant: "AliExpress", orderId: "1123450589717403", numbers: [], state: "shipped", msgIds: ["<ali1>"] }, NOW)];
