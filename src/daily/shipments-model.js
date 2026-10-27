@@ -285,6 +285,7 @@ function effectiveState(s, now, stuckDays) {
   if (!s) return "ordered";
   if (s.archived || s.state === "delivered" || NEEDS_ACTION.has(s.state) || s.state === "out_for_delivery") return s.state;
   if (s.state === "ordered") return s.state;
+  if (needsNumber(s)) return s.state;   // 2026-10-27: no tracking number = nothing to track, so it cannot be "stuck" (Amazon card said "No update for 20 days")
   const days = stuckDays || STUCK_DAYS_DEFAULT;
   if (now - (s.lastChangeAt || s.stateAt || 0) > days * DAY) return "exception_stuck";
   return s.state;

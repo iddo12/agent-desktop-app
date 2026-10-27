@@ -205,10 +205,10 @@
           main.append(l3);
         } else if (!archived) main.append(reasonLine(s));
         if (!archived && ev && ev.text && s.reason && PROBLEM.has(s.reason.reason)) main.append(el("div", "ship-ev ship-warnline", s.reason.text));
-        // 2026-10-27: ONE tools block per order (on its last open card), not one button on every card
+        // 2026-10-27: ONE tools block per order, on its FIRST open card (the one a card needing action shows at the top of the list)
         if (!archived && s.orderId && s.merchant) {
           const sameOrder = ((data && data.items) || []).filter((x) => x.orderId === s.orderId && !x.archived);
-          if (sameOrder[sameOrder.length - 1] && sameOrder[sameOrder.length - 1].id === s.id) main.append(orderTools(s));
+          if (sameOrder[0] && sameOrder[0].id === s.id) main.append(orderTools(s));
         }
         if (!archived && s.needsNumber) main.append(numberBox(s));
         else if (!archived && s.cantTrack) main.append(carrierBox(s));
