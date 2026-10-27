@@ -122,7 +122,7 @@
       // Screenshot of the shop's order / Track-package page: the app reads the tracking numbers AND which items are in which parcel.
       function orderTools(s) {
         const w = el("div", "ship-numbox");
-        w.append(el("div", "ship-muted sm", "Order " + s.orderId + ": paste a screenshot of its \"Track package\" or order page and the tracking numbers and items are filled in for you."));
+        w.append(el("div", "ship-muted sm", "Order " + s.orderId + ". The mail cannot tell how many parcels it ships in. More than one? Paste a screenshot of its \"Track package\" page (cards, numbers and items are made for you), or use \"Split: another parcel\" to add a card by hand."));
         const status = el("div", "ship-muted sm", "");
         const line = el("div", "ship-add");
         async function send(blob) {
@@ -145,7 +145,7 @@
         const file = el("input", null); file.type = "file"; file.accept = "image/*"; file.hidden = true;
         file.addEventListener("change", () => { if (file.files && file.files[0]) send(file.files[0]); file.value = ""; });
         const pick = btn("Choose image...", "daily-btn sm", () => file.click());
-        const more = btn("+ Another parcel (type number)", "daily-btn sm", () => act("split", s.id, null, "Added a card for this order. Paste its tracking number."));
+        const more = btn("Split: another parcel", "daily-btn sm pri", () => act("split", s.id, null, "Added a card for this order. Paste its tracking number."));
         line.append(zone, pick, file, more);
         w.append(line, status);
         return w;
