@@ -161,4 +161,14 @@ t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id
   assert.strictEqual(amz.numbers.length, 0); assert.strictEqual(amz.events.length, 0); assert.strictEqual(amz.state, "shipped");
   assert.ok(fs.readdirSync(dir).some((n) => /before_numberfix/.test(n)));
 });
+t("amazon cards (tracked inside Amazon) are never 'stuck'; category items are flagged; paste box answers to hover and shows progress", () => {
+  const a = M.makeShipment({ merchant: "Amazon", carrier: "amazon", state: "shipped", numbers: [{ no: "2367567624", carrier: "amazon" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
+  assert.strictEqual(M.effectiveState(a, NOW, 10), "shipped");
+  const ups = M.makeShipment({ merchant: "X", carrier: "ups", state: "in_transit", numbers: [{ no: "1Z999AA10123456784", carrier: "ups" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
+  assert.strictEqual(M.effectiveState(ups, NOW, 10), "exception_stuck");
+  assert.ok(E.extractItems("", "Shipped 2 items: Shoes, Adhesives").items.every((x) => x.cat));
+  assert.ok(!E.extractItems(["Hi", "Thing", "B&H #A1", "QTY: 1"].join(String.fromCharCode(10)), "").items[0].cat);
+  const r = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "daily-shipments.js"), "utf8");
+  assert.ok(/mouseenter/.test(r) && /Reading the picture/.test(r) && /every\(\(x\) => x\.cat\)/.test(r));
+});
 (async () => { let f = 0; for (const { n, f: fn } of queue) { try { await fn(); } catch (e) { f++; console.error("FAIL " + n + "\n  " + e.stack.split("\n").slice(0, 5).join("\n  ")); } } console.log(`shipments-items: ${queue.length - f}/${queue.length} passed`); process.exit(f ? 1 : 0); })();

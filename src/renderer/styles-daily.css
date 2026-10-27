@@ -315,6 +315,9 @@ button.daily-st { border: 0; font: inherit; font-size: 11px; font-weight: 600; c
 .ship-ev { font-size: 12.5px; overflow-wrap: anywhere; }
 .ship-ev-p { color: var(--text-muted); }
 .ship-acts { flex: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 330px; }
+.ship-paste { cursor: copy; color: var(--text-muted); }
+.ship-paste:focus { outline: 2px solid var(--accent, #c4622d); color: var(--text); }
+.ship-reading { color: var(--accent, #c4622d); font-weight: 600; }
 .ship-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .ship-add .daily-input { margin-top: 0; }
 .ship-key { display: flex; flex-direction: column; gap: 6px; }

@@ -244,7 +244,7 @@ function extractItems(text, subject) {
   let m = /\b(?:ordered|shipped|delivered)\s*:?\s*(\d{1,3})\s+items?\s*:?\s*([^\n]{0,200})/i.exec(whole);
   if (m) {
     const names = m[2].split(/,\s*(?:and\s+)?|\s+and\s+/i).map((x) => x.replace(/[.\s]+$/, "").trim()).filter((x) => x && !/^more$/i.test(x) && x.length <= 60 && !/^https?:/i.test(x)).slice(0, 8);
-    return { items: names.map((n) => ({ name: M.clean(n, 100), qty: 1 })), count: +m[1] };
+    return { items: names.map((n) => ({ name: M.clean(n, 100), qty: 1, cat: true })), count: +m[1] };
   }
   m = /\b(?:ordered|shipped|delivered)\s*:\s*["“']([^"”\n]{3,120})["”']/i.exec(whole);
   if (m) return { items: [{ name: M.clean(m[1].replace(/…|\.\.\.$/g, ""), 100), qty: 1 }], count: 1 };

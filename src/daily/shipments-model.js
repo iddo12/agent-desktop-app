@@ -190,6 +190,7 @@ function cleanItems(v) {
     const name = clean(x && x.name, 100);
     if (!name || out.length >= 12) continue;
     const it = { name, qty: Math.min(99, cleanCount(x.qty) || 1) };
+    if (x.cat) it.cat = true;   // a category ("Shoes"), not a product name
     if (typeof x.src === "string" && /^https:\/\/[^\s]{4,400}$/i.test(x.src)) it.src = x.src;
     if (typeof x.thumb === "string" && /^[\w-]+\.png$/.test(x.thumb)) it.thumb = x.thumb;
     out.push(it);
@@ -302,6 +303,7 @@ function effectiveState(s, now, stuckDays) {
   if (s.archived || s.state === "delivered" || NEEDS_ACTION.has(s.state) || s.state === "out_for_delivery") return s.state;
   if (s.state === "ordered") return s.state;
   if (needsNumber(s)) return s.state;   // 2026-10-27: no tracking number = nothing to track, so it cannot be "stuck" (Amazon card said "No update for 20 days")
+  if (s.carrier === "amazon" && !(s.events && s.events.length)) return s.state;   // tracked inside Amazon: nothing to poll, so "no update" means nothing
   const days = stuckDays || STUCK_DAYS_DEFAULT;
   if (now - (s.lastChangeAt || s.stateAt || 0) > days * DAY) return "exception_stuck";
   return s.state;

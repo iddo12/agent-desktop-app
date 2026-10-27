@@ -120,6 +120,7 @@
         throw new Error("too big");
       }
       // Screenshot of the shop's order / Track-package page: the app reads the tracking numbers AND which items are in which parcel.
+      const reading = new Set();   // card ids whose screenshot is being read (survives re-renders)
       function orderTools(s) {
         const w = el("div", "ship-numbox");
         w.append(el("div", "ship-muted sm", "Order " + s.orderId + ". The mail cannot tell how many parcels it ships in. More than one? Paste a screenshot of its \"Track package\" page (cards, numbers and items are made for you), or use \"Split: another parcel\" to add a card by hand."));
@@ -128,15 +129,24 @@
         async function send(blob) {
           if (busy) return;
           status.textContent = "Reading the picture (about 20 seconds)...";
+          status.className = "ship-reading";
+          zone.textContent = "Reading the picture...";
+          reading.add(s.id);
+          say("Reading the screenshot - about 20 seconds.");
           try {
             const image = await imageToDataUrl(blob);
             const r = await act("screenshot", s.id, { image, orderId: s.orderId }, null);
             if (r && r.ok) say("Read the screenshot: " + (r.summary || []).join("; "));
             else status.textContent = (r && r.reason) || "That did not work.";
           } catch (e) { status.textContent = "Could not use that picture."; }
+          finally { reading.delete(s.id); zone.textContent = IDLE; }
         }
-        const zone = el("div", "daily-input grow", "Click here, then press Ctrl+V to paste a screenshot");
+        const IDLE = "Hover here and press Ctrl+V to paste a screenshot";
+        const zone = el("div", "daily-input grow ship-paste", IDLE);
         zone.tabIndex = 0;
+        zone.addEventListener("mouseenter", () => { if (!busy) { zone.focus(); } });   // no click needed: pointing at the box is enough
+        zone.addEventListener("focus", () => { if (!reading.has(s.id)) zone.textContent = "Ready - press Ctrl+V now"; });
+        zone.addEventListener("blur", () => { if (!reading.has(s.id)) zone.textContent = IDLE; });
         zone.addEventListener("paste", (e) => {
           const f = Array.from((e.clipboardData && e.clipboardData.items) || []).find((i) => /^image\//.test(i.type));
           if (!f) { status.textContent = "No picture on the clipboard."; return; }
@@ -177,7 +187,8 @@
         if (need.length && api.thumbs) api.thumbs(need.slice(0, 100)).then((m) => { let any = false; for (const k of Object.keys(m || {})) { picCache.set(k, m[k]); any = true; } if (any) ctx.rerender(); }).catch(() => {});
       }
       function contentsBlock(s) {
-        const items = Array.isArray(s.items) ? s.items : [];
+        let items = Array.isArray(s.items) ? s.items : [];
+        if (s.title && items.length && items.every((x) => x.cat)) items = [];   // the title already names the products; categories add nothing
         const box = el("div", "ship-items");
         let any = false;
         if (items.length) {
