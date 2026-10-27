@@ -362,7 +362,13 @@ function mergeCandidate(list, cand, now) {
   const at = atMs(cand.at) || now;
   const cmsg = cand.msgId ? [cand.msgId] : (cand.msgIds || []);
   let s = findMatch(list, cand);
-  if (s && cmsg.length && cmsg.every((m) => s.msgIds.includes(m))) return { shipment: s, created: false, changed: false };   // same mail twice
+  if (s && cmsg.length && cmsg.every((m) => s.msgIds.includes(m))) {   // same mail twice - except a one-time backfill of contents for a card that predates them
+    if (cand.items && cand.items.length && !(s.items || []).length && cand.state && cand.state !== "ordered") {
+      s.items = cleanItems(cand.items); s.itemCount = cleanCount(cand.itemCount) || s.items.reduce((a, x) => a + x.qty, 0); s.updated = now;
+      return { shipment: s, created: false, changed: true };
+    }
+    return { shipment: s, created: false, changed: false };
+  }
   if (!s) {
     s = makeShipment(Object.assign({}, cand, { state: cand.state || "ordered", stateAt: at, lastChangeAt: at, source: cand.source || "email", msgIds: cmsg, added: now, updated: now }), now);
     if ((cand.state === "ordered" || !cand.state) && cleanCount(cand.itemCount)) s.orderCount = cleanCount(cand.itemCount);

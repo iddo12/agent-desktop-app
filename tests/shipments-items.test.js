@@ -57,6 +57,13 @@ t("model: items cleaned (bad src/thumb dropped), merge keeps the ordered count a
   assert.ok(!c[0].src && !c[0].thumb);
   assert.strictEqual(c[1].thumb, "ship-1-0.png"); assert.strictEqual(c[1].qty, 99);
 });
+t("model: a card that predates contents gets them once from a mail it already saw; a second pass changes nothing", () => {
+  const list = [M.makeShipment({ orderId: "X-2", merchant: "Amazon", state: "shipped", msgIds: ["old1"] }, NOW)];
+  const cand = { orderId: "X-2", merchant: "Amazon", state: "shipped", items: [{ name: "Adhesives" }], itemCount: 2, msgId: "old1", at: NOW };
+  assert.strictEqual(M.mergeCandidate(list, cand, NOW).changed, true);
+  assert.strictEqual(list[0].items[0].name, "Adhesives");
+  assert.strictEqual(M.mergeCandidate(list, cand, NOW).changed, false);
+});
 t("model: a shipment that already has a picture is not overwritten by a re-read mail", () => {
   const list = [M.makeShipment({ orderId: "X-1", merchant: "B&H", state: "shipped", items: [{ name: "Thing", thumb: "ship-a-0.png" }] }, NOW)];
   M.mergeCandidate(list, { orderId: "X-1", merchant: "B&H", state: "shipped", items: [{ name: "Other" }], itemCount: 1, msgId: "z", at: NOW }, NOW);
