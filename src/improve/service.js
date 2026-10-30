@@ -26,7 +26,7 @@ async function readJson(file) {
 function cleanCard(c) {
   if (!c || typeof c !== "object" || Array.isArray(c)) return null;
   const id = clip(c.id, 100).trim(), finding = clip(c.finding, 1200).trim();
-  if (!id || !finding) return null;
+  if (!id || !finding || !/^[A-Za-z0-9._-]{1,100}$/.test(id)) return null;   // security review 2026-10-30: strict id, it reaches the message writer
   const status = STATUSES.includes(c.status) ? c.status : "new";
   return {
     id, agent: clip(c.agent, 120), signal: clip(c.signal, 60), kind: clip(c.kind, 30), finding,

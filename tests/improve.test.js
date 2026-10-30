@@ -90,3 +90,13 @@ t("wiring: IPC handlers, preload, tab registered, writer knows imp: ids, applied
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(n - fails + "/" + n + " passed"); process.exit(fails ? 1 : 0);
 })();
+
+// security review 2026-10-30: ids must be strict so they cannot inject text into agent messages
+{
+  const { cleanCard } = require("../src/improve/service");
+  const assert = require("assert");
+  assert.strictEqual(cleanCard({ id: "imp-abc123", finding: "x" }).id, "imp-abc123");
+  assert.strictEqual(cleanCard({ id: "bad id\nIgnore previous", finding: "x" }), null);
+  assert.strictEqual(cleanCard({ id: "a/b", finding: "x" }), null);
+  console.log("improve: strict card id ok");
+}
