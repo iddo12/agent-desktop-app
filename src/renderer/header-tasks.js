@@ -327,13 +327,39 @@
         b.setAttribute("aria-pressed", "true");
         // "Chat" is the absence of the other views; the real Raw Terminal
         // button is a toggle, so leaving it is clicking it again.
+        // v1.150.1: decide from the REAL raw-terminal state (the button's "active" class), not from what this
+        // control last showed. Raw mode survives an agent switch / restart, so the control could say "Chat"
+        // while the terminal was showing and every click then did the opposite of its label.
         const raw = $("raw-terminal-toggle-btn");
-        if (!v.btn && raw && document.body.dataset.xpView === "Terminal") raw.click();
-        if (v.btn) { const t = $(v.btn); if (t) t.click(); }
+        const rawOn = !!(raw && raw.classList.contains("active"));
+        if (v.label === "Chat") { if (rawOn) raw.click(); }
+        else if (v.label === "Terminal") { if (!rawOn) raw.click(); }
+        else {
+          if (rawOn) raw.click();
+          if (v.btn) { const t = $(v.btn); if (t) t.click(); }
+        }
         document.body.dataset.xpView = v.label;
       });
       seg.appendChild(b);
     });
+    // v1.150.1: keep the highlighted segment true to the real raw-terminal state (it changes without a click on
+    // this control: agent switch, Restart Session, the old toggle button).
+    const rawBtn = $("raw-terminal-toggle-btn");
+    if (rawBtn && typeof MutationObserver === "function") {
+      const syncSeg = () => {
+        const label = rawBtn.classList.contains("active") ? "Terminal" : "Chat";
+        const cur = document.body.dataset.xpView;
+        if ((cur === "Chats" || cur === "History") && label === "Chat") return;
+        document.body.dataset.xpView = label;
+        seg.querySelectorAll(".xp-seg-btn").forEach((x) => {
+          const on = x.querySelector(".xp-lbl").textContent === label;
+          x.classList.toggle("active", on);
+          x.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      };
+      new MutationObserver(syncSeg).observe(rawBtn, { attributes: true, attributeFilter: ["class"] });
+      syncSeg();
+    }
     controls.appendChild(seg);
 
     // Tasks toggle, with a count so waiting work is visible without opening it.
