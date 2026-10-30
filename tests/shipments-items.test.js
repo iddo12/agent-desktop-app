@@ -69,7 +69,7 @@ t("model: a shipment that already has a picture is not overwritten by a re-read 
   M.mergeCandidate(list, { orderId: "X-1", merchant: "B&H", state: "shipped", items: [{ name: "Other" }], itemCount: 1, msgId: "z", at: NOW }, NOW);
   assert.strictEqual(list[0].items[0].name, "Thing");
 });
-t("service: scan fetches each picture once into a local file name, drops src, a failing picture is dropped without retries", async () => {
+t("service: scan fetches each picture once into a local file name, drops src, a failing picture is retried once, then dropped", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-items-"));
   const file = path.join(dir, "shipments.json");
   const calls = [];
@@ -77,11 +77,12 @@ t("service: scan fetches each picture once into a local file name, drops src, a 
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [mail], makeThumb: async (url, id) => { calls.push(url); if (/bad/.test(url)) throw new Error("nope"); return id + ".png"; }, now: () => NOW, notices: [], say: () => {}, testMode: false });
   await svc.refreshNow();
   await svc.refreshNow();
+  await svc.refreshNow();
   const it = JSON.parse(fs.readFileSync(file, "utf8")).items[0].items;
   assert.strictEqual(it.length, 2);
   assert.ok(/^ship-[\w-]+-0\.png$/.test(it[0].thumb), JSON.stringify(it));
   assert.ok(!it[0].src && !it[1].src && !it[1].thumb);
-  assert.deepStrictEqual(calls, ["https://i/a.jpg", "https://i/bad.jpg"]);
+  assert.deepStrictEqual(calls, ["https://i/a.jpg", "https://i/bad.jpg", "https://i/bad.jpg"], "a failed picture gets ONE retry on the next scan (2026-10-31), then is given up");
 });
 t("renderer + css wiring: contents block, textContent only, local pictures", () => {
   const root = path.join(__dirname, "..", "src");
@@ -133,7 +134,7 @@ t("one mail never makes a second card: a card holding the mail id is matched eve
   assert.strictEqual(r.created, false);
   assert.strictEqual(list[0].numbers.length, 0, "the card's own order id is never a tracking number");
 });
-t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id numbers dropped; junk Amazon link id removed even with carrier set", async () => {
+t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id numbers dropped; a real Amazon-order Aramex number kept", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-dedupe-"));
   const file = path.join(dir, "shipments.json");
   const mk = (x) => M.makeShipment(Object.assign({ merchant: "AliExpress", state: "in_transit", source: "email" }, x), NOW);
@@ -151,18 +152,18 @@ t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], now: () => NOW, notices: [], say: () => {}, testMode: true });
   await svc.load({});
   const out = JSON.parse(fs.readFileSync(file, "utf8"));
-  assert.strictEqual(out.migrated, 4);
+  assert.strictEqual(out.migrated, 5);
   assert.strictEqual(out.items.length, 3, JSON.stringify(out.items.map((x) => [x.merchant, x.orderId, x.numbers.map((n) => n.no)])));
   const ali1 = out.items.find((x) => x.orderId === "00100086960111");
   assert.strictEqual(ali1.numbers.length, 0);
-  const dhl = out.items.find((x) => x.numbers.some((n) => n.no === "8004100921"));
-  assert.deepStrictEqual(dhl.numbers.map((n) => n.no), ["8004100921"]);
+  const dhl = out.items.find((x) => x.numbers.some((n) => n.no === "PH8004100921"));
+  assert.deepStrictEqual(dhl.numbers.map((n) => n.no), ["PH8004100921"], "2026-10-31: the owner's corrected PH form is kept, the plain twin dropped");
   const amz = out.items.find((x) => x.merchant === "Amazon");
-  assert.strictEqual(amz.numbers.length, 0); assert.strictEqual(amz.events.length, 0); assert.strictEqual(amz.state, "shipped");
+  assert.strictEqual(amz.numbers.length, 1, "2026-10-31: that number is a real Aramex number: never deleted by a migration"); assert.strictEqual(amz.events.length, 1); assert.strictEqual(amz.state, "delivered");
   assert.ok(fs.readdirSync(dir).some((n) => /before_numberfix/.test(n)));
 });
 t("amazon cards (tracked inside Amazon) are never 'stuck'; category items are flagged; paste box answers to hover and shows progress", () => {
-  const a = M.makeShipment({ merchant: "Amazon", carrier: "amazon", state: "shipped", numbers: [{ no: "2367567624", carrier: "amazon" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
+  const a = M.makeShipment({ merchant: "Amazon", carrier: "amazon", state: "shipped", numbers: [{ no: "TBA123456789012", carrier: "amazon" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
   assert.strictEqual(M.effectiveState(a, NOW, 10), "shipped");
   const ups = M.makeShipment({ merchant: "X", carrier: "ups", state: "in_transit", numbers: [{ no: "1Z999AA10123456784", carrier: "ups" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
   assert.strictEqual(M.effectiveState(ups, NOW, 10), "exception_stuck");

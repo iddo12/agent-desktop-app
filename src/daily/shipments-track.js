@@ -169,7 +169,11 @@ function parseTrackInfo(acc) {
   const edd = ti.time_metrics && ti.time_metrics.estimated_delivery_date;
   const eta = edd && (edd.from || edd.to) ? Date.parse(edd.to || edd.from) : null;
   if (!evs.length && !state) return null;
-  return { events: evs, state, eta: Number.isFinite(eta) ? eta : null };
+  // the carrier 17TRACK itself detected: accepted[].carrier (code), else the first provider's key/name
+  const prov = ((ti.tracking && ti.tracking.providers) || []).map((p) => p && p.provider).find((p) => p && (p.key || p.name)) || {};
+  const carrier = M.carrierFromT17(acc.carrier) || M.carrierFromT17(prov.key);
+  const carrierName = clean(prov.name, 40) || (carrier ? M.carrierName(carrier) : "");
+  return { events: evs, state, eta: Number.isFinite(eta) ? eta : null, carrier, carrierName };
 }
 
 // DHL Unified Tracking (needs its own free key, 250 calls/day, 1 call per 5 s). Unverified against the live API.
@@ -264,7 +268,7 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
     for (const s of list) {
       if (s.archived || s.state === "delivered") continue;
       for (const n of s.numbers) {
-        if (n.carrier === "amazon") continue;   // only trackable inside Amazon
+        if (n.carrier === "amazon" && M.isAmazonNumber(n.no)) continue;   // Amazon Logistics (TBA...) is only trackable inside Amazon; any other number goes to the tracker
         const p = route(n);
         if (p.id === "manual") continue;
         if (!force && p.id === "dhl" && s.polledAt && now - s.polledAt < DHL_MIN_MS) continue;
@@ -302,6 +306,11 @@ function createTracker({ dataDir, safeStorage, request, sleep, fakeProvider, log
             }
           }
           if (hit) {
+            // 17TRACK named the carrier: keep it on a number whose carrier we only guessed (never over the owner's choice)
+            if (ref && !ref.carrierSet && (ref.carrier === "other" || !ref.carrier) && hit.carrier && hit.carrier !== "other") {
+              ref.carrier = hit.carrier;
+              if (it.shipment.numbers[it.shipment.numbers.length - 1] === ref) it.shipment.carrier = hit.carrier;
+            } else if (ref && !ref.carrierSet && ref.carrier === "other" && hit.carrierName && !ref.carrierLabel) ref.carrierLabel = clean(hit.carrierName, 40);
             const before = JSON.stringify([it.shipment.state, it.shipment.lastEvent, it.shipment.eta]);
             M.applyEvents(it.shipment, hit.events, now, { state: hit.state, eta: hit.eta });
             if (JSON.stringify([it.shipment.state, it.shipment.lastEvent, it.shipment.eta]) !== before) { if (!res.changed.includes(it.shipment.id)) res.changed.push(it.shipment.id); }

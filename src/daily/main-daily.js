@@ -391,8 +391,9 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
     getMails: async (now) => {
       if (testMode) return [];
       const out = [];
-      try { out.push(...mailfeed.loadShipmentMails(dc.mailFeedFile(), now)); } catch (e) { say("shipments feed: " + e.message); }
+      // Gmail first: its copy has the full body and the picture urls; the Betterbird snippet of the same mail is only a fallback (shipments-main dedupeMails keeps the richer one)
       try { if (gmail) out.push(...(await gmail.shipmentMails(now))); } catch (e) { say("shipments gmail: " + e.message); }
+      try { out.push(...mailfeed.loadShipmentMails(dc.mailFeedFile(), now)); } catch (e) { say("shipments feed: " + e.message); }
       return out;
     },
   });
