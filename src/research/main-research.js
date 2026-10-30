@@ -247,6 +247,7 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
     return improveSvc().decide(x.id, x.status, x.answer);
   }, MAX_WRITE_ARG_CHARS);
   handle("improve-write", (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
     const x = a && typeof a === "object" ? a : {};
     return getWriter().write({ week: improveSvc().weekName(), agent: x.agent, findingId: typeof x.id === "string" ? "imp:" + x.id.slice(0, 100) : "", text: x.text });
   }, MAX_WRITE_ARG_CHARS);

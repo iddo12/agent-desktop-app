@@ -39,7 +39,7 @@ function cleanCard(c) {
 }
 
 function cleanDecisions(j) {
-  const out = {};
+  const out = Object.create(null);   // ids like "constructor"/"__proto__" must not hit inherited properties
   const d = j && typeof j === "object" && j.decisions && typeof j.decisions === "object" && !Array.isArray(j.decisions) ? j.decisions : {};
   for (const id of Object.keys(d).slice(0, 2000)) {
     const x = d[id];
@@ -82,7 +82,7 @@ function createService(o) {
     const cards = c.cards.map((card) => {
       const d = dec[card.id];
       card.times = {};
-      if (d) { card.times = d.times; if (RANK[d.status] >= RANK[card.status]) Object.assign(card, { status: d.status, answeredAt: d.answeredAt || card.answeredAt, answer: d.answer || card.answer }); }
+      if (d) { card.times = d.times || {}; if (RANK[d.status] >= RANK[card.status]) Object.assign(card, { status: d.status, answeredAt: d.answeredAt || card.answeredAt, answer: d.answer || card.answer }); }
       return card;
     });
     cards.sort((a, b) => (a.status === "new" ? 0 : 1) - (b.status === "new" ? 0 : 1) || b.score - a.score);
