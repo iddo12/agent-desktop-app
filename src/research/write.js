@@ -56,7 +56,7 @@ function messageFor(ref, text, owner) {
   const who = oneLine(owner).slice(0, 60) || "the user";
   const head = ref.findingId === WEEK_ID
     ? "From " + who + ", via the My Research tab: about your research digest for " + ref.week + "."
-    : "From " + who + ", via the My Research tab: about your " + (String(ref.findingId).startsWith("rec:") ? "recommendation" : "research finding") + " (" + ref.week + ", id " + ref.findingId + "): \"" + oneLine(ref.title).slice(0, 300) + "\"";
+    : "From " + who + ", via the My Research tab: about your " + (String(ref.findingId).startsWith("rec:") ? "recommendation" : String(ref.findingId).startsWith("imp:") ? "how-to-improve card" : "research finding") + " (" + ref.week + ", id " + ref.findingId + "): \"" + oneLine(ref.title).slice(0, 300) + "\"";
   return head + "\nThis has real consequences for him: answer him in your own chat, and if it changes the finding, correct your next digest.\n\n" + String(text).trim();
 }
 

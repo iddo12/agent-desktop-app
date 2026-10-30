@@ -248,6 +248,9 @@ contextBridge.exposeInMainWorld("api", {
     write: (week, agent, findingId, text) => ipcRenderer.invoke("research-write", { week, agent, findingId, text }),
     recsLoad: (all) => ipcRenderer.invoke("recs-load", { all: !!all }),
     recsWrite: (week, agent, itemId, text) => ipcRenderer.invoke("recs-write", { week, agent, itemId, text }),
+    improveLoad: () => ipcRenderer.invoke("improve-load"),   // How to improve tab: cards (read-only) + decisions + a message to the owner
+    improveDecide: (id, status, answer) => ipcRenderer.invoke("improve-decide", { id, status, answer }),
+    improveWrite: (id, agent, text) => ipcRenderer.invoke("improve-write", { id, agent, text }),
     skillsLoad: (week) => ipcRenderer.invoke("skills-load", { week: week || "" }),   // v1.139.0 Skills & Plugins tab (read-only)
     skillsSetRotation: (agents, expected) => ipcRenderer.invoke("skills-rotation-set", { agents, expected }),   // v1.141.0 who looks this week
     // v1.91.0 magazine view: a finding's cached lead image (main fetches it once, safely; never a remote URL) and the owner's sent thread
