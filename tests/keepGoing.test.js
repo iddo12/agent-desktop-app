@@ -389,3 +389,13 @@ t("resumePromptText relentless: mode paragraph, ignores blocked", () => {
 
 console.log((n - fails) + "/" + n + " keepGoing tests passed");
 process.exit(fails ? 1 : 0);
+
+// v1.149.2-pre: a 1320-char nudge lost its first 1024 characters under load (agent saw only "tle is SLOW..."). Keep every nudge well under 1024 with the marker.
+{
+  const assert = require("assert");
+  const K2 = require("../src/keepGoing.js");
+  const long = { ownerName: "Alexandria", tasksTool: "D:\Some Long Folder Name\Another Long Folder\shared_tools\tasks\tasks.py" };
+  const T = K2.texts(long);
+  for (const k of Object.keys(T)) assert.ok(T[k].length + 16 < 1000, "nudge '" + k + "' is " + T[k].length + " chars, must stay under ~1000 with the [hid:] marker");
+  console.log("ok   every nudge text stays under 1000 chars (truncation guard)");
+}
