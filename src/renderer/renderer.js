@@ -4450,6 +4450,23 @@ chatInputEl.addEventListener("keydown", (e) => {
   }
 });
 
+// v1.150.2: the compose box can never be "dead". Restart Session / Restart agents replace the terminal that held keyboard
+// focus; focus then falls to <body> and typing goes nowhere (owner, 2026-10-30: "the text box is just stuck"). A printable
+// key pressed while nothing editable has focus, with the chat showing, moves focus into the compose box (the same keystroke
+// is then typed there). Queueing while the agent is not ready is unchanged: Send queues it.
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
+  if (rawTerminalMode || chatViewEl.classList.contains("hidden") || chatInputEl.offsetParent === null) return;
+  if (document.querySelector(".modal:not(.hidden), dialog[open]")) return;
+  chatInputEl.focus();
+}, true);
+// Same safety net when the window regains focus with nothing focused.
+window.addEventListener("focus", () => {
+  if (!rawTerminalMode && !chatViewEl.classList.contains("hidden") && (!document.activeElement || document.activeElement === document.body)) chatInputEl.focus();
+});
+
 // Auto-grow as the content changes (typing, paste, cut, undo).
 chatInputEl.addEventListener("input", autoGrowChatInput);
 
