@@ -5788,6 +5788,13 @@ restartSessionBtn.addEventListener("click", async () => {
     const agent = agents.find((a) => a.path === agentPath);
     if (agent) selectAgent(agent);
     restartSessionBtn.textContent = "✓ Restarted";
+    // v1.150.1: the restart clears the terminal, so say so there too, and put keyboard focus back
+    // where typing goes (raw mode kept the old, now replaced, terminal focused: the box looked dead).
+    try {
+      const rs = terminals.get(agentPath);
+      if (rs && rs.term) rs.term.write("\r\n\x1b[32m\u2713 Session restarted - conversation kept (" + new Date().toLocaleTimeString() + ")\x1b[0m\r\n");
+      if (rawTerminalMode) { if (rs && rs.term) rs.term.focus(); } else chatInputEl.focus();
+    } catch (e) {}
     showRestartStatusBanner("success", "✓ Finished restarting - conversation kept, go ahead.");
     hideRestartStatusBannerSoon(4000);
   } catch (e) {
