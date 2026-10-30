@@ -12,6 +12,9 @@
 // agent are kept (persisted, only when they change) so the UI can say why an agent is idle.
 "use strict";
 const K = require("./keepGoing");
+// v1.149.1: nudges allowed for a repeating API-safeguard error before the agent is marked stopped (needs a fresh start from the owner)
+const SAFEGUARD_MAX = 2;
+const SAFEGUARD_STOP_REASON = "API safeguard error keeps recurring: this session needs a fresh start (/clear) from the owner";
 
 function create(deps) {
   const L = Object.assign({}, K.LIMITS, deps.limits || {});
@@ -207,7 +210,13 @@ function create(deps) {
     // a nudge is warranted; the rails
     const text = parsed.last.text;
     const hash = K.hashText(text);
-    if (c.hashes.indexOf(hash) !== -1) { log("keepgoing: " + p + " - not nudging again for the same message"); done(); if (dirty) save(); return; }
+    // v1.149.1: an API-safeguard error repeats with the same text, so the same-message rule would silence it forever and the agent would sit idle.
+    // Instead it gets at most SAFEGUARD_MAX nudges in a row (reset by progress or a person's message like the other counters), then it is marked stopped.
+    const sg = d.kind === "retry-safeguard";
+    if (sg && !c.stopped && c.consecutive >= SAFEGUARD_MAX) {
+      markStopped(p, SAFEGUARD_STOP_REASON); record(p, "none", "stopped: " + SAFEGUARD_STOP_REASON); done(); save(); return;
+    }
+    if (!sg && c.hashes.indexOf(hash) !== -1) { log("keepgoing: " + p + " - not nudging again for the same message"); done(); if (dirty) save(); return; }
     if (c.stopped) { done(); if (dirty) save(); return; }
     c.recent = (c.recent || []).filter((x) => t - x < Lx.windowMs);
     if (c.consecutive >= Lx.maxConsecutive) { markStopped(p, c.consecutive + " nudges in a row did not help"); record(p, "none", "stopped: " + c.consecutive + " nudges in a row did not help"); done(); save(); return; }
@@ -222,7 +231,7 @@ function create(deps) {
     log("keepgoing: NUDGE #" + c.consecutive + " to " + p + " - " + d.reason);
     emit(p);
     Promise.resolve()
-      .then(() => deps.deliver(p, (() => { const T = K.texts(ctxNow()); return d.kind === "next-project" ? (d.question ? T.nextProjectQuestion : T.nextProject) : T.nudge; })()))
+      .then(() => deps.deliver(p, (() => { const T = K.texts(ctxNow()); return d.kind === "retry-safeguard" ? T.safeguard : d.kind === "next-project" ? (d.question ? T.nextProjectQuestion : T.nextProject) : T.nudge; })()))
       .catch((e) => { log("keepgoing: nudge delivery to " + p + " failed: " + (e && e.message)); return { delivered: false, attempts: 0, error: true }; })
       .then((res) => {
         if (!(res && res.delivered)) { try { deps.loadRelease && deps.loadRelease(p); } catch (e) { /* cosmetic */ } } // v1.127.0: nothing was sent: give the governor slot back
