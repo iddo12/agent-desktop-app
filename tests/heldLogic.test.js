@@ -51,4 +51,20 @@ t("single approve is off only for pending voice notes", () => {
   assert.strictEqual(HL.approvable(row("v", { voice: true, transcriptState: "ready" })), true);
   assert.strictEqual(HL.approvable(row("a", { queued: "approve" })), false);
 });
+t("edits: only real differences count; transcript editable when ready or failed, not pending", () => {
+  const r = row("a", { voice: true, transcriptState: "ready", transcript: "orig" });
+  assert.deepStrictEqual(HL.editOf(r, { text: "ta", transcript: "orig " }), {});
+  assert.deepStrictEqual(HL.editOf(r, { text: "new", transcript: "new t" }), { text: "new", transcript: "new t" });
+  assert.deepStrictEqual(HL.editOf(row("p", { voice: true, transcriptState: "pending" }), { transcript: "x" }), {});
+  assert.deepStrictEqual(HL.editOf(row("f", { voice: true, transcriptState: "failed" }), { transcript: "typed" }), { transcript: "typed" });
+});
+t("an edit made after the confirm bar opened closes it; same edits keep it; editsFor covers exactly the approved ids", () => {
+  const rows = [row("a"), row("b")], d0 = { a: { text: "edit1" } }, f = HL.freeze(rows, d0);
+  assert.strictEqual(HL.changed(f, rows, d0), false);
+  assert.strictEqual(HL.changed(f, rows, { a: { text: "edit2" } }), true);
+  assert.strictEqual(HL.changed(f, rows, { a: { text: "edit1" }, b: { text: "new edit" } }), true);
+  assert.strictEqual(HL.confirmIds(f, rows, { a: { text: "edit2" } }), null);
+  assert.deepStrictEqual(HL.editsFor(HL.confirmIds(f, rows, d0).ids, rows, d0), { a: { text: "edit1" } });
+  assert.deepStrictEqual(HL.editsFor(["a"], rows, { a: { text: "ta" }, zz: { text: "q" } }), {});     // unchanged draft is not an edit; unknown id ignored
+});
 console.log("heldLogic.test.js: " + n + " passed");

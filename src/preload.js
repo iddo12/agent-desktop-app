@@ -310,7 +310,7 @@ contextBridge.exposeInMainWorld("api", {
     audit: () => ipcRenderer.invoke("intake-audit"),
     messages: () => ipcRenderer.invoke("intake-messages"),
     messageThumbs: (id) => ipcRenderer.invoke("intake-message-thumbs", { id }),
-    decideMessages: (ids, action, notes) => ipcRenderer.invoke("intake-message-decide", { ids, action, notes }),
+    decideMessages: (ids, action, notes, edits) => ipcRenderer.invoke("intake-message-decide", { ids, action, notes, edits }),
   },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),

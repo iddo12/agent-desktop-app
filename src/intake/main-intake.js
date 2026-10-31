@@ -6,8 +6,9 @@ const fs = require("fs");
 const path = require("path");
 const L = require("./intakeLogic");
 const MAX_ARG_CHARS = 6000;
-const MAX_DECIDE_CHARS = 600000;   // intake-message-decide: up to 200 ids and their notes
-const MAX_DECIDE_IDS = 200, MAX_NOTE_CHARS = 2000, MAX_THUMB_BYTES = 150 * 1024, MAX_THUMBS = 8, MAX_TRANSCRIPT = 8000;
+const MAX_DECIDE_CHARS = 8500000;   // intake-message-decide: up to 200 ids with notes and edited text/transcript (20000 characters each)
+const MAX_EDIT_CHARS = 20000;
+const MAX_DECIDE_IDS = 200, MAX_NOTE_CHARS = 2000, MAX_THUMB_BYTES = 150 * 1024, MAX_THUMBS = 8, MAX_TRANSCRIPT = 16000;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_NOTE_BYTES = 64 * 1024;
 
@@ -213,7 +214,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
         videoName: j.video ? stripCtl(j.video_name).slice(0, 40) : "", videoBytes: j.video ? Math.max(0, Number(j.video_bytes) || 0) : 0, deliveryFailed: !!j.delivery_failed };
       if (row.voice) {   // transcript made by the watcher at hold time: transcript.txt, or transcript.failed, or still pending
         const hd = heldDir(j.agent, id);
-        const tb = hd ? readSmall(path.join(hd, "transcript.txt"), MAX_TRANSCRIPT) : null;
+        const tb = hd ? readSmall(path.join(hd, "transcript.txt"), MAX_TRANSCRIPT) : null;   // 4000 characters at most, up to 3 bytes each in Hebrew
         if (tb) { row.transcript = stripCtl(tb.toString("utf8"), true).slice(0, 4000); row.transcriptState = "ready"; }
         else row.transcriptState = hd && fs.existsSync(path.join(hd, "transcript.failed")) ? "failed" : hd && fs.existsSync(path.join(hd, "transcript.waiting")) ? "waiting" : "pending";
       }
@@ -242,6 +243,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     if (a.action !== "approve" && a.action !== "reject") return { ok: false, reason: "Bad request." };
     if (!Array.isArray(a.ids) || !a.ids.length || a.ids.length > MAX_DECIDE_IDS) return { ok: false, reason: "Choose between 1 and " + MAX_DECIDE_IDS + " messages." };
     const notes = a.notes && typeof a.notes === "object" && !Array.isArray(a.notes) ? a.notes : {};
+    const edits = a.edits && typeof a.edits === "object" && !Array.isArray(a.edits) ? a.edits : {};
     const hs = heldState();
     const seen = new Set(), results = [];
     for (const id of a.ids) {
@@ -255,6 +257,10 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
       const rec = { id, action: a.action, at: clock() };
       const note = a.action === "approve" && typeof notes[id] === "string" ? stripCtl(notes[id], true).trim().slice(0, MAX_NOTE_CHARS) : "";
       if (note) rec.note = note;
+      // edited phone text / transcript: approve only, strings only, same character cleaning as notes, at most MAX_EDIT_CHARS each (an empty string is a real edit: cleared)
+      const ed = a.action === "approve" && edits[id] && typeof edits[id] === "object" ? edits[id] : null;
+      if (ed && typeof ed.text === "string") rec.text_edit = stripCtl(ed.text, true).replace(/\r\n?/g, "\n").trim().slice(0, MAX_EDIT_CHARS);
+      if (ed && typeof ed.transcript === "string" && hr.voice) rec.transcript_edit = stripCtl(ed.transcript, true).replace(/\r\n?/g, "\n").trim().slice(0, MAX_EDIT_CHARS);
       try { appendLine(msgApprovalsFile(), rec); results.push({ id, ok: true, note: !!note }); } catch (e) { results.push({ id, ok: false, reason: "Could not record the decision." }); }
     }
     return { ok: true, action: a.action, results, done: results.filter((r) => r.ok).length };

@@ -180,6 +180,18 @@ require("../src/intake/main-intake").init({
   fs.appendFileSync(heldFile, Array.from({ length: 450 }, (_, i) => JSON.stringify({ id: "20261101-" + String(i).padStart(6, "0") + "_aaaaaa", agent: "coo", at: "2026-11-01T10:00:00+02:00", status: "held", text: "x" })).join("\n") + "\n");
   const big = await h["intake-messages"](ev);
   assert.ok(big.held >= 450 && big.rows.filter((r) => r.status === "held").length >= 450);
+  // editable text / transcript: approve only, strings only, cleaned, capped, transcript only for voice rows; ignored on reject
+  const E1 = "20261031-170000_aaaaa1", E2 = "20261031-170001_aaaaa2", E3 = "20261031-170002_aaaaa3";
+  fs.appendFileSync(heldFile, [{ id: E1, agent: "coo", at: "2026-10-31T17:00:00+02:00", status: "held", text: "a", voice: true }, { id: E2, agent: "coo", at: "2026-10-31T17:00:01+02:00", status: "held", text: "b" },
+    { id: E3, agent: "coo", at: "2026-10-31T17:00:02+02:00", status: "held", text: "c" }].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const before = fs.readFileSync(apprFile, "utf8").split("\n").filter(Boolean).length;
+  await h["intake-message-decide"](ev, { ids: [E1, E2], action: "approve", edits: { [E1]: { text: "fix" + String.fromCodePoint(0x200b) + "ed\nline", transcript: "T".repeat(30000) }, [E2]: { text: "x", transcript: "not voice", bogus: 1 }, [E3]: { text: "never" } } });
+  await h["intake-message-decide"](ev, { ids: [E3], action: "reject", edits: { [E3]: { text: "evil" } } });
+  const recs = fs.readFileSync(apprFile, "utf8").split("\n").filter(Boolean).slice(before).map((l) => JSON.parse(l));
+  assert.strictEqual(recs.length, 3);
+  assert.deepStrictEqual([recs[0].text_edit, recs[0].transcript_edit.length], ["fixed\nline", 20000]);
+  assert.deepStrictEqual([recs[1].text_edit, "transcript_edit" in recs[1]], ["x", false]);
+  assert.strictEqual("text_edit" in recs[2], false);
   console.log("intakeMain.test.js: all passed");
   fs.rmSync(dir, { recursive: true, force: true }); try { fs.unlinkSync(path.join(dir, "..", "intake-sent-" + process.pid + ".jsonl")); } catch (e) { /* none */ }
 })().catch((e) => { console.error(e); process.exit(1); });

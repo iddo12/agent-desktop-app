@@ -18,7 +18,7 @@
   view.append(head, tabsHost, body, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false, confirmFrozen: null, thumbs: {} };
+  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false, confirmFrozen: null, thumbs: {}, edits: {} };
   let open = false, navEl = null, toastTimer = null;
   const say = (t) => { toast.textContent = t; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 6000); };
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }); };
@@ -37,7 +37,7 @@
   // Every refresh of the message list goes through here: if the held set changed while the "approve all" bar is open, the bar closes (nothing new is ever approved unseen).
   function setMsgs(m) {
     S.msgs = m;
-    if (S.confirmAll && S.confirmFrozen && m && HL.changed(S.confirmFrozen, m.rows)) { S.confirmAll = false; S.confirmFrozen = null; say("New messages arrived, review again."); }
+    if (S.confirmAll && S.confirmFrozen && m && HL.changed(S.confirmFrozen, m.rows, S.edits)) { S.confirmAll = false; S.confirmFrozen = null; say("New messages arrived, review again."); }
   }
   const heldRows = () => (S.msgs ? S.msgs.rows.filter((m) => m.status === "held" && !m.queued) : []);
   function navCount() { if (window.intakeNavCount && S.data) window.intakeNavCount(S.data.counts.pending + heldRows().length); }
@@ -109,15 +109,16 @@
     if (S.busy || !ids.length) return;
     S.busy = true;
     const notes = {}; for (const id of ids) if (action === "approve" && S.notes[id] && S.notes[id].trim()) notes[id] = S.notes[id];
+    const edits = action === "approve" ? HL.editsFor(ids, S.msgs ? S.msgs.rows : [], S.edits) : {};
     const CHUNK = 200, chunks = []; for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
     let done = 0, bad = 0, failure = "";
     const next = () => {
       if (!chunks.length) return Promise.resolve();
-      const part = chunks.shift(), pn = {}; for (const id of part) if (notes[id]) pn[id] = notes[id];
-      return api.decideMessages(part, action, pn).then((d) => {
+      const part = chunks.shift(), pn = {}, pe = {}; for (const id of part) { if (notes[id]) pn[id] = notes[id]; if (edits[id]) pe[id] = edits[id]; }
+      return api.decideMessages(part, action, pn, pe).then((d) => {
         if (!d || !d.ok) { failure = (d && d.reason) || "That did not work."; chunks.length = 0; return; }
         bad += d.results.filter((x) => !x.ok).length; done += d.done;
-        for (const x of d.results) if (x.ok) { delete S.sel[x.id]; delete S.notes[x.id]; }
+        for (const x of d.results) if (x.ok) { delete S.sel[x.id]; delete S.notes[x.id]; delete S.edits[x.id]; }
         return next();
       });
     };
@@ -136,7 +137,7 @@
     if (S.msgs && S.msgs.synced) { bar.append(el("p", "in-note in-warn", "The Intake folder is inside a synced folder, so approving is switched off. Move it to a local folder in Setup (intakeDir).")); return bar; }
     const act = el("div", "in-actions");
     const mk = (cls, label, fn, off) => { const b = el("button", "in-btn " + cls, label); b.type = "button"; b.disabled = !!off || S.busy; b.addEventListener("click", fn); act.append(b); return b; };
-    mk("in-go", "Approve all waiting (" + (ids.length - liveSkipped) + ")", () => { S.confirmFrozen = HL.freeze(S.msgs.rows); S.confirmAll = true; render(); }, ids.length === liveSkipped);
+    mk("in-go", "Approve all waiting (" + (ids.length - liveSkipped) + ")", () => { S.confirmFrozen = HL.freeze(S.msgs.rows, S.edits); S.confirmAll = true; render(); }, ids.length === liveSkipped);
     mk("", "Approve selected (" + pickedPlan.ids.length + ")", () => {
       const p = HL.plan(picked, S.msgs ? S.msgs.rows : []);      // exactly the ticked ids, minus voice notes still transcribing
       if (p.skipped) say(p.skipped + (p.skipped === 1 ? " voice note is" : " voice notes are") + " still transcribing and " + (p.skipped === 1 ? "was" : "were") + " skipped.");
@@ -153,7 +154,7 @@
       const a2 = el("div", "in-actions");
       const yes = el("button", "in-btn in-go", "Yes, approve " + n), no = el("button", "in-btn", "Cancel"); yes.type = no.type = "button"; yes.disabled = S.busy;
       yes.addEventListener("click", () => {
-        const p = HL.confirmIds(fr, S.msgs ? S.msgs.rows : []);      // only the frozen ids, only if the held set is unchanged
+        const p = HL.confirmIds(fr, S.msgs ? S.msgs.rows : [], S.edits);      // only the frozen ids, only if the held set is unchanged
         S.confirmAll = false; S.confirmFrozen = null;
         if (!p) { say("New messages arrived, review again."); render(); return; }
         if (p.skipped) say(p.skipped + " skipped (still transcribing).");
@@ -164,6 +165,36 @@
     }
     return bar;
   }
+  // Editable copy of the phone text or the transcript. The draft lives in S.edits[id] (kept across re-renders); only a real difference from the original counts as an edit.
+  function editBox(r, field, original) {
+    const wrap = el("div", "in-editbox");
+    const ta = el("textarea", "in-edit-ta"); ta.rows = 6; ta.maxLength = 20000; ta.dir = "auto";
+    ta.setAttribute("aria-label", field === "text" ? "Phone text (editable)" : "Voice transcript (editable)");
+    const d = S.edits[r.id] || {};
+    ta.value = typeof d[field] === "string" ? d[field] : original;
+    const tag = el("span", "in-chip in-new", "edited"), reset = el("a", "in-reset", "reset to original"); reset.href = "#"; reset.setAttribute("role", "button");
+    const sync = () => {
+      const isEdit = ta.value.trim() !== String(original).trim();
+      tag.classList.toggle("hidden", !isEdit); reset.classList.toggle("hidden", !isEdit);
+      const cur = S.edits[r.id] || {};
+      if (isEdit) cur[field] = ta.value; else delete cur[field];
+      if (Object.keys(cur).length) S.edits[r.id] = cur; else delete S.edits[r.id];
+      ta.style.height = "auto"; ta.style.height = Math.min(Math.max(ta.scrollHeight + 2, 110), 420) + "px";
+    };
+    ta.addEventListener("input", () => {
+      sync();
+      if (S.confirmAll && S.confirmFrozen && HL.changed(S.confirmFrozen, S.msgs ? S.msgs.rows : [], S.edits)) {      // an edit after the confirm bar opened: review again
+        S.confirmAll = false; S.confirmFrozen = null;
+        const box = document.querySelector(".in-confirm"); if (box) box.remove();
+        say("A message was edited, review again.");
+      }
+    });
+    reset.addEventListener("click", (e) => { e.preventDefault(); ta.value = original; sync(); });
+    wrap.append(ta, el("div", "in-edit-bar")); wrap.lastChild.append(tag, reset);
+    sync0(ta, tag, reset, original);
+    return wrap;
+  }
+  function sync0(ta, tag, reset, original) { const e = ta.value.trim() !== String(original).trim(); tag.classList.toggle("hidden", !e); reset.classList.toggle("hidden", !e); }
   const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
   function heldRow(r) {
     const row = el("div", "in-row in-held");
@@ -173,11 +204,12 @@
     const chip = el("span", "in-chip in-wait"); chip.append(el("span", "in-chip-i", "⏸"), document.createTextNode(failed ? " Approved, delivery failed - will retry" : r.queued ? (r.queued === "approve" ? " Approved, being delivered" : " Rejected, being removed") : " Waiting for your approval"));
     meta.append(chip, el("span", "", ["Message to " + r.agent, when(r.at), "NOT delivered yet"].filter(Boolean).join(" · ")));
     if (r.hidden) meta.append(el("span", "in-chip in-wait", "⚠ contained hidden characters (removed)"));
-    t.append(meta, el("div", "in-text", r.text || (r.voice ? "(no text, only a voice message)" : "(no text)")));
+    const canEdit = !r.queued && !(S.msgs && S.msgs.synced);
+    t.append(meta, canEdit ? editBox(r, "text", r.text || "") : el("div", "in-text", r.text || (r.voice ? "(no text, only a voice message)" : "(no text)")));
     if (r.voice) {
       const v = el("div", "in-voice");
-      if (r.transcriptState === "ready") v.append(el("b", "", "Voice message, transcribed on the PC:"), el("div", "in-text", r.transcript || "(silent or empty)"));
-      else if (r.transcriptState === "failed") v.append(el("b", "", "Voice message: transcription failed."), el("div", "in-note in-warn", "The audio is delivered unreviewed if you approve."));
+      if (r.transcriptState === "ready") v.append(el("b", "", "Voice message, transcribed on the PC:"), canEdit ? editBox(r, "transcript", r.transcript || "") : el("div", "in-text", r.transcript || "(silent or empty)"));
+      else if (r.transcriptState === "failed") v.append(el("b", "", "Voice message: transcription failed."), el("div", "in-note in-warn", "The audio is delivered unreviewed if you approve. You can type what it says below."), canEdit ? editBox(r, "transcript", "") : el("span"));
       else v.append(el("b", "", r.transcriptState === "waiting" ? "Voice message: waiting its turn to be transcribed (many voice notes queued)…" : "Voice message: transcribing…"), el("div", "in-note in-warn", "Approve is off until the transcript is ready or has failed."));
       t.append(v);
     }
@@ -282,11 +314,11 @@
     open = true; document.body.classList.add("intake-open"); view.classList.remove("hidden");
     if (navEl) navEl.classList.add("active");
     document.addEventListener("keydown", onKey);
-    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.confirmFrozen = null; S.thumbs = {}; render(); refresh(); schedulePoll();
+    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.confirmFrozen = null; S.thumbs = {}; S.edits = {}; render(); refresh(); schedulePoll();
   }
   function close() {
     if (!open) return;
-    open = false; clearInterval(pollT); document.removeEventListener("keydown", onKey);
+    open = false; clearInterval(pollT); S.edits = {}; document.removeEventListener("keydown", onKey);
     document.body.classList.remove("intake-open"); view.classList.add("hidden");
     if (navEl) navEl.classList.remove("active");
     clearTimeout(toastTimer); S.data = null; S.msgs = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.thumbs = {};

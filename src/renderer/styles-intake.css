@@ -57,3 +57,6 @@ body.dark .in-wait { color: #f5cf85; } body.dark .in-ok { color: #6fd49d; } body
 .in-voice { display: flex; flex-direction: column; gap: 4px; }
 .in-thumbs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .in-thumb { height: 72px; width: auto; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+.in-edit-ta { width: 100%; min-height: 110px; max-height: 420px; box-sizing: border-box; resize: vertical; overflow: auto; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: inherit; }
+.in-edit-bar { display: flex; gap: 8px; align-items: center; min-height: 20px; }
+.in-reset { font-size: 12px; cursor: pointer; }
