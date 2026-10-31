@@ -33,4 +33,24 @@ function diagnose(o) {
   return `short=${o.shortLen} long=${o.longLen} dialogOpen=${!!o.dialogOpen} promptWaiting=${!!o.promptWaiting} longOpen=${!!o.longOpen} cmdInShort=${!!o.cmdShort} cmdInLong=${!!o.cmdLong} needsLen=${o.needsLen}`;
 }
 
-module.exports = { appendLong, longPromptOpen, commandOnScreen, diagnose, LONG_KEEP, squash };
+// v1.152.3 review: bind the click to the OPEN dialog. The command (first 120 non-space chars, the daemon may clip the rest) must
+// sit AFTER the last "esc to interrupt" (an earlier, answered prompt does not count) and at most one dialog footer may follow it
+// (a second prompt with the same start, drawn later, fails because its own text is the last occurrence and the old one is before
+// a working marker; two dialogs after the command mean we cannot tell which one the click would answer).
+function openPromptFor(longText, needs) {
+  const want = squash(String(needs || "").replace(/^approve\s*\w*\s*:?\s*/i, "")).slice(0, 120);
+  if (want.length < 3) return false;
+  const s = squash(longText), l = s.toLowerCase();
+  const i = l.lastIndexOf(want.toLowerCase());
+  if (i < 0 || i <= l.lastIndexOf("esctointerrupt")) return false;
+  const seg = l.slice(i + want.length);
+  const count = (m) => seg.split(m).length - 1;
+  return count("doyouwanttoproceed") + count("entertoconfirm") <= 1 && count("esctocancel") === 1 && longPromptOpen(longText);
+}
+// the whole promptLikelyOpen decision, pure so it is testable: o = { dialogOpen, shortWaiting, pending, long }
+function likelyOpen(o) {
+  if (o.dialogOpen || o.shortWaiting) return true;
+  return !!o.pending && longPromptOpen(o.long);
+}
+
+module.exports = { appendLong, longPromptOpen, commandOnScreen, openPromptFor, likelyOpen, diagnose, LONG_KEEP, squash };
