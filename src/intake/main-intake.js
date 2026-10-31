@@ -215,7 +215,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
         const hd = heldDir(j.agent, id);
         const tb = hd ? readSmall(path.join(hd, "transcript.txt"), MAX_TRANSCRIPT) : null;
         if (tb) { row.transcript = stripCtl(tb.toString("utf8"), true).slice(0, 4000); row.transcriptState = "ready"; }
-        else row.transcriptState = hd && fs.existsSync(path.join(hd, "transcript.failed")) ? "failed" : "pending";
+        else row.transcriptState = hd && fs.existsSync(path.join(hd, "transcript.failed")) ? "failed" : hd && fs.existsSync(path.join(hd, "transcript.waiting")) ? "waiting" : "pending";
       }
       held.set(id, row);
     }

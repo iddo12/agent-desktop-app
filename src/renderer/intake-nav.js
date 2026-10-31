@@ -40,10 +40,8 @@
       if (!document.querySelector('link[href="styles-intake.css"]')) {
         const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "styles-intake.css"; document.head.appendChild(link);
       }
-      const s = document.createElement("script"); s.src = "intake.js";
-      s.onload = () => (window.intakeView ? resolve(window.intakeView) : reject(new Error("no view")));
-      s.onerror = () => reject(new Error("load failed"));
-      document.body.appendChild(s);
+      const load = (src, next) => { const s = document.createElement("script"); s.src = src; s.onload = next; s.onerror = () => reject(new Error("load failed")); document.body.appendChild(s); };
+      load("heldLogic.js", () => load("intake.js", () => (window.intakeView ? resolve(window.intakeView) : reject(new Error("no view")))));
     }).catch((e) => { loading = null; throw e; });
     return loading;
   }

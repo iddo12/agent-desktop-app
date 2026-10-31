@@ -5,6 +5,8 @@
   "use strict";
   const api = window.api && window.api.intake;
   if (!api) return;
+  const HL = window.heldLogic;
+  if (!HL) return;
   const TABS = [["all", "All"], ["notes", "Notes & commands"], ["review", "Review & products"], ["receipts", "Receipts"], ["medical", "🔒 Medical"], ["food", "🔒 Food"], ["health", "🔒 Health"], ["msgs", "Messages to agents"], ["rejected", "Rejected"]];
   const SEALED_TABS = { medical: 1, food: 1, health: 1 };
   const STATUS = { new: ["New", "●", "new"], pending_approval: ["Waiting for you", "⏸", "wait"], approved: ["Approved", "✓", "ok"], sent: ["Sent", "✓", "ok"], rejected: ["Rejected", "✕", "grey"] };
@@ -16,14 +18,14 @@
   view.append(head, tabsHost, body, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false, thumbs: {} };
+  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false, confirmFrozen: null, thumbs: {} };
   let open = false, navEl = null, toastTimer = null;
   const say = (t) => { toast.textContent = t; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 6000); };
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }); };
 
   function refresh() {
     // messages you sent from the phone to an agent: read separately, so a failure here never hides the Intake list
-    if (api.messages) api.messages().then((m) => { if (!open) return; S.msgs = m && m.ok ? m : null; navCount(); render(); }).catch(() => { S.msgs = null; });
+    if (api.messages) api.messages().then((m) => { if (!open) return; setMsgs(m && m.ok ? m : null); navCount(); render(); }).catch(() => { S.msgs = null; });
     return api.load().then((r) => {
       if (!open) return;
       if (!r || !r.ok) { S.err = (r && r.reason) || "Intake could not load."; S.data = null; } else { S.err = ""; S.data = r; navCount(); }
@@ -32,6 +34,11 @@
   }
 
   // held phone messages (waiting for approval) count with the commands: same amber button, same nav badge
+  // Every refresh of the message list goes through here: if the held set changed while the "approve all" bar is open, the bar closes (nothing new is ever approved unseen).
+  function setMsgs(m) {
+    S.msgs = m;
+    if (S.confirmAll && S.confirmFrozen && m && HL.changed(S.confirmFrozen, m.rows)) { S.confirmAll = false; S.confirmFrozen = null; say("New messages arrived, review again."); }
+  }
   const heldRows = () => (S.msgs ? S.msgs.rows.filter((m) => m.status === "held" && !m.queued) : []);
   function navCount() { if (window.intakeNavCount && S.data) window.intakeNavCount(S.data.counts.pending + heldRows().length); }
 
@@ -115,7 +122,7 @@
       });
     };
     next().then(() => {
-      S.busy = false; S.confirmAll = false;
+      S.busy = false; S.confirmAll = false; S.confirmFrozen = null;
       if (failure && !done) { say(failure); render(); return; }
       say((action === "approve" ? "Approved " : "Rejected ") + done + (done === 1 ? " message" : " messages") + (action === "approve" ? (done === 1 ? ". The PC delivers it within a minute." : ". The PC delivers them within a minute.") : ".") + (bad || failure ? " " + (bad || "Some") + " could not be changed." : ""));
       refresh();
@@ -123,23 +130,36 @@
   }
   function heldToolbar() {
     const rows = heldRows(), ids = rows.map((r) => r.id), picked = ids.filter((id) => S.sel[id]);
-    const withNotes = ids.filter((id) => S.notes[id] && S.notes[id].trim()).length;
+    const pickedPlan = HL.plan(picked, S.msgs ? S.msgs.rows : []), liveSkipped = HL.plan(ids, S.msgs ? S.msgs.rows : []).skipped;
     const bar = el("div", "in-held-bar");
     bar.append(el("b", "", rows.length + " phone message" + (rows.length === 1 ? "" : "s") + " waiting for your approval"), el("span", "in-note", " Not delivered to any agent yet."));
     if (S.msgs && S.msgs.synced) { bar.append(el("p", "in-note in-warn", "The Intake folder is inside a synced folder, so approving is switched off. Move it to a local folder in Setup (intakeDir).")); return bar; }
     const act = el("div", "in-actions");
     const mk = (cls, label, fn, off) => { const b = el("button", "in-btn " + cls, label); b.type = "button"; b.disabled = !!off || S.busy; b.addEventListener("click", fn); act.append(b); return b; };
-    mk("in-go", "Approve all waiting (" + ids.length + ")", () => { S.confirmAll = true; render(); });
-    mk("", "Approve selected (" + picked.length + ")", () => decideMessages(picked, "approve"), !picked.length);
+    mk("in-go", "Approve all waiting (" + (ids.length - liveSkipped) + ")", () => { S.confirmFrozen = HL.freeze(S.msgs.rows); S.confirmAll = true; render(); }, ids.length === liveSkipped);
+    mk("", "Approve selected (" + pickedPlan.ids.length + ")", () => {
+      const p = HL.plan(picked, S.msgs ? S.msgs.rows : []);      // exactly the ticked ids, minus voice notes still transcribing
+      if (p.skipped) say(p.skipped + (p.skipped === 1 ? " voice note is" : " voice notes are") + " still transcribing and " + (p.skipped === 1 ? "was" : "were") + " skipped.");
+      decideMessages(p.ids, "approve");
+    }, !pickedPlan.ids.length);
     mk("", "Reject selected (" + picked.length + ")", () => decideMessages(picked, "reject"), !picked.length);
     bar.append(act);
-    if (S.confirmAll) {
+    if (liveSkipped) bar.append(el("p", "in-note in-warn", liveSkipped + (liveSkipped === 1 ? " voice note is" : " voice notes are") + " still transcribing; approving is off for " + (liveSkipped === 1 ? "it" : "them") + " until the transcript is ready or has failed."));
+    if (S.confirmAll && S.confirmFrozen) {
+      const fr = S.confirmFrozen, n = fr.ids.length, withNotes = fr.ids.filter((id) => S.notes[id] && S.notes[id].trim()).length;
       const box = el("div", "in-confirm");
-      box.append(el("b", "", "Approve all " + ids.length + " waiting message" + (ids.length === 1 ? "" : "s") + "?" + (withNotes ? " (" + withNotes + " with a note you added)" : "")),
+      box.append(el("b", "", "Approve these " + n + " waiting message" + (n === 1 ? "" : "s") + "?" + (withNotes ? " (" + withNotes + " with a note you added)" : "") + (fr.skipped ? " " + fr.skipped + " voice note" + (fr.skipped === 1 ? "" : "s") + " still transcribing will be skipped." : "")),
         el("p", "in-note in-warn", "Only approve messages you recognise as yours."));
       const a2 = el("div", "in-actions");
-      const yes = el("button", "in-btn in-go", "Yes, approve " + ids.length), no = el("button", "in-btn", "Cancel"); yes.type = no.type = "button"; yes.disabled = S.busy;
-      yes.addEventListener("click", () => decideMessages(ids, "approve")); no.addEventListener("click", () => { S.confirmAll = false; render(); });
+      const yes = el("button", "in-btn in-go", "Yes, approve " + n), no = el("button", "in-btn", "Cancel"); yes.type = no.type = "button"; yes.disabled = S.busy;
+      yes.addEventListener("click", () => {
+        const p = HL.confirmIds(fr, S.msgs ? S.msgs.rows : []);      // only the frozen ids, only if the held set is unchanged
+        S.confirmAll = false; S.confirmFrozen = null;
+        if (!p) { say("New messages arrived, review again."); render(); return; }
+        if (p.skipped) say(p.skipped + " skipped (still transcribing).");
+        decideMessages(p.ids, "approve");
+      });
+      no.addEventListener("click", () => { S.confirmAll = false; S.confirmFrozen = null; render(); });
       a2.append(yes, no); box.append(a2); bar.append(box);
     }
     return bar;
@@ -158,11 +178,11 @@
       const v = el("div", "in-voice");
       if (r.transcriptState === "ready") v.append(el("b", "", "Voice message, transcribed on the PC:"), el("div", "in-text", r.transcript || "(silent or empty)"));
       else if (r.transcriptState === "failed") v.append(el("b", "", "Voice message: transcription failed."), el("div", "in-note in-warn", "The audio is delivered unreviewed if you approve."));
-      else v.append(el("b", "", "Voice message: transcribing…"), el("div", "in-note in-warn", "You can approve now, but you would be approving a voice note you have not read."));
+      else v.append(el("b", "", r.transcriptState === "waiting" ? "Voice message: waiting its turn to be transcribed (many voice notes queued)…" : "Voice message: transcribing…"), el("div", "in-note in-warn", "Approve is off until the transcript is ready or has failed."));
       t.append(v);
     }
     if (r.photos) {
-      const strip = el("div", "in-thumbs"); strip.append(el("span", "in-note", r.photos + (r.photos === 1 ? " photo" : " photos") + (r.thumbs ? "" : " (no preview)")));
+      const strip = el("div", "in-thumbs"); strip.append(el("span", "in-note", r.photos + (r.photos === 1 ? " photo" : " photos") + (r.thumbs ? "" : " (no preview)")), el("span", "in-note in-warn", " Text inside a picture is not readable here but the agent will see it."));
       t.append(strip);
       if (r.thumbs) {
         const fill = (list) => { for (const u of list) { const im = el("img", "in-thumb"); im.src = u; im.alt = "photo preview"; strip.append(im); } };
@@ -180,7 +200,7 @@
         lab.append(ta); t.append(tag, lab);
       }
       const act = el("div", "in-actions");
-      const ok = el("button", "in-btn in-go", "✓ Approve"), no = el("button", "in-btn", "✕ Reject"); ok.type = no.type = "button"; ok.disabled = no.disabled = S.busy;
+      const ok = el("button", "in-btn in-go", "✓ Approve"), no = el("button", "in-btn", "✕ Reject"); ok.type = no.type = "button"; ok.disabled = no.disabled = S.busy; ok.disabled = S.busy || !HL.approvable(r); if (!HL.approvable(r) && !r.queued) ok.title = "Wait for the transcript";
       ok.addEventListener("click", () => decideMessages([r.id], "approve")); no.addEventListener("click", () => decideMessages([r.id], "reject"));
       if (!r.queued) act.append(ok);
       act.append(no); t.append(act);
@@ -250,9 +270,9 @@
   function schedulePoll() {
     clearInterval(pollT);
     pollT = setInterval(() => {
-      if (!open || !api.messages || !S.msgs || !S.msgs.rows.some((m) => m.status === "held" && m.transcriptState === "pending")) return;
+      if (!open || !api.messages || !S.msgs || !S.msgs.rows.some((m) => m.status === "held" && (m.transcriptState === "pending" || m.transcriptState === "waiting"))) return;
       const a = document.activeElement; if (a && a.tagName === "TEXTAREA") return;
-      api.messages().then((m) => { if (open && m && m.ok) { S.msgs = m; render(); } }).catch(() => {});
+      api.messages().then((m) => { if (open && m && m.ok) { setMsgs(m); render(); } }).catch(() => {});
     }, 10000);
   }
   const onKey = (e) => { if (e.key === "Escape" && open) { if (S.openId) { S.openId = null; render(); } else close(); e.preventDefault(); } };
@@ -262,7 +282,7 @@
     open = true; document.body.classList.add("intake-open"); view.classList.remove("hidden");
     if (navEl) navEl.classList.add("active");
     document.addEventListener("keydown", onKey);
-    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.thumbs = {}; render(); refresh(); schedulePoll();
+    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.confirmFrozen = null; S.thumbs = {}; render(); refresh(); schedulePoll();
   }
   function close() {
     if (!open) return;
