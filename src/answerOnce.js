@@ -31,7 +31,7 @@ function stateDir(env, platform, homedir) {
 // An agent can edit the ask file after the window popped up, so none of these may come from the file unchecked.
 function qhash(ask) {
   const quick = Array.isArray(ask.quick) ? ask.quick.join("\x1f") : "";
-  return crypto.createHash("sha256").update([String(ask.question), String(ask.agent), quick].join("\x1e"), "utf8").digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update([String(ask.question), String(ask.agent == null ? "" : ask.agent), quick].join("\x1e"), "utf8").digest("hex").slice(0, 16);
 }
 function macOf(key, f) {
   return crypto.createHmac("sha256", key).update(["v1", f.id, f.answer, f.qhash, f.nonce, String(f.ts)].join("\x1f"), "utf8").digest("hex");
