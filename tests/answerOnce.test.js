@@ -8,7 +8,7 @@ const t = (name, fn) => queue.push([name, fn]);
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "ao-"));
 const KEY = "ab".repeat(32), NOW = 1_800_000_000_000;
 const ASK = { id: "20261031-014211-9f54", agent: "Security", question: "May I restart the NAS app?", quick: ["Yes", "No"] };
-const sign = (over) => { const r = Object.assign({ v: 1, id: ASK.id, answer: "Yes", qhash: A.qhash(ASK.question), nonce: "c".repeat(32), ts: NOW }, over); r.mac = A.macOf(KEY, r); return r; };
+const sign = (over) => { const r = Object.assign({ v: 1, id: ASK.id, answer: "Yes", qhash: A.qhash(ASK), nonce: "c".repeat(32), ts: NOW }, over); r.mac = A.macOf(KEY, r); return r; };
 const chk = (req, over) => A.verify(req, Object.assign({ key: KEY, now: NOW + 1000, ask: ASK, fileNonce: req.nonce }, over));
 
 t("good request verifies", () => assert.strictEqual(chk(sign()).ok, true));
@@ -20,6 +20,15 @@ t("wrong key / tampered answer / tampered id are refused", () => {
 t("unsigned or missing mac is refused", () => { const r = sign(); delete r.mac; assert.strictEqual(chk(r).ok, false); });
 t("answer must be one of the ask's quick answers (even when signed)", () => assert.match(chk(sign({ answer: "Delete everything" })).reason, /quick/));
 t("question text changed after the window: refused", () => assert.match(chk(sign(), { ask: Object.assign({}, ASK, { question: "Something else?" }) }).reason, /changed/));
+t("asking agent or quick answers changed after the window: refused (agent could be retargeted)", () => {
+  assert.match(chk(sign(), { ask: Object.assign({}, ASK, { agent: "Other agent" }) }).reason, /changed/);
+  assert.match(chk(sign(), { ask: Object.assign({}, ASK, { quick: ["Yes", "No", "Sure"] }) }).reason, /changed/);
+});
+t("malformed key file is replaced, never used", () => {
+  const d = tmp(); fs.writeFileSync(path.join(d, "key"), "abc\n");
+  const k = A.readKey(d, true); assert.ok(/^[0-9a-f]{64}$/.test(k) && k !== "abc"); assert.strictEqual(A.readKey(d, false), k);
+  const d2 = tmp(); fs.writeFileSync(path.join(d2, "key"), "xyz"); assert.strictEqual(A.readKey(d2, false), null);
+});
 t("ask no longer open: refused", () => assert.match(chk(sign(), { ask: null }).reason, /no longer open/));
 t("stale and future requests are refused", () => {
   assert.match(chk(sign(), { now: NOW + A.MAX_AGE_MS + 1 }).reason, /stale/);
@@ -50,6 +59,8 @@ t("service: a signed request is delivered once, the file moves to done, the verd
   assert.ok(has(r.svc.dirs.done, req.nonce) && !has(r.svc.dirs.inbox, req.nonce));
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r.svc.dirs.results, req.nonce + ".json"), "utf8")).ok, true);
   r.put(req); await r.svc.scan();                                           // replay of the same nonce
+  assert.strictEqual(r.delivered.length, 1);
+  fs.rmSync(path.join(r.svc.dirs.done, req.nonce + ".json")); r.put(req); await r.svc.scan();   // even if the done marker is lost, the used marker holds
   assert.strictEqual(r.delivered.length, 1);
 });
 t("service: forged, wrong-name, oversize and garbage files are never delivered", async () => {

@@ -4890,7 +4890,7 @@ ipcMain.handle("resolve-open-question", (event, id) => {
 // A test instance only runs it when AGENT_DESKTOP_ANSWER_ONCE_DIR is set (never eats the live inbox).
 const answerOnceWaiting = new Map(); // reqId -> {resolve, timer}
 ipcMain.handle("answer-once-result", (event, r) => {
-  const w = r && answerOnceWaiting.get(r.reqId); if (!w) return false;
+  const w = r && answerOnceWaiting.get(r.reqId); if (!w) { if (r && r.ok) console.error("[agent-desktop] answer-once: late delivery confirmed after the 90 s timeout (" + r.reqId + ")"); return false; }
   clearTimeout(w.timer); answerOnceWaiting.delete(r.reqId); w.resolve({ ok: !!r.ok, error: String(r.error || "").slice(0, 200), retry: !!r.retry }); return true;
 });
 try {
@@ -4902,7 +4902,7 @@ try {
       deliver: (req) => new Promise((resolve) => {
         if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
         const reqId = "ao" + (++seq) + "-" + Date.now();
-        const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "the chat did not confirm delivery in 90 s" }); }, 90000);
+        const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 90 s; it may still arrive, check the agent's chat before answering again" }); }, 90000);
         answerOnceWaiting.set(reqId, { resolve, timer });
         try { mainWindow.webContents.send("answer-once-deliver", { reqId, id: req.id, answer: req.answer }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
       }),
