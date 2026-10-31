@@ -2012,12 +2012,16 @@ const dialogTails = new Map(); // agentPath -> last ~1500 printable chars
 function trackDialog(agentPath, data) {
   const tail = ((dialogTails.get(agentPath) || "") + stripTerminalCodes(String(data))).slice(-1500);
   dialogTails.set(agentPath, tail);
+  dialogLongTails.set(agentPath, approvalScreen.appendLong(dialogLongTails.get(agentPath), stripTerminalCodes(String(data)))); // v1.152.3: 8000 chars for long prompts
 }
+const approvalScreen = require("./approvalScreen");
+const dialogLongTails = new Map(); // agentPath -> last ~8000 printable chars (long chained / heredoc prompts do not fit the 1500)
 // v1.65.0: broader than DIALOG_RE (which drives the red badge): any screen that looks like a prompt
 // waiting for an answer. Used only to gate typing/Enter into a session.
 const deliveryScreen = require("./deliveryScreen"); // v1.69.4: screen classifiers (dialog / queued / unsent box), tested on real CLI captures
 function promptLikelyOpen(agentPath) {
   if (dialogOpenFor(agentPath)) return true;
+  if (approvalPending.has(agentPath) && approvalScreen.longPromptOpen(dialogLongTails.get(agentPath))) return true; // v1.152.3: the daemon says blocked AND the longer screen text ends in a dialog
   const tail = dialogTails.get(agentPath) || "";
   return deliveryScreen.promptWaiting(tail) || deliveryScreen.isDialog(tail, ""); // v1.69.4: also matches when cursor moves ate the spaces ("Doyouwanttoproceed")
 }
@@ -3408,10 +3412,10 @@ ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
   const pend = approvalPending.get(agentPath);
   if (!pend) return { ok: false, reason: "nothing is waiting for approval" };
   if (since !== pend.since) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
-  if (!promptLikelyOpen(agentPath)) return { ok: false, reason: "the prompt is not on the screen; use Session > Restart session" };
-  const strip = (x) => String(x).replace(/\s+/g, "");
-  const want = strip(String(pend.needs).replace(/^approve\s*\w*\s*:?\s*/i, "")).slice(0, 30);
-  if (want.length < 3 || !strip(dialogTails.get(agentPath) || "").includes(want)) return { ok: false, reason: "the prompt on the agent's screen is not the one shown here; use Session > Restart session" };
+  const diag = () => approvalScreen.diagnose({ shortLen: (dialogTails.get(agentPath) || "").length, longLen: (dialogLongTails.get(agentPath) || "").length, dialogOpen: dialogOpenFor(agentPath), promptWaiting: deliveryScreen.promptWaiting(dialogTails.get(agentPath) || ""), longOpen: approvalScreen.longPromptOpen(dialogLongTails.get(agentPath)), cmdShort: approvalScreen.commandOnScreen(dialogTails.get(agentPath), pend.needs), cmdLong: approvalScreen.commandOnScreen(dialogLongTails.get(agentPath), pend.needs), needsLen: String(pend.needs).length });
+  if (!promptLikelyOpen(agentPath)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED prompt-not-on-screen ${diag()}`); return { ok: false, reason: "the prompt is not on the screen; use Session > Restart session" }; }
+  // v1.152.3: the start of a long command has scrolled out of the 1500-char text; look in the 8000-char one too
+  if (!approvalScreen.commandOnScreen(dialogTails.get(agentPath), pend.needs) && !approvalScreen.commandOnScreen(dialogLongTails.get(agentPath), pend.needs)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED not-the-same-prompt ${diag()}`); return { ok: false, reason: "the prompt on the agent's screen is not the one shown here; use Session > Restart session" }; }
   logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} for "${String(pend.needs).slice(0, 160)}"`);
   writeToPtyChunked(s.proc, agentPath, answer === "approve" ? "\r" : "\x1b");
   approvalPending.delete(agentPath);        // the next prompt (if any) must be seen and read again, never approved by a second click on this card
@@ -4564,6 +4568,7 @@ async function startTerminalSessionInner(agentPath, sessionCwd, cols, rows, know
   // - if the fresh session hits the same wall, the user sees the real
   // "Not logged in" prompt directly instead of this silently retrying.
   let peekTail = ""; // what the attach drew during the peek: becomes the first screen text (tracked screen was empty after a re-attach)
+  let peekLong = ""; // v1.152.3: same, 8000 chars
   let peekBytes = 0; // v1.69.4: size of what the attach drew during the peek (liveness seed); declared outside the block below
   if (!isLoginRecoveryAttempt) {
     let peekBuffer = "";
@@ -4648,6 +4653,7 @@ async function startTerminalSessionInner(agentPath, sessionCwd, cols, rows, know
     // it through live.
     peekBytes = peekBuffer.length;
     peekTail = stripTerminalCodes(peekBuffer).slice(-1500);
+    peekLong = stripTerminalCodes(peekBuffer).slice(-8000);
     if (peekBuffer && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("terminal-data", { agentPath, data: peekBuffer });
     }
@@ -4781,6 +4787,7 @@ async function startTerminalSessionInner(agentPath, sessionCwd, cols, rows, know
   // never two attach clients for one agent: a live older client is killed first (it would be kicked anyway)
   { const ex = ptySessions.get(agentPath); if (ex && ex.proc && !ex.starting && ex.proc !== proc) { try { clearInterval(ex.archiveTimer); ex.proc.kill(); } catch (e) {} logStuckWatchdog(`attach: ${agentPath} path=${pathName} killed an older attach client pid=${ex.proc.pid}`); } }
   dialogTails.set(agentPath, peekTail);
+  dialogLongTails.set(agentPath, peekLong);
   logStuckWatchdog(`attach: ${agentPath} path=${pathName} pid=${proc.pid} agentId=${agentId}`);
   ptySessions.set(agentPath, { proc, sessionCwd, archiveTimer, shell, spawnEnv, agentId, cols, rows, attachedAt: Date.now(), dataBytes: peekBytes });
   connHealth.onConnected(agentPath, { delayMs: pendingInput && pendingInput.length ? 5000 : 0 });
