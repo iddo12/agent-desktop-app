@@ -308,6 +308,7 @@ contextBridge.exposeInMainWorld("api", {
     agents: (sealed) => ipcRenderer.invoke("intake-agents", { sealed: !!sealed }),
     decide: (id, action, agent, hash) => ipcRenderer.invoke("intake-decide", { id, action, agent, hash }),
     audit: () => ipcRenderer.invoke("intake-audit"),
+    messages: () => ipcRenderer.invoke("intake-messages"),
   },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),

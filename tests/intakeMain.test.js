@@ -14,6 +14,7 @@ const lines = [
 ];
 fs.writeFileSync(path.join(dir, "intake_index.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n");
 fs.mkdirSync(path.join(dir, "pending_commands")); fs.writeFileSync(path.join(dir, "pending_commands", "n.txt"), "Draft the recap"); fs.writeFileSync(path.join(dir, "pending_commands", "sealed.txt"), "SEALED TEXT");
+const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "intake-agent-"));
 const h = {};
 const wc = { mainFrame: {} };
 const win = { webContents: wc, isDestroyed: () => false };
@@ -22,7 +23,7 @@ let delivered = [];
 require("../src/intake/main-intake").init({
   localApprovalsPath: path.join(dir, "..", "intake-local-appr-" + process.pid + ".jsonl"),
   ipcMain: { handle: (c, f) => { h[c] = f; } }, getMainWindow: () => win, cfg: (k) => (k === "intakeDir" ? dir : k === "intakeDefaultAgent" ? "Personal Assistant" : null),
-  agentPathFor: (n) => (n === "Marketing" ? "/x/Marketing" : null),
+  agentPathFor: (n) => (n === "Marketing" ? agentDir : null),
   deliverToAgent: async (p, t) => { delivered.push([p, t, fs.existsSync(path.join(dir, "intake_approvals.jsonl"))]); return { delivered: true }; },
   listAgentNames: () => ["Marketing"], sentLogPath: path.join(dir, "..", "intake-sent-" + process.pid + ".jsonl"),
 });
@@ -52,6 +53,22 @@ require("../src/intake/main-intake").init({
   // reserved Windows names and forged lines in the synced approvals file
   fs.writeFileSync(path.join(dir, "intake_approvals.jsonl"), JSON.stringify({ id: "capture/trav", action: "approve", hash: "x", at: "T" }) + "\n", { flag: "a" });
   assert.strictEqual((await h["intake-load"](ev)).rows.find((r) => r.id === "capture/trav").status, "pending_approval");   // forged synced line ignored
+  // Messages to agents: read from <agent>\phone_inbox\index.jsonl (new, then handled), newest first, hostile lines ignored, no link followed
+  fs.mkdirSync(path.join(agentDir, "phone_inbox"));
+  fs.writeFileSync(path.join(agentDir, "phone_inbox", "index.jsonl"), [
+    { id: "m1", at: "2026-10-31T19:58:26+02:00", status: "new", preview: "hello" },
+    { id: "m2", at: "2026-10-31T20:56:47+02:00", status: "new", preview: "second note" },
+    { id: "m1", status: "handled" },
+    { id: "m3", at: "2026-10-30T10:00:00+02:00", status: "bogus", preview: "y".repeat(1000) },
+    { status: "handled" }, "junk",
+  ].map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n") + "\n");
+  const mm = await h["intake-messages"](ev);
+  assert.ok(mm.ok && mm.total === 3 && mm.waiting === 2);
+  assert.deepStrictEqual(mm.rows.map((r) => r.id), ["m2", "m1", "m3"]);
+  assert.deepStrictEqual([mm.rows[0].agent, mm.rows[1].status, mm.rows[0].preview], ["Marketing", "handled", "second  note"]);
+  assert.strictEqual(mm.rows[2].preview.length, 300);
+  assert.deepStrictEqual(await h["intake-messages"]({ sender: {}, senderFrame: {} }), { ok: false, reason: "Not allowed." });
+  fs.rmSync(path.join(agentDir, "phone_inbox", "index.jsonl")); assert.strictEqual((await h["intake-messages"](ev)).total, 0);   // no inbox = empty, not an error
   console.log("intakeMain.test.js: all passed");
   fs.rmSync(dir, { recursive: true, force: true }); try { fs.unlinkSync(path.join(dir, "..", "intake-sent-" + process.pid + ".jsonl")); } catch (e) { /* none */ }
 })().catch((e) => { console.error(e); process.exit(1); });

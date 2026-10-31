@@ -5,7 +5,7 @@
   "use strict";
   const api = window.api && window.api.intake;
   if (!api) return;
-  const TABS = [["all", "All"], ["notes", "Notes & commands"], ["review", "Review & products"], ["receipts", "Receipts"], ["medical", "🔒 Medical"], ["food", "🔒 Food"], ["health", "🔒 Health"], ["rejected", "Rejected"]];
+  const TABS = [["all", "All"], ["notes", "Notes & commands"], ["review", "Review & products"], ["receipts", "Receipts"], ["medical", "🔒 Medical"], ["food", "🔒 Food"], ["health", "🔒 Health"], ["msgs", "Messages to agents"], ["rejected", "Rejected"]];
   const SEALED_TABS = { medical: 1, food: 1, health: 1 };
   const STATUS = { new: ["New", "●", "new"], pending_approval: ["Waiting for you", "⏸", "wait"], approved: ["Approved", "✓", "ok"], sent: ["Sent", "✓", "ok"], rejected: ["Rejected", "✕", "grey"] };
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -16,12 +16,14 @@
   view.append(head, tabsHost, body, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { data: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "" };
+  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "" };
   let open = false, navEl = null, toastTimer = null;
   const say = (t) => { toast.textContent = t; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 6000); };
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }); };
 
   function refresh() {
+    // messages you sent from the phone to an agent: read separately, so a failure here never hides the Intake list
+    if (api.messages) api.messages().then((m) => { if (!open) return; S.msgs = m && m.ok ? m : null; render(); }).catch(() => { S.msgs = null; });
     return api.load().then((r) => {
       if (!open) return;
       if (!r || !r.ok) { S.err = (r && r.reason) || "Intake could not load."; S.data = null; } else { S.err = ""; S.data = r; if (window.intakeNavCount) window.intakeNavCount(r.counts.pending); }
@@ -46,7 +48,7 @@
     if (S.data.requireVerified === false) body.append(el("p", "in-note in-warn", "Warning: phone signing is not live yet, so Intake cannot tell that an item really came from your phone. Check each one before you approve."));
     if (S.openId) return renderItem();
     for (const [id, label] of TABS) {
-      const b = el("button", "in-tab" + (S.tab === id ? " active" : ""), label + " " + (id === "all" ? c.all : c[id] || 0));
+      const b = el("button", "in-tab" + (S.tab === id ? " active" : ""), label + " " + (id === "all" ? c.all : id === "msgs" ? (S.msgs ? S.msgs.total : 0) : c[id] || 0));
       b.type = "button"; b.setAttribute("role", "tab");
       b.addEventListener("click", () => { S.tab = id; S.pendingOnly = false; render(); });
       tabsHost.append(b);
@@ -57,6 +59,7 @@
       const o = el("button", "in-btn", "Open"); o.type = "button"; o.addEventListener("click", () => { S.sealedOpen[S.tab] = true; render(); });
       box.append(o); body.append(box); return;
     }
+    if (S.tab === "msgs") { renderMessages(); return; }
     let rows = S.data.rows.filter((r) => (S.tab === "all" ? !r.sealed : r.tab === S.tab));
     if (S.pendingOnly) rows = rows.filter((r) => r.status === "pending_approval" && !r.sealed);
     rows.sort((a, b) => String(b.created).localeCompare(String(a.created)));
@@ -70,6 +73,24 @@
       t.append(meta); row.append(t);
       row.addEventListener("click", () => { S.openId = r.id; render(); });
       body.append(row);
+    }
+  }
+
+  // "Messages to agents": what you sent from the phone to an agent, and whether the agent has read and handled it. Read-only, no actions.
+  function renderMessages() {
+    body.append(el("p", "in-note", "Messages you sent from the phone to an agent. \"Delivered\" means the PC put it in the agent's phone_inbox; \"Read and handled\" means the agent marked it done. Agents check their inbox when they next run, so Delivered can take a while."));
+    const m = S.msgs;
+    if (!m) { body.append(el("p", "in-note", "Loading…")); return; }
+    if (!m.rows.length) { const e = el("div", "in-empty"); e.append(el("b", "", "📬 No messages to agents yet"), el("p", "", "Use an agent tile on the phone's Home screen: write, record or snap, then Send.")); body.append(e); return; }
+    for (const r of m.rows) {
+      const row = el("div", "in-row");
+      const t = el("div", "in-row-t");
+      t.append(el("b", "", r.preview || "(no text)"));
+      const meta = el("div", "in-row-m");
+      const done = r.status === "handled";
+      const chip = el("span", "in-chip " + (done ? "in-ok" : "in-wait")); chip.append(el("span", "in-chip-i", done ? "✓" : "●"), document.createTextNode(" " + (done ? "Read and handled" : "Delivered, not yet read")));
+      meta.append(chip, el("span", "", ["→ " + r.agent, when(r.at)].filter(Boolean).join(" · ")));
+      t.append(meta); row.append(t); body.append(row);
     }
   }
 
@@ -120,14 +141,14 @@
     open = true; document.body.classList.add("intake-open"); view.classList.remove("hidden");
     if (navEl) navEl.classList.add("active");
     document.addEventListener("keydown", onKey);
-    S.data = null; S.openId = null; S.sealedOpen = {}; render(); refresh();
+    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; render(); refresh();
   }
   function close() {
     if (!open) return;
     open = false; document.removeEventListener("keydown", onKey);
     document.body.classList.remove("intake-open"); view.classList.add("hidden");
     if (navEl) navEl.classList.remove("active");
-    clearTimeout(toastTimer); S.data = null; S.sealedOpen = {};
+    clearTimeout(toastTimer); S.data = null; S.msgs = null; S.sealedOpen = {};
     head.textContent = ""; tabsHost.textContent = ""; body.textContent = ""; toast.textContent = ""; toast.classList.add("hidden");   // nothing stays in the page
   }
   window.intakeView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

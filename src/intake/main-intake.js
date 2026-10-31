@@ -149,6 +149,39 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     if (res && res.delivered) { if (sentLogPath) { try { appendLine(sentLogPath, { id: it.id, to: d.deliver.agent, at: clock() }); } catch (e) { /* log is best effort */ } } return { ok: true, sent: true }; }
     return { ok: true, sent: false, reason: "Approved, but " + d.deliver.agent + " did not confirm receipt." };
   }
+  // Messages the owner sent from the phone TO an agent (Message-to-Agent). They never pass through intake_index.jsonl: the PC watcher puts each one in
+  // <agent folder>\phone_inbox\ and appends to that folder's index.jsonl ({id, at, status:"new", preview}, later {id, status:"handled"}). Read-only here.
+  const MSG_MAX_ROWS = 100, MSG_PREVIEW = 300, MSG_STATUS = { new: 1, handled: 1 };
+  function readAgentMessages(agent) {
+    const ap = typeof agentPathFor === "function" ? agentPathFor(agent) : null;
+    if (!ap) return [];
+    const file = path.join(ap, "phone_inbox", "index.jsonl");
+    let text;
+    try {
+      if (fs.lstatSync(file).isSymbolicLink()) return [];
+      const st = fs.statSync(file); if (!st.isFile() || st.size > MAX_FILE_BYTES) return [];
+      text = fs.readFileSync(file, "utf8");
+    } catch (e) { return []; }
+    const byId = new Map();
+    for (const line of text.replace(/^﻿/, "").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let j; try { j = JSON.parse(line); } catch (e) { continue; }
+      if (!j || typeof j !== "object" || typeof j.id !== "string" || j.id.length > 80) continue;
+      const cur = byId.get(j.id) || { id: j.id, agent, at: "", status: "new", preview: "" };
+      if (typeof j.at === "string") cur.at = j.at.slice(0, 40);
+      if (typeof j.preview === "string") cur.preview = j.preview.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").slice(0, MSG_PREVIEW);
+      if (typeof j.status === "string" && MSG_STATUS[j.status]) cur.status = j.status;
+      byId.set(j.id, cur);
+    }
+    return [...byId.values()];
+  }
+  handle("intake-messages", () => {
+    const names = typeof listAgentNames === "function" ? listAgentNames() : [];
+    let rows = [];
+    for (const n of names) rows = rows.concat(readAgentMessages(n));
+    rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    return { ok: true, rows: rows.slice(0, MSG_MAX_ROWS), total: rows.length, waiting: rows.filter((r) => r.status === "new").length };
+  });
   handle("intake-audit", () => { const ap = localApprovals ? readJsonl(localApprovals) : readJsonl(approvalsFile()); return ap.ok ? { ok: true, records: ap.events.slice(-100).filter((r) => r && typeof r.id === "string").map((r) => ({ id: r.id, action: r.action, to: r.to || "", at: r.at })) } : ap; });
 }
 
