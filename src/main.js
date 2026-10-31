@@ -42,6 +42,8 @@ const {
   getLiveTranscriptBlocks,
   getSessionActivity,
   getLatestTranscriptMtimeMs,
+  getLatestActivityMs,
+  getSubagentActivityMs,
   getLatestTranscriptSizeBytes,
   getLastRealProgressMs,
   getHaltInfo,
@@ -3846,7 +3848,7 @@ const stuckEscalation = require("./stuckEscalation");
 const stuckQuestions = stuckEscalation.openQuestionsStore(path.join(AGENTS_ROOT, "shared_state", "open_questions"));
 const stuckEsc = stuckEscalation.create({
   log: (line) => logStuckWatchdog(line),
-  progressMs: (agentPath) => getLastRealProgressMs(sessionCwdFor(agentPath)),
+  progressMs: (agentPath) => { const own = getLastRealProgressMs(sessionCwdFor(agentPath)); const sub = getSubagentActivityMs(sessionCwdFor(agentPath)); return sub != null && (own == null || sub > own) ? sub : own; },
   handoffPath: (agentPath) => { const f = path.join(agentPath, "handoff_latest.md"); return fs.existsSync(f) ? f : null; },
   emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("stuck-state", snap); },
   notify: (title, body) => {
@@ -4053,7 +4055,8 @@ async function checkForStuckTurns() {
       continue;
     }
 
-    const mtimeMs = getLatestTranscriptMtimeMs(session.sessionCwd);
+    // v1.150.1: sub-agent transcripts count as activity (a parent waiting on its sub-agents writes nothing itself)
+    const mtimeMs = getLatestActivityMs(session.sessionCwd);
     if (mtimeMs == null) continue;
 
     if (!session.stuckWatch || session.stuckWatch.mtimeMs !== mtimeMs) {
