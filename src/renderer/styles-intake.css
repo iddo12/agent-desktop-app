@@ -44,3 +44,13 @@ body.dark .in-wait { color: #f5cf85; } body.dark .in-ok { color: #6fd49d; } body
 .in-toast { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); background: #26241f; color: #fff; padding: 8px 16px; border-radius: 8px; }
 .in-toast.hidden { display: none; }
 #intake-view button:focus-visible, #intake-view select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.in-held { cursor: default; gap: 10px; align-items: flex-start; border-color: #c98a00; }
+.in-held:hover { border-color: #c98a00; }
+.in-held input[type=checkbox] { margin-top: 4px; width: 18px; height: 18px; flex: none; }
+.in-held .in-row-t { flex: 1; }
+.in-held-bar { border: 2px solid #c98a00; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.in-confirm { border-top: 1px solid var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.in-warn { color: #8a5a00; } body.dark .in-warn { color: #f5cf85; }
+.in-notebox { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.in-note-ta { font: inherit; width: 100%; box-sizing: border-box; resize: vertical; background: transparent; color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.in-chip.hidden { display: none; }

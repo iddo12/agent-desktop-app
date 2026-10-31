@@ -10,7 +10,7 @@
   nav.type = "button";
   nav.className = "intake-nav";
   nav.dataset.systemNav = "intake";
-  nav.title = "Intake - notes, ideas, receipts and commands from your phone. Commands wait here for your approval.";
+  nav.title = "Intake - notes, ideas, receipts and commands from your phone. Commands and phone messages to agents wait here for your approval.";
   const name = document.createElement("span"); name.className = "intake-nav-name"; name.textContent = "Intake";
   const badge = document.createElement("span"); badge.className = "intake-nav-badge hidden"; badge.setAttribute("aria-live", "polite");
   nav.append(name, badge);
@@ -26,7 +26,8 @@
   window.intakeNavCount = setCount;
   function poll() {
     if (document.hidden) return;
-    window.api.intake.load().then((r) => { if (r && r.ok && r.counts) setCount(r.counts.pending); }).catch(() => {});
+    const held = window.api.intake.messages ? window.api.intake.messages().then((m) => (m && m.ok ? m.held || 0 : 0)).catch(() => 0) : Promise.resolve(0);
+    Promise.all([window.api.intake.load().catch(() => null), held]).then(([r, h]) => { if (r && r.ok && r.counts) setCount(r.counts.pending + h); });
   }
   poll();
   setInterval(poll, 60000);

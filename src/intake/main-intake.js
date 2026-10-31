@@ -6,18 +6,20 @@ const fs = require("fs");
 const path = require("path");
 const L = require("./intakeLogic");
 const MAX_ARG_CHARS = 6000;
+const MAX_DECIDE_CHARS = 600000;   // intake-message-decide: up to 200 ids and their notes
+const MAX_DECIDE_IDS = 200, MAX_NOTE_CHARS = 2000, MAX_HELD_ROWS = 200;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_NOTE_BYTES = 64 * 1024;
 
 function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agentPathFor, deliverToAgent, listAgentNames, sentLogPath, now }) {
   const say = typeof log === "function" ? log : () => {};
   const clock = now || (() => new Date().toISOString());
-  const handle = (channel, fn) => raw.handle(channel, async (event, arg) => {
+  const handle = (channel, fn, maxChars) => raw.handle(channel, async (event, arg) => {
     try {
       const w = typeof getMainWindow === "function" ? getMainWindow() : null;
       const wc = w && !(typeof w.isDestroyed === "function" && w.isDestroyed()) ? w.webContents : null;
       if (!wc || !event || event.sender !== wc || !event.senderFrame || event.senderFrame !== wc.mainFrame) { say(channel + " refused: not the main window"); return { ok: false, reason: "Not allowed." }; }
-      if (arg !== undefined && arg !== null) { if (typeof arg !== "object" || Array.isArray(arg)) return { ok: false, reason: "Bad request." }; if (JSON.stringify(arg).length > MAX_ARG_CHARS) return { ok: false, reason: "That request is too large." }; }
+      if (arg !== undefined && arg !== null) { if (typeof arg !== "object" || Array.isArray(arg)) return { ok: false, reason: "Bad request." }; if (JSON.stringify(arg).length > (maxChars || MAX_ARG_CHARS)) return { ok: false, reason: "That request is too large." }; }
     } catch (x) { return { ok: false, reason: "Not allowed." }; }
     try { return await fn(arg || {}); } catch (x) { say(channel + " failed: code=" + (x && x.code ? x.code : "unknown")); return { ok: false, reason: "That did not work." }; }
   });
@@ -175,13 +177,64 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     }
     return [...byId.values()];
   }
+  // HELD phone messages (Iddo 2026-10-31): the PC watcher keeps each new message in its own LOCAL folder and lists it in message_held_index.jsonl (status held / approved /
+  // rejected). Nothing reaches an agent until a line {id, action, at, note?} is appended to message_approvals.jsonl here. That file must be local: if the Intake folder is
+  // inside a synced folder anyone who can write it could approve (or read) messages, so AD refuses to decide and says why.
+  const SYNCED_RX = /dropbox|onedrive|google ?drive|icloud|syncthing|box sync/i;
+  const isSynced = () => SYNCED_RX.test(String(dir() || ""));
+  const msgApprovalsFile = () => path.join(dir(), "message_approvals.jsonl");
+  const ID_RX = /^[A-Za-z0-9_-]{1,80}$/;
+  const stripCtl = (t, keepNl) => String(t == null ? "" : t).replace(keepNl ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, keepNl ? "" : " ");
+  const heldState = () => {   // -> {held: Map id -> row (still held), queued: Map id -> action}
+    const held = new Map(), queued = new Map();
+    if (!dir()) return { held, queued };
+    const ix = readJsonl(path.join(dir(), "message_held_index.jsonl"));
+    if (!ix.ok) return { held, queued };
+    const byId = new Map();
+    for (const j of ix.events) { if (j && typeof j === "object" && typeof j.id === "string" && ID_RX.test(j.id)) byId.set(j.id, Object.assign(byId.get(j.id) || {}, j)); }
+    for (const [id, j] of byId) {
+      if (j.status !== "held" || typeof j.agent !== "string") continue;
+      held.set(id, { id, agent: stripCtl(j.agent).slice(0, 60), at: typeof j.at === "string" ? j.at.slice(0, 40) : "", status: "held", preview: stripCtl(j.preview).slice(0, MSG_PREVIEW),
+        text: stripCtl(j.text, true).slice(0, 4000), voice: !!j.voice, photos: Math.min(99, Number(j.photos) || 0), video: !!j.video });
+    }
+    const ap = readJsonl(msgApprovalsFile());
+    if (ap.ok) for (const r of ap.events) if (r && typeof r.id === "string" && held.has(r.id) && !queued.has(r.id) && (r.action === "approve" || r.action === "reject")) queued.set(r.id, r.action);
+    return { held, queued };
+  };
   handle("intake-messages", () => {
     const names = typeof listAgentNames === "function" ? listAgentNames() : [];
     let rows = [];
     for (const n of names) rows = rows.concat(readAgentMessages(n));
     rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
-    return { ok: true, rows: rows.slice(0, MSG_MAX_ROWS), total: rows.length, waiting: rows.filter((r) => r.status === "new").length };
+    const hs = heldState();
+    const heldRows = [...hs.held.values()].map((r) => Object.assign(r, hs.queued.has(r.id) ? { queued: hs.queued.get(r.id) } : {}))
+      .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, MAX_HELD_ROWS);
+    const delivered = rows.slice(0, MSG_MAX_ROWS);
+    return { ok: true, rows: heldRows.concat(delivered).sort((a, b) => String(b.at).localeCompare(String(a.at))), total: rows.length + hs.held.size, waiting: rows.filter((r) => r.status === "new").length,
+      held: heldRows.filter((r) => !r.queued).length, synced: isSynced() };
   });
+  // {ids:[...], action: approve|reject, notes?: {id: text}} -> per-id results. Only ids that are held right now and not already decided; one line per id; notes only on approve.
+  handle("intake-message-decide", (a) => {
+    if (!dir()) return { ok: false, reason: "The Intake folder is not set. Open Setup and fill in intakeDir." };
+    if (isSynced()) return { ok: false, reason: "The Intake folder is inside a synced folder (Dropbox, OneDrive or similar), so approving here would not be safe. Move it to a local, unsynced folder in Setup (intakeDir)." };
+    if (a.action !== "approve" && a.action !== "reject") return { ok: false, reason: "Bad request." };
+    if (!Array.isArray(a.ids) || !a.ids.length || a.ids.length > MAX_DECIDE_IDS) return { ok: false, reason: "Choose between 1 and " + MAX_DECIDE_IDS + " messages." };
+    const notes = a.notes && typeof a.notes === "object" && !Array.isArray(a.notes) ? a.notes : {};
+    const hs = heldState();
+    const seen = new Set(), results = [];
+    for (const id of a.ids) {
+      if (typeof id !== "string" || !ID_RX.test(id)) { results.push({ id: String(id).slice(0, 20), ok: false, reason: "Bad id." }); continue; }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (!hs.held.has(id)) { results.push({ id, ok: false, reason: "Not waiting (already handled or gone)." }); continue; }
+      if (hs.queued.has(id)) { results.push({ id, ok: false, reason: "Already decided; the PC is processing it." }); continue; }
+      const rec = { id, action: a.action, at: clock() };
+      const note = a.action === "approve" && typeof notes[id] === "string" ? stripCtl(notes[id], true).trim().slice(0, MAX_NOTE_CHARS) : "";
+      if (note) rec.note = note;
+      try { appendLine(msgApprovalsFile(), rec); results.push({ id, ok: true, note: !!note }); } catch (e) { results.push({ id, ok: false, reason: "Could not record the decision." }); }
+    }
+    return { ok: true, action: a.action, results, done: results.filter((r) => r.ok).length };
+  }, MAX_DECIDE_CHARS);
   handle("intake-audit", () => { const ap = localApprovals ? readJsonl(localApprovals) : readJsonl(approvalsFile()); return ap.ok ? { ok: true, records: ap.events.slice(-100).filter((r) => r && typeof r.id === "string").map((r) => ({ id: r.id, action: r.action, to: r.to || "", at: r.at })) } : ap; });
 }
 

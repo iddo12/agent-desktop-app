@@ -309,6 +309,7 @@ contextBridge.exposeInMainWorld("api", {
     decide: (id, action, agent, hash) => ipcRenderer.invoke("intake-decide", { id, action, agent, hash }),
     audit: () => ipcRenderer.invoke("intake-audit"),
     messages: () => ipcRenderer.invoke("intake-messages"),
+    decideMessages: (ids, action, notes) => ipcRenderer.invoke("intake-message-decide", { ids, action, notes }),
   },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),
