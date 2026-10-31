@@ -16,7 +16,7 @@
   view.append(head, tabsHost, body, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false };
+  const S = { data: null, msgs: null, tab: "all", pendingOnly: false, openId: null, sealedOpen: {}, busy: false, err: "", sel: {}, notes: {}, confirmAll: false, thumbs: {} };
   let open = false, navEl = null, toastTimer = null;
   const say = (t) => { toast.textContent = t; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 6000); };
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }); };
@@ -102,12 +102,22 @@
     if (S.busy || !ids.length) return;
     S.busy = true;
     const notes = {}; for (const id of ids) if (action === "approve" && S.notes[id] && S.notes[id].trim()) notes[id] = S.notes[id];
-    api.decideMessages(ids, action, notes).then((d) => {
+    const CHUNK = 200, chunks = []; for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+    let done = 0, bad = 0, failure = "";
+    const next = () => {
+      if (!chunks.length) return Promise.resolve();
+      const part = chunks.shift(), pn = {}; for (const id of part) if (notes[id]) pn[id] = notes[id];
+      return api.decideMessages(part, action, pn).then((d) => {
+        if (!d || !d.ok) { failure = (d && d.reason) || "That did not work."; chunks.length = 0; return; }
+        bad += d.results.filter((x) => !x.ok).length; done += d.done;
+        for (const x of d.results) if (x.ok) { delete S.sel[x.id]; delete S.notes[x.id]; }
+        return next();
+      });
+    };
+    next().then(() => {
       S.busy = false; S.confirmAll = false;
-      if (!d || !d.ok) { say((d && d.reason) || "That did not work."); render(); return; }
-      const bad = d.results.filter((x) => !x.ok).length;
-      for (const x of d.results) if (x.ok) { delete S.sel[x.id]; delete S.notes[x.id]; }
-      say((action === "approve" ? "Approved " : "Rejected ") + d.done + (d.done === 1 ? " message" : " messages") + (action === "approve" ? (d.done === 1 ? ". The PC delivers it within a minute." : ". The PC delivers them within a minute.") : ".") + (bad ? " " + bad + " could not be changed." : ""));
+      if (failure && !done) { say(failure); render(); return; }
+      say((action === "approve" ? "Approved " : "Rejected ") + done + (done === 1 ? " message" : " messages") + (action === "approve" ? (done === 1 ? ". The PC delivers it within a minute." : ". The PC delivers them within a minute.") : ".") + (bad || failure ? " " + (bad || "Some") + " could not be changed." : ""));
       refresh();
     }).catch(() => { S.busy = false; say("That did not work."); render(); });
   }
@@ -134,28 +144,51 @@
     }
     return bar;
   }
+  const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
   function heldRow(r) {
     const row = el("div", "in-row in-held");
     const t = el("div", "in-row-t");
     const meta = el("div", "in-row-m");
-    const chip = el("span", "in-chip in-wait"); chip.append(el("span", "in-chip-i", "⏸"), document.createTextNode(r.queued ? (r.queued === "approve" ? " Approved, being delivered" : " Rejected, being removed") : " Waiting for your approval"));
+    const failed = r.queued === "approve" && r.deliveryFailed;
+    const chip = el("span", "in-chip in-wait"); chip.append(el("span", "in-chip-i", "⏸"), document.createTextNode(failed ? " Approved, delivery failed - will retry" : r.queued ? (r.queued === "approve" ? " Approved, being delivered" : " Rejected, being removed") : " Waiting for your approval"));
     meta.append(chip, el("span", "", ["Message to " + r.agent, when(r.at), "NOT delivered yet"].filter(Boolean).join(" · ")));
+    if (r.hidden) meta.append(el("span", "in-chip in-wait", "⚠ contained hidden characters (removed)"));
     t.append(meta, el("div", "in-text", r.text || (r.voice ? "(no text, only a voice message)" : "(no text)")));
-    const att = [r.voice ? "voice message, transcribed after approval" : "", r.photos ? r.photos + (r.photos === 1 ? " photo" : " photos") : "", r.video ? "1 video" : ""].filter(Boolean);
-    if (att.length) t.append(el("div", "in-row-m", "Attached: " + att.join(", ")));
-    if (!r.queued && !(S.msgs && S.msgs.synced)) {
-      const lab = el("label", "in-lab in-notebox", "Add a note for the agent (optional, sent with Approve)");
-      const ta = el("textarea", "in-note-ta"); ta.rows = 2; ta.maxLength = 2000; ta.value = S.notes[r.id] || ""; ta.setAttribute("aria-label", "Note for the agent");
-      const tag = el("span", "in-chip in-new" + (ta.value.trim() ? "" : " hidden"), "note added");
-      ta.addEventListener("input", () => { S.notes[r.id] = ta.value; tag.classList.toggle("hidden", !ta.value.trim()); });
-      lab.append(ta); t.append(tag, lab);
+    if (r.voice) {
+      const v = el("div", "in-voice");
+      if (r.transcriptState === "ready") v.append(el("b", "", "Voice message, transcribed on the PC:"), el("div", "in-text", r.transcript || "(silent or empty)"));
+      else if (r.transcriptState === "failed") v.append(el("b", "", "Voice message: transcription failed."), el("div", "in-note in-warn", "The audio is delivered unreviewed if you approve."));
+      else v.append(el("b", "", "Voice message: transcribing…"), el("div", "in-note in-warn", "You can approve now, but you would be approving a voice note you have not read."));
+      t.append(v);
+    }
+    if (r.photos) {
+      const strip = el("div", "in-thumbs"); strip.append(el("span", "in-note", r.photos + (r.photos === 1 ? " photo" : " photos") + (r.thumbs ? "" : " (no preview)")));
+      t.append(strip);
+      if (r.thumbs) {
+        const fill = (list) => { for (const u of list) { const im = el("img", "in-thumb"); im.src = u; im.alt = "photo preview"; strip.append(im); } };
+        if (S.thumbs[r.id]) fill(S.thumbs[r.id]);
+        else if (api.messageThumbs) api.messageThumbs(r.id).then((x) => { if (x && x.ok) { S.thumbs[r.id] = x.thumbs; if (open && strip.isConnected) fill(x.thumbs); } }).catch(() => {});
+      }
+    }
+    if (r.video) t.append(el("div", "in-row-m", "Video: " + (r.videoName || "video") + ", " + fmtBytes(r.videoBytes || 0) + ". Delivered unreviewed (no preview)."));
+    if (!(S.msgs && S.msgs.synced) && (!r.queued || failed)) {
+      if (!r.queued) {
+        const lab = el("label", "in-lab in-notebox", "Add a note for the agent (optional, sent with Approve)");
+        const ta = el("textarea", "in-note-ta"); ta.rows = 2; ta.maxLength = 2000; ta.value = S.notes[r.id] || ""; ta.setAttribute("aria-label", "Note for the agent");
+        const tag = el("span", "in-chip in-new" + (ta.value.trim() ? "" : " hidden"), "note added");
+        ta.addEventListener("input", () => { S.notes[r.id] = ta.value; tag.classList.toggle("hidden", !ta.value.trim()); });
+        lab.append(ta); t.append(tag, lab);
+      }
       const act = el("div", "in-actions");
       const ok = el("button", "in-btn in-go", "✓ Approve"), no = el("button", "in-btn", "✕ Reject"); ok.type = no.type = "button"; ok.disabled = no.disabled = S.busy;
       ok.addEventListener("click", () => decideMessages([r.id], "approve")); no.addEventListener("click", () => decideMessages([r.id], "reject"));
-      act.append(ok, no); t.append(act);
-      const cb = el("input"); cb.type = "checkbox"; cb.checked = !!S.sel[r.id]; cb.setAttribute("aria-label", "Select this message");
-      cb.addEventListener("change", () => { S.sel[r.id] = cb.checked; render(); });
-      row.append(cb);
+      if (!r.queued) act.append(ok);
+      act.append(no); t.append(act);
+      if (!r.queued) {
+        const cb = el("input"); cb.type = "checkbox"; cb.checked = !!S.sel[r.id]; cb.setAttribute("aria-label", "Select this message");
+        cb.addEventListener("change", () => { S.sel[r.id] = cb.checked; render(); });
+        row.append(cb);
+      }
     }
     row.append(t);
     return row;
@@ -213,6 +246,15 @@
     }).catch(() => { txt.textContent = "Could not open."; });
   }
 
+  let pollT = null;
+  function schedulePoll() {
+    clearInterval(pollT);
+    pollT = setInterval(() => {
+      if (!open || !api.messages || !S.msgs || !S.msgs.rows.some((m) => m.status === "held" && m.transcriptState === "pending")) return;
+      const a = document.activeElement; if (a && a.tagName === "TEXTAREA") return;
+      api.messages().then((m) => { if (open && m && m.ok) { S.msgs = m; render(); } }).catch(() => {});
+    }, 10000);
+  }
   const onKey = (e) => { if (e.key === "Escape" && open) { if (S.openId) { S.openId = null; render(); } else close(); e.preventDefault(); } };
   function openView() {
     if (open) return;
@@ -220,14 +262,14 @@
     open = true; document.body.classList.add("intake-open"); view.classList.remove("hidden");
     if (navEl) navEl.classList.add("active");
     document.addEventListener("keydown", onKey);
-    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; render(); refresh();
+    S.data = null; S.msgs = null; S.openId = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.thumbs = {}; render(); refresh(); schedulePoll();
   }
   function close() {
     if (!open) return;
-    open = false; document.removeEventListener("keydown", onKey);
+    open = false; clearInterval(pollT); document.removeEventListener("keydown", onKey);
     document.body.classList.remove("intake-open"); view.classList.add("hidden");
     if (navEl) navEl.classList.remove("active");
-    clearTimeout(toastTimer); S.data = null; S.msgs = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false;
+    clearTimeout(toastTimer); S.data = null; S.msgs = null; S.sealedOpen = {}; S.sel = {}; S.notes = {}; S.confirmAll = false; S.thumbs = {};
     head.textContent = ""; tabsHost.textContent = ""; body.textContent = ""; toast.textContent = ""; toast.classList.add("hidden");   // nothing stays in the page
   }
   window.intakeView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

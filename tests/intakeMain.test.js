@@ -138,6 +138,48 @@ require("../src/intake/main-intake").init({
   assert.strictEqual((await h["intake-load"](ev, {})).ok, true);
   // other channels keep the small argument cap
   assert.strictEqual((await h["intake-decide"](ev, { id: "x", action: "approve", pad: "p".repeat(7000) })).reason, "That request is too large.");
+  // review round 2: hidden characters, voice transcripts, thumbnails, no row cut, failed delivery then reject, latest line wins
+  const HID = "20261031-160000_111111", VOI = "20261031-160001_222222", PIC = "20261031-160002_333333", FAIL = "20261031-160003_444444";
+  const heldDirOf = (agent, id) => path.join(dir, "message_held", agent, id);
+  for (const [id, ag] of [[VOI, "coo"], [PIC, "security"]]) fs.mkdirSync(heldDirOf(ag, id), { recursive: true });
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100, 1)]);
+  fs.writeFileSync(path.join(heldDirOf("security", PIC), "thumb1.jpg"), jpg);
+  fs.writeFileSync(path.join(heldDirOf("security", PIC), "thumb2.jpg"), Buffer.from("not a jpeg"));
+  fs.writeFileSync(path.join(heldDirOf("security", PIC), "thumb3.jpg"), Buffer.concat([jpg, Buffer.alloc(200 * 1024)]));   // over the size cap
+  fs.appendFileSync(heldFile, [
+    { id: HID, agent: "coo", at: "2026-10-31T16:00:00+02:00", status: "held", text: "hi" + String.fromCodePoint(0x200b) + " there" + String.fromCodePoint(0x202e) + String.fromCodePoint(0xe0041), hidden: false },
+    { id: VOI, agent: "coo", at: "2026-10-31T16:00:01+02:00", status: "held", text: "", voice: true },
+    { id: PIC, agent: "security", at: "2026-10-31T16:00:02+02:00", status: "held", text: "pics", photos: 3, thumbs: 3 },
+    { id: FAIL, agent: "coo", at: "2026-10-31T16:00:03+02:00", status: "held", text: "f" },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  let m2 = await h["intake-messages"](ev);
+  const rowOf = (id) => m2.rows.find((r) => r.id === id);
+  assert.deepStrictEqual([rowOf(HID).text, rowOf(HID).hidden], ["hi there", true]);          // zero-width, bidi override, tag char removed and flagged
+  assert.strictEqual(rowOf(PIC).hidden, false);
+  assert.strictEqual(rowOf(VOI).transcriptState, "pending");
+  fs.writeFileSync(path.join(heldDirOf("coo", VOI), "transcript.failed"), "X");
+  assert.strictEqual((await h["intake-messages"](ev)).rows.find((r) => r.id === VOI).transcriptState, "failed");
+  fs.writeFileSync(path.join(heldDirOf("coo", VOI), "transcript.txt"), "buy " + String.fromCodePoint(0x200d) + "milk");
+  m2 = await h["intake-messages"](ev);
+  assert.deepStrictEqual([rowOf(VOI).transcriptState, rowOf(VOI).transcript], ["ready", "buy milk"]);
+  const th = await h["intake-message-thumbs"](ev, { id: PIC });
+  assert.ok(th.ok && th.thumbs.length === 1 && th.thumbs[0].startsWith("data:image/jpeg;base64,"));   // bad signature and oversize files skipped
+  assert.strictEqual((await h["intake-message-thumbs"](ev, { id: "../x" })).ok, false);
+  assert.strictEqual((await h["intake-message-thumbs"](ev, { id: "20261031-170000_999999" })).ok, false);   // not held
+  assert.deepStrictEqual(await h["intake-message-thumbs"]({ sender: {}, senderFrame: {} }, { id: PIC }), { ok: false, reason: "Not allowed." });
+  // failed delivery: approve, the watcher records delivery_failed (no status), a Reject may follow; the latest line counts
+  assert.strictEqual((await h["intake-message-decide"](ev, { ids: [FAIL], action: "approve" })).done, 1);
+  assert.strictEqual((await h["intake-message-decide"](ev, { ids: [FAIL], action: "reject" })).done, 0);   // not failed yet: refused
+  fs.appendFileSync(heldFile, JSON.stringify({ id: FAIL, agent: "coo", delivery_failed: "2026-10-31T16:01:00+02:00" }) + "\n");
+  m2 = await h["intake-messages"](ev);
+  assert.deepStrictEqual([rowOf(FAIL).queued, rowOf(FAIL).deliveryFailed], ["approve", true]);
+  assert.strictEqual((await h["intake-message-decide"](ev, { ids: [FAIL], action: "approve" })).done, 0);   // approving again adds nothing
+  assert.strictEqual((await h["intake-message-decide"](ev, { ids: [FAIL], action: "reject" })).done, 1);
+  assert.strictEqual((await h["intake-messages"](ev)).rows.find((r) => r.id === FAIL).queued, "reject");
+  // no silent cut: 450 held rows are all listed
+  fs.appendFileSync(heldFile, Array.from({ length: 450 }, (_, i) => JSON.stringify({ id: "20261101-" + String(i).padStart(6, "0") + "_aaaaaa", agent: "coo", at: "2026-11-01T10:00:00+02:00", status: "held", text: "x" })).join("\n") + "\n");
+  const big = await h["intake-messages"](ev);
+  assert.ok(big.held >= 450 && big.rows.filter((r) => r.status === "held").length >= 450);
   console.log("intakeMain.test.js: all passed");
   fs.rmSync(dir, { recursive: true, force: true }); try { fs.unlinkSync(path.join(dir, "..", "intake-sent-" + process.pid + ".jsonl")); } catch (e) { /* none */ }
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -153,6 +195,11 @@ require("../src/intake/main-intake").init({
   const d = await hh["intake-message-decide"](ev2, { ids: ["20261031-100000_aaaaaa"], action: "approve" });
   assert.ok(!d.ok && /synced/.test(d.reason));
   assert.strictEqual(fs.existsSync(path.join(sdir, "message_approvals.jsonl")), false);
+  // a sync marker file in a parent folder counts too, whatever the folder is called
+  const mdir = fs.mkdtempSync(path.join(os.tmpdir(), "intake-marker-")); fs.writeFileSync(path.join(mdir, ".dropbox"), "");
+  const h3 = {}, wc3 = { mainFrame: {} }, ev3 = { sender: wc3, senderFrame: wc3.mainFrame };
+  require("../src/intake/main-intake").init({ ipcMain: { handle: (c, f) => { h3[c] = f; } }, getMainWindow: () => ({ webContents: wc3, isDestroyed: () => false }), cfg: (k) => (k === "intakeDir" ? path.join(mdir, "plain") : null), listAgentNames: () => [], agentPathFor: () => null });
+  assert.strictEqual((await h3["intake-messages"](ev3)).synced, true);
   console.log("intakeMain.test.js: synced-folder refusal passed");
 })().catch((e) => { console.error(e); process.exit(1); });
 

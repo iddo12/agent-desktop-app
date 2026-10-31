@@ -54,3 +54,6 @@ body.dark .in-wait { color: #f5cf85; } body.dark .in-ok { color: #6fd49d; } body
 .in-notebox { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .in-note-ta { font: inherit; width: 100%; box-sizing: border-box; resize: vertical; background: transparent; color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
 .in-chip.hidden { display: none; }
+.in-voice { display: flex; flex-direction: column; gap: 4px; }
+.in-thumbs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.in-thumb { height: 72px; width: auto; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }

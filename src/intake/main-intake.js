@@ -7,7 +7,7 @@ const path = require("path");
 const L = require("./intakeLogic");
 const MAX_ARG_CHARS = 6000;
 const MAX_DECIDE_CHARS = 600000;   // intake-message-decide: up to 200 ids and their notes
-const MAX_DECIDE_IDS = 200, MAX_NOTE_CHARS = 2000, MAX_HELD_ROWS = 200;
+const MAX_DECIDE_IDS = 200, MAX_NOTE_CHARS = 2000, MAX_THUMB_BYTES = 150 * 1024, MAX_THUMBS = 8, MAX_TRANSCRIPT = 8000;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_NOTE_BYTES = 64 * 1024;
 
@@ -73,7 +73,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     const s = state(); if (!s.ok) return s;
     const sum = L.summarize(s.items, s.approvals);
     const rows = sum.rows.map((r) => ({ id: r.id, kind: r.kind, sub: r.sub, status: r.status, tab: r.tab, created: r.created, verified: r.verified, sealed: r.sealed, held: r.held, suggestedAgent: r.suggestedAgent, title: r.title }));
-    return { ok: true, counts: sum.counts, rows, empty: !!s.empty, defaultAgent: opts().defaultAgent, requireVerified: opts().requireVerified, synced: /dropbox|onedrive|google ?drive|icloud|syncthing|box sync/i.test(String(dir() || "")) };
+    return { ok: true, counts: sum.counts, rows, empty: !!s.empty, defaultAgent: opts().defaultAgent, requireVerified: opts().requireVerified, synced: isSynced() };
   });
   // one item opened: the held note text, read from inside the Intake folder only
   handle("intake-item", (a) => {
@@ -180,11 +180,24 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
   // HELD phone messages (Iddo 2026-10-31): the PC watcher keeps each new message in its own LOCAL folder and lists it in message_held_index.jsonl (status held / approved /
   // rejected). Nothing reaches an agent until a line {id, action, at, note?} is appended to message_approvals.jsonl here. That file must be local: if the Intake folder is
   // inside a synced folder anyone who can write it could approve (or read) messages, so AD refuses to decide and says why.
-  const SYNCED_RX = /dropbox|onedrive|google ?drive|icloud|syncthing|box sync/i;
-  const isSynced = () => SYNCED_RX.test(String(dir() || ""));
+  // "Synced" = the folder or its real location has a sync-product name in its path, or any parent holds a sync marker file (.dropbox, Syncthing's .stfolder ...).
+  const SYNCED_RX = /dropbox|onedrive|google ?drive|icloud|syncthing|box sync/i, SYNC_MARKERS = [".dropbox", ".dropbox.cache", ".stfolder", ".sync"];
+  function isSynced() {
+    const d = String(dir() || ""); if (!d) return false;
+    let real = d; try { real = fs.realpathSync(d); } catch (e) { /* not created yet: judge the given path */ }
+    for (const c of new Set([path.resolve(d), real])) {
+      if (SYNCED_RX.test(c)) return true;
+      for (let cur = c, prev = ""; cur !== prev; prev = cur, cur = path.dirname(cur)) for (const m of SYNC_MARKERS) { try { if (fs.existsSync(path.join(cur, m))) return true; } catch (e) { /* unreadable parent */ } }
+    }
+    return false;
+  }
   const msgApprovalsFile = () => path.join(dir(), "message_approvals.jsonl");
   const ID_RX = /^[A-Za-z0-9_-]{1,80}$/;
-  const stripCtl = (t, keepNl) => String(t == null ? "" : t).replace(keepNl ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, keepNl ? "" : " ");
+  // control characters and every Unicode format character (zero-width, bidi, tag block): invisible text must not reach the person who approves
+  const stripCtl = (t, keepNl) => String(t == null ? "" : t).replace(keepNl ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\p{Cf}]/gu : /[\u0000-\u001f\u007f\p{Cf}]/gu, keepNl ? "" : " ");
+  const readSmall = (file, max) => { try { if (fs.lstatSync(file).isSymbolicLink()) return null; const st = fs.statSync(file); if (!st.isFile() || st.size > max) return null; return fs.readFileSync(file); } catch (e) { return null; } };
+  const AGENT_ID_RX = /^[a-z0-9][a-z0-9-]{0,39}$/;
+  const heldDir = (agent, id) => (AGENT_ID_RX.test(String(agent)) && ID_RX.test(String(id)) ? path.join(dir(), "message_held", agent, id) : null);
   const heldState = () => {   // -> {held: Map id -> row (still held), queued: Map id -> action}
     const held = new Map(), queued = new Map();
     if (!dir()) return { held, queued };
@@ -194,11 +207,20 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     for (const j of ix.events) { if (j && typeof j === "object" && typeof j.id === "string" && ID_RX.test(j.id)) byId.set(j.id, Object.assign(byId.get(j.id) || {}, j)); }
     for (const [id, j] of byId) {
       if (j.status !== "held" || typeof j.agent !== "string") continue;
-      held.set(id, { id, agent: stripCtl(j.agent).slice(0, 60), at: typeof j.at === "string" ? j.at.slice(0, 40) : "", status: "held", preview: stripCtl(j.preview).slice(0, MSG_PREVIEW),
-        text: stripCtl(j.text, true).slice(0, 4000), voice: !!j.voice, photos: Math.min(99, Number(j.photos) || 0), video: !!j.video });
+      const rawText = String(j.text == null ? "" : j.text), text = stripCtl(rawText, true).slice(0, 4000);
+      const row = { id, agent: stripCtl(j.agent).slice(0, 60), at: typeof j.at === "string" ? j.at.slice(0, 40) : "", status: "held", preview: stripCtl(j.preview).slice(0, MSG_PREVIEW),
+        text, hidden: !!j.hidden || text !== rawText.slice(0, 4000).replace(/\r/g, ""), voice: !!j.voice, photos: Math.min(99, Number(j.photos) || 0), thumbs: Math.min(MAX_THUMBS, Number(j.thumbs) || 0), video: !!j.video,
+        videoName: j.video ? stripCtl(j.video_name).slice(0, 40) : "", videoBytes: j.video ? Math.max(0, Number(j.video_bytes) || 0) : 0, deliveryFailed: !!j.delivery_failed };
+      if (row.voice) {   // transcript made by the watcher at hold time: transcript.txt, or transcript.failed, or still pending
+        const hd = heldDir(j.agent, id);
+        const tb = hd ? readSmall(path.join(hd, "transcript.txt"), MAX_TRANSCRIPT) : null;
+        if (tb) { row.transcript = stripCtl(tb.toString("utf8"), true).slice(0, 4000); row.transcriptState = "ready"; }
+        else row.transcriptState = hd && fs.existsSync(path.join(hd, "transcript.failed")) ? "failed" : "pending";
+      }
+      held.set(id, row);
     }
     const ap = readJsonl(msgApprovalsFile());
-    if (ap.ok) for (const r of ap.events) if (r && typeof r.id === "string" && held.has(r.id) && !queued.has(r.id) && (r.action === "approve" || r.action === "reject")) queued.set(r.id, r.action);
+    if (ap.ok) for (const r of ap.events) if (r && typeof r.id === "string" && held.has(r.id) && (r.action === "approve" || r.action === "reject")) queued.set(r.id, r.action);   // the latest line counts, as in the watcher
     return { held, queued };
   };
   handle("intake-messages", () => {
@@ -208,7 +230,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
     const hs = heldState();
     const heldRows = [...hs.held.values()].map((r) => Object.assign(r, hs.queued.has(r.id) ? { queued: hs.queued.get(r.id) } : {}))
-      .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, MAX_HELD_ROWS);
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)));   // ALL held rows, no cut
     const delivered = rows.slice(0, MSG_MAX_ROWS);
     return { ok: true, rows: heldRows.concat(delivered).sort((a, b) => String(b.at).localeCompare(String(a.at))), total: rows.length + hs.held.size, waiting: rows.filter((r) => r.status === "new").length,
       held: heldRows.filter((r) => !r.queued).length, synced: isSynced() };
@@ -227,7 +249,9 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
       if (seen.has(id)) continue;
       seen.add(id);
       if (!hs.held.has(id)) { results.push({ id, ok: false, reason: "Not waiting (already handled or gone)." }); continue; }
-      if (hs.queued.has(id)) { results.push({ id, ok: false, reason: "Already decided; the PC is processing it." }); continue; }
+      const q = hs.queued.get(id), hr = hs.held.get(id);
+      // a decision is waiting for the PC: only a Reject may follow an approval whose delivery failed
+      if (q && !(q === "approve" && hr.deliveryFailed && a.action === "reject")) { results.push({ id, ok: false, reason: "Already decided; the PC is processing it." }); continue; }
       const rec = { id, action: a.action, at: clock() };
       const note = a.action === "approve" && typeof notes[id] === "string" ? stripCtl(notes[id], true).trim().slice(0, MAX_NOTE_CHARS) : "";
       if (note) rec.note = note;
@@ -235,6 +259,18 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
     }
     return { ok: true, action: a.action, results, done: results.filter((r) => r.ok).length };
   }, MAX_DECIDE_CHARS);
+  // small preview pictures of ONE held message, made by the watcher (thumbN.jpg); only for an id that is held now; data URLs, each <= 150 KB, JPEG signature checked
+  handle("intake-message-thumbs", (a) => {
+    if (typeof a.id !== "string" || !ID_RX.test(a.id)) return { ok: false, reason: "Bad request." };
+    const row = heldState().held.get(a.id); if (!row) return { ok: false, reason: "Not waiting." };
+    const hd = heldDir(row.agent, a.id); if (!hd) return { ok: false, reason: "Bad request." };
+    const thumbs = [];
+    for (let i = 1; i <= Math.min(row.thumbs || row.photos, MAX_THUMBS); i++) {
+      const b = readSmall(path.join(hd, "thumb" + i + ".jpg"), MAX_THUMB_BYTES);
+      if (b && b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) thumbs.push("data:image/jpeg;base64," + b.toString("base64"));
+    }
+    return { ok: true, thumbs };
+  });
   handle("intake-audit", () => { const ap = localApprovals ? readJsonl(localApprovals) : readJsonl(approvalsFile()); return ap.ok ? { ok: true, records: ap.events.slice(-100).filter((r) => r && typeof r.id === "string").map((r) => ({ id: r.id, action: r.action, to: r.to || "", at: r.at })) } : ap; });
 }
 
