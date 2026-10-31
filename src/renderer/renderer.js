@@ -2065,6 +2065,7 @@ function renderChatBlocks(blocks, pendingSent, opts = {}) {
   if (reusing) { for (let k = reuseIdx; k < prevItems.length; k++) for (const e of prevItems[k].els) e.remove(); }
   renderChatBlocks.items = keptItems;
   renderChatBlocks.itemsAgent = activeAgentPath;
+  try { if (window.AnswerOnce) window.AnswerOnce.scan(scrollEl); } catch (e) { /* v1.152.0 inline ask buttons are optional */ }
   if (opts.keepFromBottom) {
     scrollEl.scrollTop = scrollEl.scrollHeight - opts.keepFromBottom; // "Show earlier": the message being read stays put
   } else if (opts.forceBottom || wasNearBottom) {
