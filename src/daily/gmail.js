@@ -99,6 +99,31 @@ function classifyThread(thread, me, now) {
   return Object.assign(base, { kind: "needAnswer", from: clean(fromRaw, 160), at: t, unread: labels.includes("UNREAD"), important: labels.includes("IMPORTANT") || labels.includes("STARRED") });
 }
 
+// Same walk, with the alt text of each picture: [{src, alt}] (at most 40, same filters). Product names live in alt; the Shipments service
+// pairs a picture with an item only for a known shop image host (shipments-email.js), after the DMARC gate.
+function htmlImageAlts(payload, depth, out) {
+  out = out || [];
+  if (!payload || (depth || 0) > 6 || out.length >= 40) return out;
+  if (String(payload.mimeType) === "text/html" && payload.body && payload.body.data) {
+    let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
+    t = t.slice(0, 300000);
+    const re = /<img\b[^<>]{0,1500}>/gi;
+    let m;
+    while ((m = re.exec(t)) && out.length < 40) {
+      const tag = m[0];
+      const sm = /\bsrc\s*=\s*["'](https:\/\/[^"'\s<>]{4,400})["']/i.exec(tag);
+      if (!sm) continue;
+      const w = /\bwidth\s*=\s*["']?(\d+)/i.exec(tag);
+      if (w && +w[1] < 60) continue;
+      const am = /\balt\s*=\s*(?:"([^"]{0,300})"|'([^']{0,300})')/i.exec(tag);
+      const alt = clean(String(am ? (am[1] != null ? am[1] : am[2]) : "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, " "), 120);
+      const src = sm[1].replace(/&amp;/g, "&");
+      if (!out.some((x) => x.src === src)) out.push({ src, alt });
+    }
+  }
+  for (const p of payload.parts || []) htmlImageAlts(p, (depth || 0) + 1, out);
+  return out;
+}
 function create({ dataDir, safeStorage, openExternal, client, log, request: req, exportFile }) {
   const say = typeof log === "function" ? log : () => {};
   const call = req || request;
@@ -270,7 +295,7 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
         const mails = [];
         for (const m of msgs) {
           if (!m) continue;
-          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), verified: senderVerified(m), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
+          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), imageAlts: htmlImageAlts(m.payload), verified: senderVerified(m), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID")) });   // no header: "" so the extractor derives the same hash key for the Betterbird copy
         }
         shipCache.set(a.email, { at: Date.now(), mails });
         out.push(...mails);
@@ -323,4 +348,4 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
   };
 }
 
-module.exports = { create, classifyThread, SCOPE, senderVerified };
+module.exports = { create, classifyThread, SCOPE, senderVerified, htmlImageAlts };

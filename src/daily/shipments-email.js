@@ -3,6 +3,7 @@
 // headers/body). Sender domains and subject patterns are from research/tracking_sources.md section 3 and are [K] there:
 // validate them against the real mailbox. Nothing here leaves the machine.
 "use strict";
+const crypto = require("crypto");
 const M = require("./shipments-model");
 
 const DAY = 86400000;
@@ -257,6 +258,64 @@ function pairImages(items, urls) {
   return items.map((it, i) => (pick[i] ? Object.assign({}, it, { src: pick[i] }) : it));
 }
 
+// ---------------------------------------------------------------- pictures by alt text (2026-10-31)
+// Count-based pairing almost never matched (logos, recommendation rows). Instead: an <img> counts only when its host is a known product
+// image host of THIS sender's shop and its alt text reads like a product name; the alt is matched to an item by name, or becomes the name.
+// The fetch itself stays behind the DMARC gate in extractShipments and the existing guarded download (nothing new is fetched here).
+const SHOP_IMAGE_HOSTS = {
+  "amazon": [[/(^|\.)media-amazon\.com$/, /^\/images\/I\//]],
+  "aliexpress": [[/(^|\.)alicdn\.com$/, /^\/kf\//], [/(^|\.)aliexpress-media\.com$/, /^\/kf\//]],
+  "iherb": [[/(^|\.)images-iherb\.com$/, /^\/(?!logo)/]],
+  "bhphotovideo": [[/(^|\.)bhphotovideo\.com$/, /^\/images\//]],
+};
+const shopKey = (merchant) => ({ Amazon: "amazon", AliExpress: "aliexpress", iHerb: "iherb", "B&H": "bhphotovideo" })[merchant] || "";
+const BRAND_ALT = /^(?:amazon(?:\.com)?|aliexpress|iherb|b&h(?: photo)?|logo|image|picture|photo|product|banner|icon)\.?$/i;
+function altCandidates(imgs, merchant) {
+  const rules = SHOP_IMAGE_HOSTS[shopKey(merchant)];
+  if (!rules) return [];
+  const out = [];
+  for (const im of Array.isArray(imgs) ? imgs : []) {
+    if (!im || typeof im.src !== "string") continue;
+    let u; try { u = new URL(im.src); } catch (e) { continue; }
+    if (u.protocol !== "https:" || u.username || u.password || im.src.length > 400) continue;
+    if (!rules.some(([h, p]) => h.test(u.hostname) && p.test(u.pathname))) continue;
+    const alt = M.clean(im.alt, 120);
+    if (alt.length < 3 || BRAND_ALT.test(alt) || /\b(logo|banner|spacer|pixel|icon|badge)\b/i.test(alt)) continue;
+    if (out.some((x) => x.src === im.src)) continue;
+    out.push({ src: im.src, alt });
+  }
+  return out;
+}
+const nameKey = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9֐-׿]+/g, " ").trim();
+function altMatches(itemName, alt) {
+  const a = nameKey(itemName), b = nameKey(alt);
+  if (!a || !b) return false;
+  if (a === b || b.includes(a) || a.includes(b)) return true;
+  const ta = a.split(" ").filter((w) => w.length > 2), tb = new Set(b.split(" "));
+  return ta.length >= 2 && ta.filter((w) => tb.has(w)).length / ta.length >= 0.6;
+}
+// -> items with `src` where an alt matched; when the text gave no real names, the (first `count`) alt texts become the items.
+function pairByAlt(items, imgs, merchant, count) {
+  const cands = altCandidates(imgs, merchant);
+  if (!cands.length) return items;
+  const used = new Set();
+  const out = items.map((it) => {
+    const c = cands.find((x) => !used.has(x.src) && altMatches(it.name, x.alt));
+    if (!c) return it;
+    used.add(c.src);
+    return Object.assign({}, it, { src: c.src });
+  });
+  if (out.some((x) => x.src) || (out.length && !out.every((x) => x.cat))) return out;
+  // no usable names from the text: the alt texts are the product names (all categories or none). A known count caps the list; otherwise at most 6.
+  const take = cands.slice(0, count > 0 ? Math.min(count, 12) : 6);
+  return take.map((c) => ({ name: M.clean(c.alt, 100), qty: 1, src: c.src }));
+}
+// Stable key for a mail with no Message-ID, equal for the Gmail and the Betterbird copy: sender address + subject + date to the minute.
+function mailKey(mail, at) {
+  const addr = domainOf(mail.from) + "|" + String(mail.subject || "").toLowerCase().replace(/\s+/g, " ").trim() + "|" + Math.floor(at / 60000);
+  return "h:" + crypto.createHash("sha1").update(addr).digest("hex").slice(0, 24);
+}
+
 // ---------------------------------------------------------------- main entry
 // -> array of candidates for M.mergeCandidate (usually 0 or 1; several numbers in one mail are the SAME parcel unless the
 // subject says otherwise), each { numbers:[{no,carrier}], carrier, orderId, merchant, from, to, eta, state, pickupBy,
@@ -285,7 +344,8 @@ function extractShipments(mail, now) {
   const got = extractItems(body, subject);
   // pictures are fetched only for mail from a known shop (not a carrier, not an unknown sender) AND whose sender passed DKIM or SPF (Gmail's Authentication-Results)
   const cand = {
-    items: (sInfo && !sInfo.isCarrier && mail.verified && mail.verified === domainOf(mail.from)) ? pairImages(got.items, mail.images) : got.items, itemCount: got.count,
+    items: !(sInfo && !sInfo.isCarrier && mail.verified && mail.verified === domainOf(mail.from)) ? got.items
+      : (Array.isArray(mail.imageAlts) ? pairByAlt(got.items, mail.imageAlts, sInfo.merchant, got.count) : pairImages(got.items, mail.images)), itemCount: got.count,
     numbers: nums.map((n) => ({ no: n.no, carrier: n.carrier })),
     carrier: nums.length ? nums[nums.length - 1].carrier : (hint || "other"),
     orderId, merchant, from, to: extractTo(text), eta, etaText,
@@ -293,7 +353,7 @@ function extractShipments(mail, now) {
     pickupBy: extractPickupBy(text, at),
     amountDue: (state === "action_pay" || /duty|customs|VAT|payment/i.test(subject)) ? extractAmount(text + " " + subject) : "",
     title: from && sInfo && sInfo.isCarrier ? "From " + from.split(",")[0] : "",
-    msgId: M.clean(mail.messageId, 200) || "", at, source: "email",
+    msgId: M.clean(mail.messageId, 200) || mailKey(mail, at), at, source: "email",
     confidence: nums.length ? nums[0].confidence : "none",
   };
   if (sInfo && sInfo.isCarrier && from) cand.merchant = from.split(",")[0].trim();   // a parcel notice from FedEx: the shipper is the merchant
@@ -321,4 +381,4 @@ function parseAddInput(raw) {
   return { ok: true, numbers: nums.map((n) => ({ no: n.no, carrier: n.carrier })), carrier: nums[nums.length - 1].carrier, title: M.clean(title, 80) };
 }
 
-module.exports = { extractItems, pairImages, looksLikeShipment, extractShipments, extractNumbers, parseDateText, parseAddInput, senderInfo, domainOf, SENDERS };
+module.exports = { extractItems, pairImages, pairByAlt, mailKey, looksLikeShipment, extractShipments, extractNumbers, parseDateText, parseAddInput, senderInfo, domainOf, SENDERS };

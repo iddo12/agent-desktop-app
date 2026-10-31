@@ -20,7 +20,8 @@ const PROMPT = (file, orderHint) =>
   '{"orderId":"","merchant":"","parcels":[{"carrier":"","trackingNumber":"","items":[{"name":"","box":[0,0,0,0]}],"eta":""}]}\n' +
   "Rules: one entry in parcels per separate package/shipment shown. trackingNumber is the CARRIER's tracking id exactly as printed " +
   "(letters and digits, no spaces); leave it empty if the page does not show one. NEVER put an order number (like 113-6007992-3663405 or a 16-digit AliExpress order id) in trackingNumber. " +
-  "carrier is one of: " + CARRIER_IDS + " (use \"other\" if unsure). items are the products in that package (max 6): name = the short product name (under 60 characters); " +
+  "carrier is one of: " + CARRIER_IDS + " (use \"other\" if unsure). \"amazon\" is NOT a carrier unless the tracking id starts with TBA followed by 12 digits; " +
+  "when the page says shipped with Amazon but shows another kind of id (for example 10 digits), name the real carrier if the page does (Aramex, Israel Post ...) or use \"other\". items are the products in that package (max 6): name = the short product name (under 60 characters); " +
   "box = where that product's PICTURE is in this screenshot, as fractions of the image width and height from 0 to 1 in the order [left, top, right, bottom], tight around the picture only (not the text beside it); " +
   "use null for box if the item has no picture shown. " +
   "eta is the delivery date text shown, or empty. If a field is not visible, leave it empty. Do not guess." +
@@ -96,9 +97,11 @@ function applyReading(items, reading, t, hintOrderId) {
       else out.summary.push("A parcel without a tracking number was skipped" + (title ? " (" + title + ")" : "") + ".");
       continue;
     }
-    const d = M.detectCarrier(p.no, p.carrier);
-    const carrier = p.carrier && p.carrier !== "other" ? p.carrier : d.carrier;
-    const num = { no: p.no, carrier, carrierSet: !!(p.carrier && p.carrier !== "other"), at: t };
+    // 2026-10-31: "amazon" is a carrier only for TBA numbers; for any other id the reader's word is dropped and 17TRACK detects the carrier
+    const said = p.carrier === "amazon" && !M.isAmazonNumber(p.no) ? "" : p.carrier;
+    const d = M.detectCarrier(p.no, said);
+    const carrier = said && said !== "other" ? said : d.carrier;
+    const num = { no: p.no, carrier, carrierSet: !!(said && said !== "other"), at: t };
     let card = sameOrder.find((x) => M.needsNumber(x));
     if (card) {
       card.numbers.push(num); card.carrier = carrier;

@@ -118,7 +118,7 @@ t("migration (service): backs up shipments.json first, writes once, flag set, se
   assert.strictEqual(baks.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(dir, baks[0]), "utf8"), before, "backup is the untouched original");
   const saved = raw(file);
-  assert.strictEqual(saved.migrated, 4);
+  assert.strictEqual(saved.migrated, 5);
   assert.deepStrictEqual(v.items.find((x) => x.id === "a1").numbers, []);
   assert.strictEqual(v.items.find((x) => x.id === "a1").needsNumber, true);
   await svc.load({});
@@ -132,7 +132,7 @@ t("migration (service): a failed backup writes nothing and is retried", async ()
   try { await svc._loadStore(); } finally { fs.copyFileSync = orig; }
   assert.strictEqual(fs.readFileSync(file, "utf8"), before);
   await svc.load({});
-  assert.strictEqual(raw(file).migrated, 4);
+  assert.strictEqual(raw(file).migrated, 5);
 });
 t("a later mail with the real number for the same order fills the empty parcel (matched by order id)", () => {
   const list = [M.makeShipment({ id: "p", merchant: "AliExpress", orderId: "1123450589717403", numbers: [], state: "shipped", msgIds: ["<ali1>"] }, NOW)];

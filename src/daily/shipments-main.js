@@ -11,30 +11,46 @@ const V = require("./shipments-vision");
 const SCAN_MIN_MS = 10 * 60000;
 const MAX_MAILS = 400;
 
+// One entry per mail: the same Message-ID arrives from Gmail (full body, picture urls) and from the Betterbird feed (a 400-character
+// snippet). Keep the richer copy (a body beats a snippet, more picture urls beat fewer) in the position of its first appearance.
+// Mails without an id are kept as they are (extractShipments gives them a hash key).
+function dedupeMails(mails) {
+  const richness = (m) => (m.body ? String(m.body).length : 0) * 4 + (Array.isArray(m.imageAlts) ? m.imageAlts.length : 0) * 100 + (Array.isArray(m.images) ? m.images.length : 0) * 50 + (m.snippet ? String(m.snippet).length : 0);
+  const out = [], at = new Map();
+  for (const m of Array.isArray(mails) ? mails : []) {
+    if (!m || typeof m !== "object") continue;
+    const id = m.messageId ? String(m.messageId) : "";
+    if (!id) { out.push(m); continue; }
+    if (!at.has(id)) { at.set(id, out.length); out.push(m); }
+    else if (richness(m) > richness(out[at.get(id)])) out[at.get(id)] = m;
+  }
+  return out;
+}
+
 function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker, getMails, readScreenshot, makeThumb, cropPicture, now, say, notices, testMode }) {
   const clock = typeof now === "function" ? now : () => Date.now();
   const log = typeof say === "function" ? say : () => {};
   let timer = null;
   let scanning = null;
 
-  const MIGRATION = 4;   // 4: duplicate cards made from one mail are merged (dedupeByMail);  2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
+  const MIGRATION = 5;   // 5 (2026-10-31): NUMBER_FIXES re-applied (the old PH-twin rule had kept the wrong plain number) + the duplicate check;  // 4: duplicate cards made from one mail are merged (dedupeByMail);  2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
   // 3 (2026-10-27): Amazon shop mails carry link ids that were taken for a carrier number (2367361581 -> an old Milan parcel).
   // Drop a number from an Amazon email card when its format is only a weak guess and the owner never chose its carrier; the
   // tracking events that came from it go with it. Returns the number of cards changed.
   // Review fix (SE 2026-10-27): a number that ever produced tracking events is "proven" and is never touched, and history is never
   // wiped on a guess. Only numbers PROVEN to be junk by the owner (KNOWN_JUNK, seen by eye: an Oct 6 Milan parcel on a Nov order) lose
   // their events; any other weak guess is dropped only from a card that has no events at all.
-  const KNOWN_JUNK = new Set(["2367361581"]);
+  // 2026-10-31: the KNOWN_JUNK number is gone from every migration path: it turned out to be a REAL Aramex number of that order's second
+  // parcel, so no rerun may delete it (or its events) from any card.
   function junkAmazon(items, t) {
     let n = 0;
     for (const s of items) {
       if (!s || s.merchant !== "Amazon" || s.source !== "email" || !s.numbers.length) continue;
       const hasHistory = (Array.isArray(s.events) && s.events.length) || !!s.lastEvent;
-      const bad = s.numbers.filter((x) => !x.carrierSet && (KNOWN_JUNK.has(x.no) || (!hasHistory && (x.carrier === "other" || (M.CARRIER_BY_ID[x.carrier] && M.CARRIER_BY_ID[x.carrier].weak)))));
+      const bad = s.numbers.filter((x) => !x.carrierSet && (!hasHistory && (x.carrier === "other" || (M.CARRIER_BY_ID[x.carrier] && M.CARRIER_BY_ID[x.carrier].weak))));
       if (!bad.length) continue;
       s.numbers = s.numbers.filter((x) => !bad.includes(x));
       if (!s.numbers.length) {
-        if (bad.some((x) => KNOWN_JUNK.has(x.no))) { s.events = []; s.lastEvent = null; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.eta = s.eta && Date.parse(s.eta) > t ? s.eta : null; }
         s.carrier = "other"; s.polledAt = null;
       }
       s.updated = t; n++;
@@ -60,11 +76,8 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     for (const s of items) {
       if (gone.has(s)) continue;
       const before = s.numbers.length;
-      s.numbers = s.numbers.filter((x) => !(s.orderId && M.normNumber(s.orderId) === x.no) && !(/^PH\d+$/i.test(x.no) && s.numbers.some((y) => y.no === x.no.slice(2))));
-      if (s.merchant === "Amazon" && s.numbers.some((x) => KNOWN_JUNK.has(x.no))) {
-        s.numbers = s.numbers.filter((x) => !KNOWN_JUNK.has(x.no));
-        if (!s.numbers.length) { s.events = []; s.lastEvent = null; if (s.state === "delivered" || s.state === "in_transit") s.state = "shipped"; s.carrier = "other"; s.polledAt = null; }
-      }
+      // the owner's corrected form wins: a plain number that NUMBER_FIXES maps to a PH form is dropped when the PH form is present (2026-10-31: was inverted)
+      s.numbers = s.numbers.filter((x) => !(s.orderId && M.normNumber(s.orderId) === x.no) && !(M.NUMBER_FIXES[x.no] && s.numbers.some((y) => y.no === M.NUMBER_FIXES[x.no])));
       if (s.numbers.length !== before) { s.updated = t; n++; }
     }
     for (let i = items.length - 1; i >= 0; i--) if (gone.has(items[i])) items.splice(i, 1);
@@ -84,6 +97,9 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       const r = st.migrated < 2 ? M.migrateWrongNumbers(st.items, clock()) : { changed: false, moved: [], fixed: [] };
       const junk = st.migrated < 3 ? junkAmazon(st.items, clock()) : 0;
       const dd = st.migrated < 4 ? dedupeByMail(st.items, clock()) : 0;
+      // 5: the owner-confirmed number fixes again (idempotent; proven numbers are never touched) for stores migrated by the inverted PH rule
+      const r5 = st.migrated >= 2 && st.migrated < 5 ? M.migrateWrongNumbers(st.items, clock()) : { changed: false, moved: [], fixed: [] };
+      if (r5.changed) { r.changed = true; r.moved = (r.moved || []).concat(r5.moved); r.fixed = (r.fixed || []).concat(r5.fixed); }
       if (dd) { r.changed = true; log("shipments: merged " + dd + " duplicate card(s) made from the same mail"); }
       if (junk || dd) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; }
       if (r.changed) {
@@ -96,7 +112,17 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       if (r.changed) save(st);   // an unchanged store is not rewritten here (the flag is saved with the next normal save)
     } catch (e) { log("shipments migration failed (will retry): " + M.clean(e && e.message, 120)); }
   }
+  // Every save: open cards never share a tracking number or a mail id. Cards that do are merged, one log line, the file backed up first.
+  function stamp() { const d = new Date(clock()), z = (n) => String(n).padStart(2, "0"); return d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "_" + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()); }
   function save(st) {
+    const probe = st.items.slice();
+    const inv = M.enforceInvariant(probe, clock());
+    if (inv.merged) {
+      // backup BEFORE anything changes on disk; when the backup fails nothing is merged and the save is the old, untouched list
+      let ok = true;
+      try { if (fs.existsSync(file)) fs.copyFileSync(file, file + ".bak_" + stamp() + "_before_dedupe"); } catch (e) { ok = false; log("shipments: duplicate check skipped, backup failed: " + M.clean(e && e.message, 100)); }
+      if (ok) { st.items.length = 0; st.items.push(...probe); log("shipments: merged " + inv.merged + " duplicate card(s) (shared tracking number or mail id)"); }
+    }
     M.sweep(st.items, clock());
     writeJsonAtomic(file, { version: 1, items: st.items, scannedAt: st.scannedAt, polledAt: st.polledAt, lastError: st.lastError || "", migrated: st.migrated || 0 });
   }
@@ -116,7 +142,8 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         try {
           const f = await makeThumb(it.src, "ship-" + String(s.id).replace(/[^\w-]/g, "") + "-" + i);
           if (f && /^[\w-]+\.png$/.test(f)) { it.thumb = f; n++; }
-        } catch (e) { log("shipments picture failed: " + M.clean(e && e.message, 100)); }
+          else it.tried = (it.tried || 0) + 1;
+        } catch (e) { it.tried = (it.tried || 0) + 1; log("shipments picture failed: " + M.clean(e && e.message, 100)); }
         delete it.src;
       }
     }
@@ -131,7 +158,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       let changed = 0;
       try {
         const mails = typeof getMails === "function" ? await getMails(clock()) : [];
-        for (const mail of (mails || []).slice(0, MAX_MAILS)) {
+        for (const mail of dedupeMails(mails).slice(0, MAX_MAILS)) {
           for (const cand of E.extractShipments(mail, clock())) {
             const r = M.mergeCandidate(st.items, cand, clock());
             if (r.created || r.changed) changed++;
@@ -178,7 +205,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
     const items = st.items.map((s) => Object.assign({}, s, {
       effective: M.effectiveState(s, t, sd), stuck: M.isStuck(s, t, sd), action: M.actionText(s, t, sd),
       carrierName: M.carrierName(s.carrier),
-      numbers: s.numbers.map((n) => ({ no: n.no, carrier: n.carrier, carrierName: M.carrierName(n.carrier), url: M.trackUrl(n.carrier, n.no), reason: n.reason || "", reasonText: n.reasonText || "", reasonAt: n.reasonAt || null })),
+      numbers: s.numbers.map((n) => ({ no: n.no, carrier: n.carrier, carrierName: n.carrier === "other" && n.carrierLabel ? n.carrierLabel : M.carrierName(n.carrier), url: M.trackUrl(n.carrier, n.no), reason: n.reason || "", reasonText: n.reasonText || "", reasonAt: n.reasonAt || null })),
       needsNumber: M.needsNumber(s),
       orderAt: (s.history && s.history[0] && s.history[0].at) || s.added || null,
       reason: lastReason(s),
@@ -302,6 +329,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
         const auto = args.carrier === "auto" || args.carrier === "other" || !args.carrier;
         if (!auto && !M.CARRIER_BY_ID[args.carrier]) return { ok: false, reason: "Unknown carrier." };
         const c = auto ? "other" : args.carrier;
+        if (c === "amazon" && s.numbers.some((n) => !M.isAmazonNumber(n.no))) return { ok: false, reason: "Amazon is a carrier only for numbers that start with TBA. This number belongs to a carrier such as Aramex or Israel Post: choose that one, or Auto-detect." };
         s.carrier = c;
         // the carrier is now the owner's choice: remember it, forget the old verdict, and ask 17TRACK to move the number to it
         for (const n of s.numbers) { n.carrier = c; n.carrierSet = !auto; n.recarrier = true; delete n.reason; delete n.reasonText; delete n.reasonAt; }
@@ -383,4 +411,4 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   return { load, refreshNow, op, setKey, syncTimer, stop, runTimed, _loadStore: loadStore, hasTimer: () => !!timer };
 }
 
-module.exports = { createService };
+module.exports = { createService, dedupeMails };

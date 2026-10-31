@@ -115,7 +115,7 @@ t("op screenshot: pictures are cropped through the injected cropPicture and stor
   assert.ok(!card.items[1].thumb);
 });
 
-t("migration 3: the junk 10-digit number on an Amazon email card is dropped with its events; a chosen carrier is kept; backup made", async () => {
+t("migration 3: a 10-digit number with history on an Amazon email card is kept with its events; a chosen carrier is kept", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-mig-"));
   const file = path.join(dir, "shipments.json");
   const junk = mk({ numbers: [{ no: "2367361581", carrier: "dhl", carrierSet: false }], state: "delivered", events: [{ at: NOW - 9e8, text: "final status", place: "MILAN" }], lastEvent: { at: NOW - 9e8, text: "final status", place: "MILAN" } });
@@ -124,10 +124,10 @@ t("migration 3: the junk 10-digit number on an Amazon email card is dropped with
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], now: () => NOW, notices: [], say: () => {}, testMode: true });
   const v = await svc.load({});
   const items = JSON.parse(fs.readFileSync(file, "utf8")).items;
-  assert.strictEqual(items.find((x) => x.orderId === ORDER).numbers.length, 0);
-  assert.strictEqual(items.find((x) => x.orderId === ORDER).events.length, 0);
+  // 2026-10-31: the number once treated as KNOWN_JUNK is real (history proves it): neither it nor its events are deleted any more
+  assert.strictEqual(items.find((x) => x.orderId === ORDER).numbers.length, 1);
+  assert.strictEqual(items.find((x) => x.orderId === ORDER).events.length, 1);
   assert.strictEqual(items.find((x) => x.orderId === "113-1111111-2222222").numbers.length, 1);
-  assert.ok(fs.readdirSync(dir).some((n) => /before_numberfix/.test(n)), "backup file");
   assert.ok(v.ok);
 });
 

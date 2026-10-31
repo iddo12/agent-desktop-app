@@ -35,7 +35,7 @@ const CARRIERS = [
   { id: "fedex", name: "FedEx", re: [/^\d{12}$/, /^\d{15}$/, /^\d{20}$/, /^\d{22}$/], url: "https://www.fedex.com/fedextrack/?trknbr={n}", t17: 100003, weak: true },
   // carriers with no number format: chosen from the sender / link host, or by the user
   { id: "aramex", name: "Aramex", re: [], url: "https://www.aramex.com/track/results?ShipmentNumber={n}", t17: 100004 },
-  { id: "exelot", name: "Exelot", re: [], url: "", t17: 100032 },
+  { id: "exelot", name: "Exelot", re: [/^XLT\d{9}$/], url: "", t17: 100032 },   // XLT + 9 digits: Exelot format (third-party sources; Exelot publishes none)
   { id: "gaash", name: "GAASH", re: [], url: "", t17: 100145 },
   { id: "orian", name: "ORIAN", re: [], url: "", t17: 100791 },
   { id: "cheetah", name: "Cheetah", re: [], url: "https://chitadelivery.co.il/", t17: 101219 },
@@ -45,6 +45,16 @@ const CARRIERS = [
 const CARRIER_BY_ID = Object.fromEntries(CARRIERS.map((c) => [c.id, c]));
 const carrierName = (id) => (CARRIER_BY_ID[id] || CARRIER_BY_ID.other).name;
 
+// Amazon Logistics numbers are TBA + 12 digits; any other number is a carrier's (Aramex, Israel Post ...), whatever the page says
+const AMAZON_TBA = /^TB[ACM]\d{12}$/;
+const isAmazonNumber = (v) => AMAZON_TBA.test(String(v == null ? "" : v).replace(/[\s\-.]/g, "").toUpperCase());
+// 17TRACK carrier code -> app carrier id ("" when the app does not know that carrier)
+function carrierFromT17(code) {
+  const n = Number(code);
+  const c = Number.isFinite(n) && n > 0 ? CARRIERS.find((x) => x.t17 === n) : null;
+  return c ? c.id : "";
+}
+
 const normNumber = (v) => String(v == null ? "" : v).replace(/[\s\-.]/g, "").toUpperCase().slice(0, 40);
 
 // -> { carrier, confidence: "high"|"low"|"none" }. `hint` is a carrier id from the sender or a link host: it settles the
@@ -52,6 +62,7 @@ const normNumber = (v) => String(v == null ? "" : v).replace(/[\s\-.]/g, "").toU
 function detectCarrier(number, hint) {
   const n = normNumber(number);
   if (!n) return { carrier: "other", confidence: "none" };
+  if (hint === "amazon" && !isAmazonNumber(n)) hint = "";   // "amazon" is a carrier only for TBA numbers
   const matches = CARRIERS.filter((c) => c.re.some((r) => r.test(n)));
   const strong = matches.find((c) => !c.weak);
   if (strong) return { carrier: strong.id, confidence: "high" };
@@ -131,7 +142,7 @@ function trackUrl(carrier, number) {
 // ---------------------------------------------------------------- text -> state
 // Case-insensitive substring/regex rules, checked in this order (research section 4). Hebrew terms are suggestions to validate.
 const RULES = [
-  ["in_transit", /\b(released from customs|cleared (?:through |by )?customs|customs clearance (?:completed|processed|cleared)|clearance (?:completed|cleared))\b/i],
+  ["in_transit", /(\b(?:released from customs|cleared (?:through |by )?customs|customs clearance (?:completed|processed|cleared)|clearance (?:completed|cleared))\b|שוחרר מהמכס|שוחררה מהמכס)/i],
   ["action_pay", /(customs (?:fee|duty|charge|payment)|import (?:duty|tax|fee)|\bduties?\b.*\b(?:due|pay|owed)|\bVAT\b.*\b(?:due|pay)|payment (?:is )?(?:required|due)|awaiting payment|pay(?:ment)? (?:to release|before delivery)|release fee|brokerage|ממתין לתשלום|תשלום מכס|דמי שחרור|מע"?מ|לתשלום)/i],
   ["action_pickup", /(ready (?:for|to be) (?:pick ?-?up|collect)|available for (?:pick ?-?up|collection)|awaiting (?:pick ?-?up|collection)|pick-?up point|collection point|parcel locker|\blocker\b|notice left|arrived at (?:the )?post office|held at (?:the )?post office|waiting (?:for you )?at|הגיע לסניף|מוכנה? לאיסוף|נקודת איסוף|לוקר|ממתין לאיסוף|ממתינה לאיסוף)/i],
   ["exception_stuck", /(exception|\blost\b|damaged|returned to sender|return to sender|\bunclaimed\b|\brefused\b|forbidden to import|invalid address|address (?:problem|issue)|\bheld\b|clearance delay|\bdelays?\b|\bdelayed\b|undeliverable|not delivered|undelivered|delivery (?:attempt )?(?:failed|unsuccessful)|unable to deliver|הוחזר לשולח|חריגה|נעצר|עיכוב)/i],
@@ -169,6 +180,8 @@ function stateFromTrack17(status, subStatus, text) {
     case "InfoReceived": return "shipped";
     case "InTransit":
       if (byText === "action_pay" || byText === "action_pickup") return byText;
+      // 17TRACK sub-statuses: InTransit_CustomsProcessing / _CustomsRequiringInformation (still at customs), _CustomsReleased (through it)
+      if (/customs.?released/i.test(sub)) return "in_transit";
       if (/customs/i.test(sub)) return "customs";
       return byText === "customs" ? "customs" : "in_transit";
     case "NotFound": default: return null;
@@ -192,6 +205,7 @@ function cleanItems(v) {
     const it = { name, qty: Math.min(99, cleanCount(x.qty) || 1) };
     if (x.cat) it.cat = true;   // a category ("Shoes"), not a product name
     if (typeof x.src === "string" && /^https:\/\/[^\s]{4,400}$/i.test(x.src)) it.src = x.src;
+    if (x.tried) it.tried = Math.min(2, cleanCount(x.tried));   // failed picture fetches so far (one retry, then give up)
     if (typeof x.thumb === "string" && /^[\w-]+\.png$/.test(x.thumb)) it.thumb = x.thumb;
     out.push(it);
   }
@@ -213,7 +227,7 @@ function makeShipment(input, now) {
   const s = {
     id: clean(inp.id, 40) || newId(t),
     numbers: nums,
-    carrier: (inp.carrier && CARRIER_BY_ID[inp.carrier]) ? inp.carrier : (nums[0] ? nums[0].carrier : "other"),
+    carrier: (inp.carrier && CARRIER_BY_ID[inp.carrier] && !(inp.carrier === "amazon" && nums.length && !nums.some((n) => n.carrier === "amazon"))) ? inp.carrier : (nums[0] ? nums[0].carrier : "other"),
     orderId: clean(inp.orderId, 40),
     merchant: clean(inp.merchant, 60),
     title: clean(inp.title, 120),
@@ -240,6 +254,8 @@ function makeShipment(input, now) {
   if (Array.isArray(inp.events)) s.events = inp.events.map(cleanEvent).filter(Boolean).slice(0, MAX_EVENTS);
   if (Array.isArray(inp.history)) s.history = inp.history.filter((h) => h && STATES.includes(h.state)).map((h) => ({ at: atMs(h.at) || t, state: h.state, why: clean(h.why, 60) })).slice(-60);
   if (!s.history.length) s.history.push({ at: s.stateAt, state: s.state, why: s.source });
+  // the card's carrier is its newest number's carrier: a card saved as "other" whose number is now known (XLT..., a 17TRACK answer) follows it
+  if (s.carrier === "other" && nums.length && nums[nums.length - 1].carrier !== "other") s.carrier = nums[nums.length - 1].carrier;
   return s;
 }
 // A tracking number record: { no, carrier, reason?, reasonText?, reasonAt?, recarrier?, carrierSet?, at? }.
@@ -248,11 +264,16 @@ const REASONS = ["waiting", "not_found", "invalid", "rejected", "quota", "key_re
 function cleanNumber(x, no, carrier) {
   const o = { no, carrier };
   if (x && typeof x === "object") {
+    if (typeof x.carrierLabel === "string" && x.carrierLabel) o.carrierLabel = clean(x.carrierLabel, 40);
     if (REASONS.includes(x.reason)) { o.reason = x.reason; o.reasonText = clean(x.reasonText, 200); o.reasonAt = atMs(x.reasonAt); }
     if (x.recarrier) o.recarrier = true;
     if (x.carrierSet) o.carrierSet = true;
     if (atMs(x.at)) o.at = atMs(x.at);
   }
+  // a stored "other" on a number whose format names its carrier outright (XLT... = Exelot) is healed too, unless the owner chose it
+  if (o.carrier === "other" && !o.carrierSet) { const d = detectCarrier(no, ""); if (d.confidence === "high") o.carrier = d.carrier; }
+  // "amazon" on a number that is not TBA+12 digits is a mistake (older screenshot readings): heal it, 17TRACK finds the real carrier
+  if (o.carrier === "amazon" && !isAmazonNumber(no)) { o.carrier = detectCarrier(no, "").carrier; delete o.carrierSet; }
   return o;
 }
 function cleanEvent(e) {
@@ -364,18 +385,24 @@ function findMatch(list, cand) {
   return null;
 }
 
+// A mail that is read again (Gmail full copy after a Betterbird snippet, or a parser improvement) may bring picture urls for items the
+// card already has: queue them (item.src) unless the item has a picture or two fetches already failed. Returns true when something was queued.
+function queuePictures(s, cands) {
+  let any = false;
+  for (const c of cands) {
+    if (!c.src) continue;
+    const it = (s.items || []).find((x) => x.name.toLowerCase() === c.name.toLowerCase());
+    if (!it || it.thumb || it.src || (it.tried || 0) >= 2) continue;
+    it.src = c.src; any = true;
+  }
+  return any;
+}
+
 // Merge one candidate into the list. -> { shipment, created, changed }. Candidate `at` (mail date) orders the evidence.
 function mergeCandidate(list, cand, now) {
   const at = atMs(cand.at) || now;
   const cmsg = cand.msgId ? [cand.msgId] : (cand.msgIds || []);
   let s = findMatch(list, cand);
-  if (s && cmsg.length && cmsg.every((m) => s.msgIds.includes(m))) {   // same mail twice - except a one-time backfill of contents for a card that predates them
-    if (cand.items && cand.items.length && !(s.items || []).length && cand.state && cand.state !== "ordered") {
-      s.items = cleanItems(cand.items); s.itemCount = cleanCount(cand.itemCount) || s.items.reduce((a, x) => a + x.qty, 0); s.updated = now;
-      return { shipment: s, created: false, changed: true };
-    }
-    return { shipment: s, created: false, changed: false };
-  }
   if (!s) {
     s = makeShipment(Object.assign({}, cand, { state: cand.state || "ordered", stateAt: at, lastChangeAt: at, source: cand.source || "email", msgIds: cmsg, added: now, updated: now }), now);
     if ((cand.state === "ordered" || !cand.state) && cleanCount(cand.itemCount)) s.orderCount = cleanCount(cand.itemCount);
@@ -395,8 +422,12 @@ function mergeCandidate(list, cand, now) {
   for (const k of ["orderId", "merchant", "title", "from", "to", "amountDue"]) { if (cand[k] && !s[k]) { s[k] = clean(cand[k], 120); changed = true; } }
   // contents: an "ordered" mail gives the order size, a shipped/transit mail gives what is in THIS parcel (and replaces category-only guesses)
   if (cand.state === "ordered" || !cand.state) { const c = cleanCount(cand.itemCount); if (c && c !== s.orderCount) { s.orderCount = c; changed = true; } }
-  else if (cand.items && cand.items.length && !(s.items || []).some((x) => x.thumb) && JSON.stringify((s.items || []).map((x) => [x.name, x.qty])) !== JSON.stringify(cleanItems(cand.items).map((x) => [x.name, x.qty]))) {
-    s.items = cleanItems(cand.items); s.itemCount = cleanCount(cand.itemCount) || s.items.reduce((a, x) => a + x.qty, 0); changed = true;
+  else if (cand.items && cand.items.length) {
+    const ci = cleanItems(cand.items);
+    if (!(s.items || []).some((x) => x.thumb) && JSON.stringify((s.items || []).map((x) => [x.name, x.qty])) !== JSON.stringify(ci.map((x) => [x.name, x.qty]))) {
+      s.items = ci; s.itemCount = cleanCount(cand.itemCount) || s.items.reduce((a, x) => a + x.qty, 0); changed = true;
+    }
+    if (queuePictures(s, ci)) changed = true;
   }
   if (cand.eta) { const e = isoOrNull(cand.eta); if (e && (!s.eta || at >= s.stateAt)) { if (s.eta !== e) { s.eta = e; changed = true; } } }
   if (cand.pickupBy) { const e = isoOrNull(cand.pickupBy); if (e && e !== s.pickupBy) { s.pickupBy = e; changed = true; } }
@@ -408,18 +439,80 @@ function mergeCandidate(list, cand, now) {
   return { shipment: s, created: false, changed };
 }
 
-// Merge two existing shipments that turned out to be the same parcel (user action or number discovery). Keeps `a`.
+// Merge two existing shipments that turned out to be the same parcel (user action, number discovery, duplicate check). Keeps `a`.
+// Numbers (with the owner's carrier choice and the tracker's verdict), events, items (pictures win), the split flag, counts and history
+// all survive; the card carrier is recomputed from the numbers afterwards.
 function mergeShipments(a, b, now) {
-  for (const x of b.numbers) if (!a.numbers.some((y) => y.no === x.no)) a.numbers.push(x);
-  for (const k of ["orderId", "merchant", "title", "from", "to", "amountDue", "note"]) if (!a[k] && b[k]) a[k] = b[k];
+  for (const x of b.numbers) {
+    const mine = a.numbers.find((y) => y.no === x.no);
+    if (!mine) { a.numbers.push(x); continue; }
+    if (x.carrierSet && !mine.carrierSet) { mine.carrier = x.carrier; mine.carrierSet = true; }
+    else if (mine.carrier === "other" && x.carrier && x.carrier !== "other") mine.carrier = x.carrier;
+    if (!mine.reason && x.reason) { mine.reason = x.reason; mine.reasonText = x.reasonText; mine.reasonAt = x.reasonAt; }
+    if (!mine.carrierLabel && x.carrierLabel) mine.carrierLabel = x.carrierLabel;
+  }
+  a.numbers = a.numbers.slice(-6);
+  if (a.numbers.length) a.carrier = a.numbers[a.numbers.length - 1].carrier;
+  else if (a.carrier === "other" && b.carrier) a.carrier = b.carrier;
+  for (const k of ["orderId", "merchant", "title", "from", "to", "amountDue", "note", "etaText", "pickupBy"]) if (!a[k] && b[k]) a[k] = b[k];
   if (!a.eta && b.eta) a.eta = b.eta;
   a.msgIds = Array.from(new Set(a.msgIds.concat(b.msgIds))).slice(-20);
   if ((b.stateAt || 0) > (a.stateAt || 0)) { a.state = b.state; a.stateAt = b.stateAt; }
-  if (b.lastEvent && (!a.lastEvent || (b.lastEvent.at || 0) > (a.lastEvent.at || 0))) a.lastEvent = b.lastEvent;
+  if (b.archived && !a.archived && b.state === "delivered" && a.state === "delivered") archiveShipment(a, now, "delivered");
+  // events: union by time|text, newest first
+  const seen = new Set(), evs = [];
+  for (const e of (a.events || []).concat(b.events || [])) { const k = (e.at || 0) + "|" + e.text; if (seen.has(k)) continue; seen.add(k); evs.push(e); }
+  evs.sort((x, y) => (y.at || 0) - (x.at || 0));
+  a.events = evs.slice(0, MAX_EVENTS);
+  const newest = [a.lastEvent, b.lastEvent, a.events[0]].filter(Boolean).sort((x, y) => (y.at || 0) - (x.at || 0))[0];
+  if (newest) a.lastEvent = newest;
+  // items: keep a's, add b's that a lacks by name, a picture beats no picture
+  const items = (a.items || []).slice();
+  for (const it of b.items || []) {
+    const mine = items.find((x) => x.name.toLowerCase() === it.name.toLowerCase());
+    if (!mine) { if (items.length < 12) items.push(it); }
+    else if (!mine.thumb && it.thumb) { mine.thumb = it.thumb; delete mine.src; }
+    else if (!mine.thumb && !mine.src && it.src) mine.src = it.src;
+  }
+  a.items = items;
+  a.itemCount = Math.max(a.itemCount || 0, b.itemCount || 0);
+  a.orderCount = Math.max(a.orderCount || 0, b.orderCount || 0);
+  a.split = !!(a.split || b.split);
+  a.review = !!(a.review || b.review);
+  if ((b.polledAt || 0) > (a.polledAt || 0)) { a.polledAt = b.polledAt; a.polledOk = b.polledOk; }
   a.lastChangeAt = Math.max(a.lastChangeAt || 0, b.lastChangeAt || 0);
   a.history = a.history.concat(b.history).sort((x, y) => x.at - y.at).slice(-60);
   a.updated = now;
   return a;
+}
+
+// The invariant, checked on every save: two OPEN cards never share a tracking number or a mail id. Cards that do are the same parcel and
+// are merged (the one with the most tracking history is kept). Exception: a manual split sibling may share the order's mail with its
+// twin. -> { merged, notes }. Pure apart from editing `list` in place.
+function enforceInvariant(list, now) {
+  const open = list.filter((s) => s && !s.archived);
+  const parent = new Map(open.map((s) => [s, s]));
+  const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(rb, ra); };
+  const byNo = new Map(), byMail = new Map();
+  for (const s of open) {
+    for (const n of s.numbers || []) { const k = normNumber(n.no); if (!k) continue; if (byNo.has(k)) union(byNo.get(k), s); else byNo.set(k, s); }
+    for (const m of s.msgIds || []) {
+      if (byMail.has(m)) { const o = byMail.get(m); if (!((o.split && o.source === "manual") !== (s.split && s.source === "manual"))) union(o, s); }
+      else byMail.set(m, s);
+    }
+  }
+  const groups = new Map();
+  for (const s of open) { const r = find(s); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(s); }
+  const gone = new Set();
+  let merged = 0;
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    g.sort((a, b) => ((b.events || []).length - (a.events || []).length) || ((b.numbers.length ? 1 : 0) - (a.numbers.length ? 1 : 0)) || ((a.added || 0) - (b.added || 0)));
+    for (const o of g.slice(1)) { mergeShipments(g[0], o, now); gone.add(o); merged++; }
+  }
+  for (let i = list.length - 1; i >= 0; i--) if (gone.has(list[i])) list.splice(i, 1);
+  return { merged };
 }
 
 // ---------------------------------------------------------------- grouping for the view
@@ -490,6 +583,6 @@ module.exports = {
   STATES, STATE_LABEL, NEEDS_ACTION, CARRIERS, CARRIER_BY_ID, STUCK_DAYS_DEFAULT, ARCHIVE_KEEP_DAYS, MAX_ITEMS,
   REASONS, looksLikeOrderNumber, needsNumber, migrateWrongNumbers, NUMBER_FIXES, rankState, clean, normNumber, detectCarrier, plausibleNumber, trackUrl, carrierName,
   stateFromText, stateFromTrack17, makeShipment, cleanEvent, setState, applyEvents, effectiveState, isStuck,
-  archiveShipment, unarchiveShipment, markPickedUp, sweep, findMatch, mergeCandidate, mergeShipments,
+  archiveShipment, unarchiveShipment, markPickedUp, sweep, findMatch, mergeCandidate, mergeShipments, enforceInvariant, carrierFromT17, isAmazonNumber,
   groupShipments, actionText, cleanSettings, demoShipments,
 };
