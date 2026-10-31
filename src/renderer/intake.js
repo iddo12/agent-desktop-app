@@ -48,7 +48,7 @@
     if (S.data.requireVerified === false) body.append(el("p", "in-note in-warn", "Warning: phone signing is not live yet, so Intake cannot tell that an item really came from your phone. Check each one before you approve."));
     if (S.openId) return renderItem();
     for (const [id, label] of TABS) {
-      const b = el("button", "in-tab" + (S.tab === id ? " active" : ""), label + " " + (id === "all" ? c.all : id === "msgs" ? (S.msgs ? S.msgs.total : 0) : c[id] || 0));
+      const b = el("button", "in-tab" + (S.tab === id ? " active" : ""), label + " " + (id === "all" ? c.all + (S.msgs ? S.msgs.total : 0) : id === "msgs" ? (S.msgs ? S.msgs.total : 0) : c[id] || 0));
       b.type = "button"; b.setAttribute("role", "tab");
       b.addEventListener("click", () => { S.tab = id; S.pendingOnly = false; render(); });
       tabsHost.append(b);
@@ -62,9 +62,12 @@
     if (S.tab === "msgs") { renderMessages(); return; }
     let rows = S.data.rows.filter((r) => (S.tab === "all" ? !r.sealed : r.tab === S.tab));
     if (S.pendingOnly) rows = rows.filter((r) => r.status === "pending_approval" && !r.sealed);
+    // The All tab also lists the messages you sent to agents (read-only rows), mixed in by time. Not in the "waiting for approval" filter.
+    if (S.tab === "all" && !S.pendingOnly && S.msgs) rows = rows.concat(S.msgs.rows.map((m) => ({ _msg: m, created: m.at })));
     rows.sort((a, b) => String(b.created).localeCompare(String(a.created)));
     if (!rows.length) { const e = el("div", "in-empty"); e.append(el("b", "", S.data.empty ? "📬 Nothing from your phone yet" : "✓ Nothing here"), el("p", "", "Record a note or snap a receipt on the Pixel and it appears here within a minute.")); body.append(e); return; }
     for (const r of rows) {
+      if (r._msg) { body.append(messageRow(r._msg)); continue; }
       const row = el("button", "in-row"); row.type = "button";
       const t = el("div", "in-row-t");
       t.append(el("b", "", r.sealed ? "🔒 Sealed item" : (r.title || "(no text)")));
@@ -82,16 +85,18 @@
     const m = S.msgs;
     if (!m) { body.append(el("p", "in-note", "Loading…")); return; }
     if (!m.rows.length) { const e = el("div", "in-empty"); e.append(el("b", "", "📬 No messages to agents yet"), el("p", "", "Use an agent tile on the phone's Home screen: write, record or snap, then Send.")); body.append(e); return; }
-    for (const r of m.rows) {
-      const row = el("div", "in-row");
-      const t = el("div", "in-row-t");
-      t.append(el("b", "", r.preview || "(no text)"));
-      const meta = el("div", "in-row-m");
-      const done = r.status === "handled";
-      const chip = el("span", "in-chip " + (done ? "in-ok" : "in-wait")); chip.append(el("span", "in-chip-i", done ? "✓" : "●"), document.createTextNode(" " + (done ? "Read and handled" : "Delivered, not yet read")));
-      meta.append(chip, el("span", "", ["→ " + r.agent, when(r.at)].filter(Boolean).join(" · ")));
-      t.append(meta); row.append(t); body.append(row);
-    }
+    for (const r of m.rows) body.append(messageRow(r));
+  }
+  function messageRow(r) {
+    const row = el("div", "in-row");
+    const t = el("div", "in-row-t");
+    t.append(el("b", "", r.preview || "(no text)"));
+    const meta = el("div", "in-row-m");
+    const done = r.status === "handled";
+    const chip = el("span", "in-chip " + (done ? "in-ok" : "in-wait")); chip.append(el("span", "in-chip-i", done ? "✓" : "●"), document.createTextNode(" " + (done ? "Read and handled" : "Delivered, not yet read")));
+    meta.append(chip, el("span", "", ["Message to " + r.agent, when(r.at)].filter(Boolean).join(" · ")));
+    t.append(meta); row.append(t);
+    return row;
   }
 
   function renderItem() {
