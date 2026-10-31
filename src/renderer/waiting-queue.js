@@ -98,6 +98,8 @@
       registered = Array.isArray(qs) ? qs : []; if (a !== b) refresh();
     }).catch(function () { /* next tick */ });
   }
+  // v1.152.0 answer once: a question answered from an inline chat card or the confirm window leaves this list at once
+  window.addEventListener("answer-once-resolved", function (e) { var id = e && e.detail && e.detail.id; registered = registered.filter(function (q) { return q.id !== id; }); refresh(); });
   // v1.117.3 (the owner): the Testing agent (and any name in localStorage "agentDesktop.waitingQueue.ignore", comma separated) never shows in the queue
   function ignored(row) {
     if (row.classList.contains("agent-hidden")) return true;   // v1.140.0: a hidden agent (hiddenAgents setting) is not listed here either
@@ -289,6 +291,7 @@
   function doneQ(it) {   // the registered question is answered: move its file to answered\ and drop it from the list now
     if (!it.qid) return;
     registered = registered.filter(function (q) { return q.id !== it.qid; });
+    if (window.AnswerOnce) window.AnswerOnce.markClosed(it.qid);   // v1.152.0 inline cards for this question turn into "no longer open"
     // v1.134.x: the result used to be ignored, so a rename that failed left the question to reappear with no explanation
     Promise.resolve().then(function () { return window.api.resolveOpenQuestion(it.qid); }).then(function (ok) {
       if (ok === false) toast("Sent, but could not mark the question answered (it may come back): " + it.qid);

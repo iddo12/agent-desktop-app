@@ -4885,6 +4885,30 @@ ipcMain.handle("resolve-open-question", (event, id) => {
   const dir = openQuestionsDir(), src = path.join(dir, id + ".json");
   try { fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(src, path.join(dir, "answered", id + ".json")); return true; } catch (e) { return false; }
 });
+// v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
+// has the threat model) and handed to the renderer, which types the answer into the asking agent's chat exactly like a queue button.
+// A test instance only runs it when AGENT_DESKTOP_ANSWER_ONCE_DIR is set (never eats the live inbox).
+const answerOnceWaiting = new Map(); // reqId -> {resolve, timer}
+ipcMain.handle("answer-once-result", (event, r) => {
+  const w = r && answerOnceWaiting.get(r.reqId); if (!w) { if (r && r.ok) console.error("[agent-desktop] answer-once: late delivery confirmed after the 90 s timeout (" + r.reqId + ")"); return false; }
+  clearTimeout(w.timer); answerOnceWaiting.delete(r.reqId); w.resolve({ ok: !!r.ok, error: String(r.error || "").slice(0, 200), retry: !!r.retry }); return true;
+});
+try {
+  if (!testMode.TEST_MODE || process.env.AGENT_DESKTOP_ANSWER_ONCE_DIR) {
+    const answerOnce = require("./answerOnce");
+    let seq = 0;
+    answerOnce.createService({
+      dir: answerOnce.stateDir(), questionsDir: openQuestionsDir(), log: (m) => console.error("[agent-desktop] " + m),
+      deliver: (req) => new Promise((resolve) => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
+        const reqId = "ao" + (++seq) + "-" + Date.now();
+        const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 90 s; it may still arrive, check the agent's chat before answering again" }); }, 90000);
+        answerOnceWaiting.set(reqId, { resolve, timer });
+        try { mainWindow.webContents.send("answer-once-deliver", { reqId, id: req.id, answer: req.answer }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
+      }),
+    }).start(2000);
+  }
+} catch (e) { console.error("[agent-desktop] answer-once not started: " + (e && e.message)); }
 // v1.119.0 FLEET CONVERSATIONS (configurable since v1.121.0): read-only view of the shared mailbox with another person's agents; the only write is a new reply file.
 // src/fleetMain.js registers fleet-settings / fleet-list / fleet-read / fleet-timeline / fleet-reply. Folder: AGENT_DESKTOP_FLEET_DIR (sandbox/tests) or appConfig exchangeDir; IRIS dir: AGENT_DESKTOP_IRIS_DIR.
 // Async fs with 8 in flight; a re-list is two readdirs + a few stats unless the fingerprint changed; the renderer polls every 5 min (60 s while the pane is open), and not at all while the feature is not set up.

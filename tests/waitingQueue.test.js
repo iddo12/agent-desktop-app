@@ -2,7 +2,7 @@
 "use strict";
 const fs = require("fs"), path = require("path"), vm = require("vm"), assert = require("assert");
 const src = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "waiting-queue.js"), "utf-8");
-const win = {};
+const win = { addEventListener() {} };
 const stubEl = () => ({ appendChild() {}, addEventListener() {}, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, insertAdjacentElement() {}, remove() {}, style: {} });
 const ctx = { window: win, document: { readyState: "complete", getElementById: () => null, querySelectorAll: () => [], createElement: stubEl, addEventListener() {}, body: stubEl() }, localStorage: { getItem: () => null, setItem() {} }, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, Promise, MutationObserver: function () { this.observe = () => {}; } };
 ctx.window = win; vm.createContext(ctx); vm.runInContext(src, ctx);
