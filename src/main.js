@@ -4893,6 +4893,25 @@ ipcMain.handle("resolve-open-question", (event, id) => {
   const dir = openQuestionsDir(), src = path.join(dir, id + ".json");
   try { fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(src, path.join(dir, "answered", id + ".json")); return true; } catch (e) { return false; }
 });
+// v1.153.0 SEALED ANSWERS: the renderer asks main to sign the owner's click into the question file (src/sealedAnswers.js has the threat model).
+// Test instances only run it with AGENT_DESKTOP_SEALED_DIR set.
+let sealedSealer = null;
+function getSealer() {
+  if (sealedSealer) return sealedSealer;
+  const { safeStorage } = require("electron");
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Windows encryption (DPAPI) not available");
+  const sa = require("./sealedAnswers");
+  sealedSealer = sa.createSealer({ dir: sa.stateDir(), protect: (b) => safeStorage.encryptString(Buffer.from(b).toString("base64")), unprotect: (b) => Buffer.from(safeStorage.decryptString(b), "base64") });
+  return sealedSealer;
+}
+ipcMain.handle("seal-answer", (event, id, text, via) => {
+  try {
+    if (testMode.TEST_MODE && !process.env.AGENT_DESKTOP_SEALED_DIR) return { ok: false, error: "sealing is off in a test instance" };
+    const r = require("./sealedAnswers").sealIntoFile(getSealer(), openQuestionsDir(), String(id || ""), text, via === "button" ? "button" : "typed");
+    if (!r.ok) console.error("[agent-desktop] seal-answer refused: " + r.error);
+    return r;
+  } catch (e) { console.error("[agent-desktop] seal-answer failed: " + (e && e.message)); return { ok: false, error: String(e && e.message || e).slice(0, 200) }; }
+});
 // v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
 // has the threat model) and handed to the renderer, which types the answer into the asking agent's chat exactly like a queue button.
 // A test instance only runs it when AGENT_DESKTOP_ANSWER_ONCE_DIR is set (never eats the live inbox).

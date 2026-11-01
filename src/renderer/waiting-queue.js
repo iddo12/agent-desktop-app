@@ -288,12 +288,18 @@
     b.addEventListener("click", function () { ta.value = p.text; ta.focus(); b.remove(); }); return b;
   }
   var failedText = {};   // key -> text of a Send & done that failed, put back into the answer box when the card returns
-  function doneQ(it) {   // the registered question is answered: move its file to answered\ and drop it from the list now
+  function doneQ(it, text) {   // the registered question is answered: move its file to answered\ and drop it from the list now
     if (!it.qid) return;
     registered = registered.filter(function (q) { return q.id !== it.qid; });
     if (window.AnswerOnce) window.AnswerOnce.markClosed(it.qid);   // v1.152.0 inline cards for this question turn into "no longer open"
     // v1.134.x: the result used to be ignored, so a rename that failed left the question to reappear with no explanation
-    Promise.resolve().then(function () { return window.api.resolveOpenQuestion(it.qid); }).then(function (ok) {
+    // v1.153.0 SEALED ANSWER: the owner's click is signed by main (src/sealedAnswers.js) before the file moves, so any agent can verify it with ask_iddo.py verify.
+    // A failed seal never blocks the answer (it was already delivered); the question then simply stays "unsealed".
+    var via = it.quick && it.quick.indexOf(String(text || "").trim()) >= 0 ? "button" : "typed";
+    Promise.resolve().then(function () { return window.api.sealAnswer ? window.api.sealAnswer(it.qid, text, via) : null; }).catch(function () { return null; }).then(function (s) {
+      if (s && s.ok === false) toast("Answer sent, but not sealed (" + s.error + "); other agents will see it as unsealed.");
+      return window.api.resolveOpenQuestion(it.qid);
+    }).then(function (ok) {
       if (ok === false) toast("Sent, but could not mark the question answered (it may come back): " + it.qid);
     }).catch(function () { toast("Sent, but could not mark the question answered (it may come back): " + it.qid); });
   }
@@ -304,7 +310,7 @@
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });
       document.querySelectorAll(".wq-ta").forEach(function (t) { if (t.dataset.key === it.key) t.value = ""; });   // sent: do not restore it as a draft
       if (keep) { watch(it); toast("Sent to " + firstName(it.name) + ". Its reply will appear here."); refresh(); }
-      else { dismissed[it.key] = it.status; doneQ(it); toast("Sent. " + firstName(it.name) + " leaves the queue."); refresh(); }   // the card already closed in send()
+      else { dismissed[it.key] = it.status; doneQ(it, text); toast("Sent. " + firstName(it.name) + " leaves the queue."); refresh(); }   // the card already closed in send()
     };
     if (demoMode || !it.path || !window.queueSendToAgent) {            // sandbox / sample items: nothing is delivered
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });

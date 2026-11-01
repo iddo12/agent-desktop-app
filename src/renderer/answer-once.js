@@ -39,7 +39,7 @@
 
   // ---- the one delivery path ----
   // Returns {ok, error?, retry?}. Re-reads the question first, so a stale card can never answer something already answered or changed.
-  function answer(id, label) {
+  function answer(id, label, sealIt) {
     if (inflight[id]) return Promise.resolve({ ok: false, error: "already sending" });
     inflight[id] = true; updateCards();
     var fin = function (r) {
@@ -57,8 +57,9 @@
       var hit = matchAgent(ask.agent, rs); if (!hit || !hit.path) return { ok: false, error: "the asking agent (" + ask.agent + ") is not in the list" };
       return Promise.resolve(window.queueSendToAgent(hit.path, label)).then(function (r) {
         if (!r || !r.ok) return { ok: false, error: (r && r.error) || "unknown error" };
-        // delivered; a failed move only means the question may reappear in the list
-        return Promise.resolve(window.api.resolveOpenQuestion(id)).then(function () { return { ok: true }; }, function () { return { ok: true }; });
+        // delivered; a failed move only means the question may reappear in the list. A real click on the inline card is sealed (v1.153.0);
+        // the confirm-window path (sealIt false) is not: its request file can be written by any process of this user.
+        return Promise.resolve(sealIt && window.api.sealAnswer ? window.api.sealAnswer(id, label, "button") : null).catch(function () { return null; }).then(function () { return window.api.resolveOpenQuestion(id); }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
       });
     }).catch(function (e) { return { ok: false, error: String(e && e.message || e) }; }).then(fin);
   }
@@ -78,7 +79,7 @@
     quick.forEach(function (label) {
       var b = el("button", "ao-btn", label); b.type = "button"; b.disabled = !!inflight[id];
       b.addEventListener("click", function () {
-        answer(id, label).then(function (r) { if (!r.ok) { var old = card.querySelector(".ao-err"); if (old) old.remove(); card.appendChild(el("div", "ao-err", "Could not send: " + r.error + ". Nothing was sent.")); } });
+        answer(id, label, true).then(function (r) { if (!r.ok) { var old = card.querySelector(".ao-err"); if (old) old.remove(); card.appendChild(el("div", "ao-err", "Could not send: " + r.error + ". Nothing was sent.")); } });
       });
       row.appendChild(b);
     });
