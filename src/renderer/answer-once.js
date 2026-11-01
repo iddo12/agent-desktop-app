@@ -41,6 +41,7 @@
   // Returns {ok, error?, retry?}. Re-reads the question first, so a stale card can never answer something already answered or changed.
   function answer(id, label, sealIt) {
     if (inflight[id]) return Promise.resolve({ ok: false, error: "already sending" });
+    var shown = asks[id] ? { question: asks[id].question, agent: asks[id].agent, quick: asks[id].quick || [], context: asks[id].context || "", merav: !!asks[id].merav, created: asks[id].created || "" } : null;   // what the card displayed
     inflight[id] = true; updateCards();
     var fin = function (r) {
       delete inflight[id];
@@ -59,7 +60,7 @@
         if (!r || !r.ok) return { ok: false, error: (r && r.error) || "unknown error" };
         // delivered; a failed move only means the question may reappear in the list. A real click on the inline card is sealed (v1.153.0);
         // the confirm-window path (sealIt false) is not: its request file can be written by any process of this user.
-        return Promise.resolve(sealIt && window.api.sealAnswer ? window.api.sealAnswer(id, label, "button") : null).catch(function () { return null; }).then(function () { return window.api.resolveOpenQuestion(id); }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
+        return Promise.resolve(sealIt && window.api.sealAnswer ? window.api.sealAnswer(id, label, "button", shown) : null).catch(function () { return null; }).then(function () { return window.api.resolveOpenQuestion(id); }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
       });
     }).catch(function (e) { return { ok: false, error: String(e && e.message || e) }; }).then(fin);
   }

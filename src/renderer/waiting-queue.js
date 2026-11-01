@@ -290,13 +290,14 @@
   var failedText = {};   // key -> text of a Send & done that failed, put back into the answer box when the card returns
   function doneQ(it, text) {   // the registered question is answered: move its file to answered\ and drop it from the list now
     if (!it.qid) return;
+    var shownQ = registered.filter(function (q) { return q.id === it.qid; })[0];   // what the card displayed (v1.153.0 seal binds to it)
     registered = registered.filter(function (q) { return q.id !== it.qid; });
     if (window.AnswerOnce) window.AnswerOnce.markClosed(it.qid);   // v1.152.0 inline cards for this question turn into "no longer open"
     // v1.134.x: the result used to be ignored, so a rename that failed left the question to reappear with no explanation
     // v1.153.0 SEALED ANSWER: the owner's click is signed by main (src/sealedAnswers.js) before the file moves, so any agent can verify it with ask_iddo.py verify.
     // A failed seal never blocks the answer (it was already delivered); the question then simply stays "unsealed".
     var via = it.quick && it.quick.indexOf(String(text || "").trim()) >= 0 ? "button" : "typed";
-    Promise.resolve().then(function () { return window.api.sealAnswer ? window.api.sealAnswer(it.qid, text, via) : null; }).catch(function () { return null; }).then(function (s) {
+    Promise.resolve().then(function () { return window.api.sealAnswer ? window.api.sealAnswer(it.qid, text, via, shownQ ? { question: shownQ.question, agent: shownQ.agent, quick: shownQ.quick || [], context: shownQ.context || "", merav: !!shownQ.merav, created: shownQ.created || "" } : null) : null; }).catch(function () { return null; }).then(function (s) {
       if (s && s.ok === false) toast("Answer sent, but not sealed (" + s.error + "); other agents will see it as unsealed.");
       return window.api.resolveOpenQuestion(it.qid);
     }).then(function (ok) {

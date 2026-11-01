@@ -4904,10 +4904,10 @@ function getSealer() {
   sealedSealer = sa.createSealer({ dir: sa.stateDir(), protect: (b) => safeStorage.encryptString(Buffer.from(b).toString("base64")), unprotect: (b) => Buffer.from(safeStorage.decryptString(b), "base64") });
   return sealedSealer;
 }
-ipcMain.handle("seal-answer", (event, id, text, via) => {
+ipcMain.handle("seal-answer", (event, id, text, via, shown) => {
   try {
     if (testMode.TEST_MODE && !process.env.AGENT_DESKTOP_SEALED_DIR) return { ok: false, error: "sealing is off in a test instance" };
-    const r = require("./sealedAnswers").sealIntoFile(getSealer(), openQuestionsDir(), String(id || ""), text, via === "button" ? "button" : "typed");
+    const r = require("./sealedAnswers").sealIntoFile(getSealer(), openQuestionsDir(), String(id || ""), text, via === "button" ? "button" : "typed", shown);
     if (!r.ok) console.error("[agent-desktop] seal-answer refused: " + r.error);
     return r;
   } catch (e) { console.error("[agent-desktop] seal-answer failed: " + (e && e.message)); return { ok: false, error: String(e && e.message || e).slice(0, 200) }; }

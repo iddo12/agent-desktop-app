@@ -19,6 +19,7 @@
 const fs = require("fs"), path = require("path"), crypto = require("crypto"), os = require("os");
 
 const ID_RX = /^\d{8}-\d{6}-[0-9a-f]{4}$/, NONCE_RX = /^[0-9a-f]{32}$/;
+const LEDGER_FUTURE_MS = 24 * 3600 * 1000;   // clock rollback up to a day is still covered; a ledger line further ahead is treated as poison and ignored
 const MAX_ANSWER = 600, FUTURE_SKEW_MS = 2 * 60 * 1000, PREDATE_SKEW_MS = 2 * 60 * 1000;
 const VIAS = ["button", "typed"];
 
@@ -30,8 +31,8 @@ function stateDir(env, platform, homedir) {
 }
 // Same fields as answerOnce.qhash and shared_tools\ask_confirm.py (question, asking agent, quick answers).
 function qhash(ask) {
-  const quick = Array.isArray(ask.quick) ? ask.quick.join("\x1f") : "";
-  return crypto.createHash("sha256").update([String(ask.question), String(ask.agent == null ? "" : ask.agent), quick].join("\x1e"), "utf8").digest("hex").slice(0, 16);
+  const quick = Array.isArray(ask.quick) ? ask.quick.map(String) : [];
+  return crypto.createHash("sha256").update(JSON.stringify(["qh2", String(ask.question), String(ask.agent == null ? "" : ask.agent), quick, String(ask.context == null ? "" : ask.context), !!ask.merav, String(ask.created == null ? "" : ask.created)]), "utf8").digest("hex");
 }
 function message(s) {
   return Buffer.from(["sealed-answer-v1", s.id, s.answer, s.qhash, s.via, String(s.ts), s.nonce, s.kid].join("\x1f"), "utf8");
@@ -93,8 +94,8 @@ function createSealer(io) {
     writePub(pub);                                       // heals a tampered or missing pub.json
   }
   function lastTs() {
-    let t = 0;
-    try { const lines = fs.readFileSync(ledger, "utf8").trim().split("\n"); for (const l of lines.slice(-50)) { try { t = Math.max(t, JSON.parse(l).ts || 0); } catch (e) { /* skip */ } } } catch (e) { /* none */ }
+    let t = 0; const cap = now() + LEDGER_FUTURE_MS;   // a poisoned ledger line cannot push seals into the future
+    try { const lines = fs.readFileSync(ledger, "utf8").trim().split("\n"); for (const l of lines.slice(-50)) { try { const v = JSON.parse(l).ts || 0; if (v <= cap) t = Math.max(t, v); } catch (e) { /* skip */ } } } catch (e) { /* none */ }
     return t;
   }
   // ask = the record as read from open_questions\<id>.json. Returns the seal object (not yet stored anywhere).
@@ -114,13 +115,17 @@ function createSealer(io) {
 
 // The IPC body: seal the owner's answer into the OPEN question file (the renderer then calls resolve-open-question, which moves it to answered\).
 // Refuses a closed, already answered or malformed ask; the answer must be one of its quick answers (button) or any non-empty text (typed).
-function sealIntoFile(sealer, questionsDir, id, text, via) {
+function sealIntoFile(sealer, questionsDir, id, text, via, shown) {
   if (!ID_RX.test(String(id || ""))) return { ok: false, error: "bad id" };
   const file = path.join(questionsDir, id + ".json");
   let ask;
   try { ask = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) { return { ok: false, error: "question is not open" }; }
   if (!ask || ask.id !== id || !ask.question) return { ok: false, error: "bad question file" };
   if (ask.seal) return { ok: false, error: "already sealed" };
+  // The seal must bind what the owner SAW. The renderer passes the question/agent/quick of the card on screen; an agent that edited the file after
+  // the card was drawn (or before the click) makes them differ and nothing is sealed.
+  if (!shown || typeof shown !== "object" || !shown.question) return { ok: false, error: "no displayed question to bind the seal to" };
+  if (qhash(shown) !== qhash(ask)) return { ok: false, error: "the question changed since it was shown" };
   text = String(text == null ? "" : text).trim();
   if (via === "button" && !(Array.isArray(ask.quick) && ask.quick.indexOf(text) >= 0)) return { ok: false, error: "not one of the question's quick answers" };
   let s;

@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld("api", {
   clearStaleInput: (agentPath, text) => ipcRenderer.invoke("clear-stale-input", { agentPath, text }),
   listOpenQuestions: () => ipcRenderer.invoke("list-open-questions"),
   resolveOpenQuestion: (id) => ipcRenderer.invoke("resolve-open-question", id),
-  sealAnswer: (id, text, via) => ipcRenderer.invoke("seal-answer", id, text, via),
+  sealAnswer: (id, text, via, shown) => ipcRenderer.invoke("seal-answer", id, text, via, shown),
   onAnswerOnceDeliver: (callback) => { ipcRenderer.on("answer-once-deliver", (event, payload) => callback(payload)); }, // v1.152.0 answer from the confirm window
   answerOnceResult: (r) => ipcRenderer.invoke("answer-once-result", r),
   fleet: {
