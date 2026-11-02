@@ -296,6 +296,8 @@
     viewer.classList.remove("hidden");
     // the owner (2026-10-02): PDFs opened at 61%; ask Chromium's viewer for 100% via the standard open parameter.
     const target = /\.pdf($|[?#])/i.test(r.url) ? r.url.replace(/#.*$/, "") + "#zoom=100" : r.url;
+    // Audit fix: agent-written .html runs with no scripts and an opaque origin (as in agent-docs); only the PDF plugin needs no sandbox.
+    if (/\.pdf($|[?#])/i.test(r.url)) vframe.removeAttribute("sandbox"); else vframe.setAttribute("sandbox", "");
     requestAnimationFrame(() => { if (viewing === e) vframe.src = target; });
   }
   function closeViewer() {

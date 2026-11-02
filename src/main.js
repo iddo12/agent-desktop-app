@@ -1253,7 +1253,7 @@ function createWindow() {
       if (template.length) template.push({ type: "separator" });
       template.push(
         { label: "Copy Link Address", click: () => clipboard.writeText(params.linkURL) },
-        { label: "Open Link in Browser", click: () => shell.openExternal(params.linkURL) }
+        { label: "Open Link in Browser", enabled: /^(https?|mailto):/i.test(params.linkURL), click: () => { if (/^(https?|mailto):/i.test(params.linkURL)) shell.openExternal(params.linkURL); } }
       );
     }
     if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
@@ -1664,6 +1664,7 @@ const PASTED_IMAGE_DIR = path.join(app.getPath("temp"), "agent-desktop-pasted");
 
 ipcMain.handle("save-pasted-image", (event, { base64, ext }) => {
   fs.mkdirSync(PASTED_IMAGE_DIR, { recursive: true });
+  ext = /^[A-Za-z0-9]{1,5}$/.test(String(ext)) ? String(ext) : "png"; // audit fix: ext is spliced into the file name (a "/../" in it escaped the folder)
   const filePath = path.join(PASTED_IMAGE_DIR, `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
   fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
   return filePath;
