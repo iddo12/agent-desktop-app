@@ -393,16 +393,16 @@ class IrisService {
       const srv = net.createServer((sock) => this._onConnection(sock));
       srv.maxConnections = 64;
       srv.once("error", reject);
-      srv.listen(this.state.port, host, () => { srv.removeListener("error", reject); this.server = srv; resolve(); });
+      srv.listen(this.state.port, host, () => { srv.removeListener("error", reject); srv.on("error", (e) => this.log("iris server error: " + ((e && e.message) || e))); this.server = srv; resolve(); }); // audit: a later accept error was an uncaught exception
     });
     this.log(`iris listening on ${host}:${this.state.port}`);
     this.retryTimer = setInterval(() => {
       this.flushOutbox().catch(() => {});
       this._pruneConnLog();
-      this._pumpDirect();
+      this._pumpDirect().catch(() => {});
     }, RETRY_MS);
     this.flushOutbox().catch(() => {});
-    this._pumpDirect();
+    this._pumpDirect().catch(() => {});
     this._changed("status");
   }
 
@@ -752,7 +752,7 @@ class IrisService {
     q.tries = 0; q.nextAt = 0; q.failedKeep = false; q.expires = this.now() + 3600 * 1000;
     this.chats.setStatus(id, "received");
     this._save();
-    this._pumpDirect();
+    this._pumpDirect().catch(() => {});
     return { ok: true };
   }
 
@@ -785,7 +785,7 @@ class IrisService {
     const framed = gw.frameForAgent(peer, env, { ownerName: typeof this.opts.ownerName === "function" ? this.opts.ownerName() : "", toolCommand: this.opts.toolCommand, agent: res.agent, threadToken: `${peer.id}.${env.thread}` });
     const who = (peer.direct && peer.direct.person) || peer.name;
     this.state.directQueue.push({ envId: env.id, peerId: peer.id, agent: res.agent, framed, who, tries: 0, nextAt: 0, expires: Date.parse(env.expires) });
-    setImmediate(() => this._pumpDirect());
+    setImmediate(() => this._pumpDirect().catch(() => {}));
   }
 
   // Hand queued direct messages to their agents, one at a time. One that cannot be handed over yet (agent not running, window busy)

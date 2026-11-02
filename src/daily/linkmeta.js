@@ -133,7 +133,7 @@ function unescapeHtml(s) {
 const clean = (s, max) => unescapeHtml(String(s == null ? "" : s)).replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, max || 200);
 
 function metaContent(html, key) {
-  const re = new RegExp(`<meta\\b[^>]*?(?:property|name|itemprop)\\s*=\\s*["']${key}["'][^>]*>`, "i");
+  const re = new RegExp(`<meta\\b[^<>]{0,2000}?(?:property|name|itemprop)\\s*=\\s*["']${key}["']`+"[^<>]{0,2000}>", "i");
   const m = re.exec(html);
   if (!m) return "";
   const c = /content\s*=\s*"([^"]*)"|content\s*=\s*'([^']*)'/i.exec(m[0]);
@@ -141,7 +141,7 @@ function metaContent(html, key) {
 }
 function jsonLdBlocks(html) {
   const out = [];
-  const re = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  const re = /<script\b[^<>]{0,500}type\s*=\s*["']application\/ld\+json["'][^<>]{0,500}>([\s\S]*?)<\/script>/gi;
   let m;
   while ((m = re.exec(html))) { try { out.push(JSON.parse(m[1].trim())); } catch (e) { /* ignore bad block */ } }
   return out;

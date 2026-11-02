@@ -303,6 +303,7 @@ function init({ ipcMain, app, safeStorage, Notification, getMainWindow, log, tes
       handled = true;
       let req;
       try { req = JSON.parse(buf.slice(0, nl)); } catch (e) { return sock.destroy(); }
+      if (!req || typeof req !== "object") return sock.destroy(); // audit: a bare `null` line made req.token throw
       const tok = Buffer.from(String(req.token || ""));
       const want = Buffer.from(token);
       if (tok.length !== want.length || !crypto.timingSafeEqual(tok, want)) return sock.end(JSON.stringify({ ok: false, reason: "bad-token" }) + "\n");

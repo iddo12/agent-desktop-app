@@ -73,7 +73,7 @@ function sniff(b) {
 /** Icon links in a home page: apple-touch-icon first (bigger), then icon / shortcut icon. Returns absolute https URLs, best first. */
 function iconLinks(html, base) {
   const found = [];
-  for (const m of String(html).matchAll(/<link\b[^>]*>/gi)) {
+  for (const m of String(html).matchAll(/<link\b[^<>]{0,2000}>/gi)) {
     const tag = m[0], rel = (tag.match(/\brel\s*=\s*["']([^"']*)["']/i) || [])[1], href = (tag.match(/\bhref\s*=\s*["']([^"']*)["']/i) || [])[1];
     if (!rel || !href || href.length > 400 || /\.svg(\?|$)/i.test(href) || /^data:/i.test(href)) continue;
     const r = rel.toLowerCase(); const score = /apple-touch-icon/.test(r) ? 2 : /\bicon\b/.test(r) ? 1 : 0; if (!score) continue;

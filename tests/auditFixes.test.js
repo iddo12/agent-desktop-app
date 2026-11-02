@@ -33,4 +33,16 @@ t("isUnder is separator-terminated and rejects ../ escapes", () => {
   assert(!isUnder(d, path.join(d, "..", "x.wav")));
   assert(!isUnder(d, d));
 });
+t("parseProduct survives a page of 100k unclosed <meta openers quickly (ReDoS)", () => {
+  const { parseProduct } = require("../src/daily/linkmeta");
+  const html = "<html><head>" + "<meta ".repeat(100000) + "</head></html>";
+  const t0 = Date.now();
+  try { parseProduct(html, "https://example.com/p"); } catch (e) { /* signature may differ; only the time matters */ }
+  assert(Date.now() - t0 < 3000, "took " + (Date.now() - t0) + " ms");
+});
+t("parseProduct still reads a normal og:title", () => {
+  const { parseProduct } = require("../src/daily/linkmeta");
+  const r = parseProduct('<meta property="og:title" content="Nice Lamp"><title>x</title>', "https://example.com/p");
+  assert(JSON.stringify(r).includes("Nice Lamp"), JSON.stringify(r));
+});
 if (fails) { console.log(fails + " FAILED"); process.exit(1); } console.log("all passed");
