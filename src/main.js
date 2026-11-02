@@ -2370,13 +2370,14 @@ function wakeNoteSession(sessionCwd, id) {
 async function dispatchBackgroundAgentImpl(shell, spawnEnv, sessionCwd, opts = {}) {
   let args;
   if (opts.resumeSessionId) {
+    if (!require("./argGuard").isSafeId(opts.resumeSessionId)) throw new Error("Refusing a malformed session id"); // audit: reaches cmd.exe /c on Windows
     args = ["--bg", "--resume", opts.resumeSessionId];
   } else if (opts.forceFresh) {
     args = ["--bg"];
     // v1.62.0: the fresh session can be started WITH its first message (verified: `claude --bg "<prompt>"`
     // processes the prompt as the first turn with nothing attached). Used by the handoff flow so the
     // resume message does not wait for the owner to open the agent's tab. Single line, no double quotes.
-    if (opts.initialPrompt) args.push(String(opts.initialPrompt).replace(/\s*[\r\n]+\s*/g, " ").replace(/"/g, "'"));
+    if (opts.initialPrompt) args.push(require("./argGuard").safePromptArg(String(opts.initialPrompt).replace(/\s*[\r\n]+\s*/g, " ").replace(/"/g, "'")));
   } else {
     args = hasPriorSession(sessionCwd) ? ["--bg", "--continue"] : ["--bg"];
   }
@@ -4528,6 +4529,7 @@ async function startTerminalSessionInner(agentPath, sessionCwd, cols, rows, know
   let freshlyDispatched = false;
   try {
     if (knownAgentId) {
+      if (!require("./argGuard").isSafeId(knownAgentId)) throw new Error("Refusing a malformed agent id"); // audit: reaches cmd.exe /c on Windows
       agentId = knownAgentId;
     } else {
       const found = await findOrDispatchBackgroundAgent(shell, spawnEnv, sessionCwd);

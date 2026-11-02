@@ -1236,6 +1236,7 @@ function listArchivedDays(agentPath) {
 }
 
 function readArchivedDay(agentPath, dateKey) {
+  if (!require("./argGuard").isDateKey(dateKey)) return null; // audit: dateKey was split into path segments (traversal + mkdir)
   try {
     return fs.readFileSync(dayFilePath(agentPath, dateKey), "utf-8");
   } catch (e) {

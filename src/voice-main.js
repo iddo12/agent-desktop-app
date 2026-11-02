@@ -324,6 +324,8 @@ function init({ ipcMain, log, app, cfg, readEnv: readEnvFn }) {
 
   ipcMain.handle("voice-transcribe", async (event, { wavBase64, file }) => {
     try {
+      // audit: `file` came from the renderer and was read / uploaded as-is; only our own recordings are accepted
+      if (file && !(typeof file === "string" && /\.wav$/i.test(file) && require("./argGuard").isUnder(recDir, file))) file = null;
       if (!wavBase64 && file && fs.existsSync(file)) wavBase64 = fs.readFileSync(file).toString("base64");
       if (!wavBase64 || wavBase64.length < 200) return { ok: false, error: "No audio was recorded." };
       const eng = localEngine();
