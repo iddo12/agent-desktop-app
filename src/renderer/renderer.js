@@ -4457,7 +4457,8 @@ chatInputEl.addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
   const ae = document.activeElement;
-  if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
+  // SE review: act ONLY when nothing has focus; a focused button/link keeps its keys (Space must still activate it)
+  if (ae && ae !== document.body && ae !== document.documentElement) return;
   if (rawTerminalMode || chatViewEl.classList.contains("hidden") || chatInputEl.offsetParent === null) return;
   if (document.querySelector(".modal:not(.hidden), dialog[open]")) return;
   chatInputEl.focus();
