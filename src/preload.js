@@ -73,6 +73,9 @@ contextBridge.exposeInMainWorld("api", {
   approvalsWindow: (action) => ipcRenderer.invoke("approvals-window", { action }),   // v1.153.0 dock window: "open" | "toggle" | "state"
   approvalsList: () => ipcRenderer.invoke("approvals-list"),   // v1.153.0 Approvals pop-up
   approvalsDecide: (decisions, via) => ipcRenderer.invoke("approvals-decide", { decisions, via }),
+  dockAsksList: () => ipcRenderer.invoke("dock-asks-list"),   // v1.154.0 "Questions for you" in the THYRA dock / pop-up
+  dockAskAnswer: (req) => ipcRenderer.invoke("dock-ask-answer", req),
+  onDockAskDeliver: (callback) => { ipcRenderer.on("dock-ask-deliver", (event, payload) => callback(payload)); },   // main -> this window: type the chosen answer into the asking agent's chat
   onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
   getTranscriptQuietMs: (agentPath) => ipcRenderer.invoke("get-transcript-quiet-ms", { agentPath }),
   getAgentOverview: () => ipcRenderer.invoke("get-agent-overview"),

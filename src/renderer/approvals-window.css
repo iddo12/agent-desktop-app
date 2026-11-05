@@ -19,6 +19,12 @@ html, body { margin: 0; height: 100%; background: #fff8f4; color: #3b1c10; font:
 #approvals-popup .ap-foot { flex: 0 0 auto; display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid #ecd2c6; flex-wrap: wrap; }
 #approvals-popup .ap-note { display: none; }
 #approvals-popup .ap-empty { padding: 18px 8px; text-align: center; opacity: .7; font-size: 14px; }
+#approvals-popup .ap-sec { font-weight: 700; margin: 8px 0 2px; padding-top: 6px; border-top: 2px solid #c96442; }
+#approvals-popup .ap-q { font-size: 12px; margin: 2px 0 3px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; cursor: pointer; }
+#approvals-popup .ap-q.ap-open { display: block; -webkit-line-clamp: unset; }
+#approvals-popup .ap-qbtn { background: #fff; color: #3b1c10; border-color: #c96442; }
+#approvals-popup .ap-done { font-size: 11px; color: #2e7d32; padding: 3px 0; }
+#approvals-popup .ap-older { margin: 6px 0; background: none; color: inherit; border-color: #d9b8a8; font-size: 11px; }
 @media (max-height: 220px) { #approvals-popup .ap-act { -webkit-line-clamp: 1; } #approvals-popup .ap-head { padding: 3px 8px; } }
 @media (max-width: 280px) { #approvals-popup .ap-wait, #approvals-popup .ap-tool { display: none; } }
 body[data-collapsed="1"] #approvals-popup { border-left-width: 3px; }

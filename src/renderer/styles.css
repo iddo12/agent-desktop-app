@@ -2044,3 +2044,9 @@ button.danger:not(:disabled):hover { filter: brightness(1.1); }
 #approvals-chip { position: fixed; right: 12px; bottom: 8px; z-index: 8000; font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 12px; border: 1px solid #c96442; background: #fff8f4; color: #7a2a14; cursor: pointer; opacity: .75; }
 #approvals-chip:hover { opacity: 1; }
 #approvals-chip.ap-chip-hot { background: #c96442; color: #fff; opacity: 1; }
+#approvals-popup .ap-sec { font-weight: 700; margin: 8px 0 2px; padding-top: 6px; border-top: 2px solid #c96442; }
+#approvals-popup .ap-q { font-size: 13px; margin: 3px 0 4px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; cursor: pointer; }
+#approvals-popup .ap-q.ap-open { display: block; -webkit-line-clamp: unset; }
+#approvals-popup .ap-qbtn { background: #fff; color: #3b1c10; border-color: #c96442; }
+#approvals-popup .ap-done { font-size: 11px; color: #2e7d32; padding: 3px 0; }
+#approvals-popup .ap-older { margin: 6px 0; background: none; color: inherit; border-color: #d9b8a8; font-size: 11px; }

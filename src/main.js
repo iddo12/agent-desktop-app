@@ -3478,6 +3478,7 @@ function notifyApprovalsChanged(force) {
 // Same owner-click-only IPC as the pop-up. Opened from the tray icon, Ctrl+Alt+A, or the "Approvals" chip in the main window; remembers its
 // position, size, always-on-top choice and whether it was open (reopens after a restart). A saved position on a monitor that is gone is moved back on screen.
 const approvalsWindowLib = require("./approvalsWindow");
+const dockAsks = require("./dockAsks");   // v1.154.0 "Questions for you"
 let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
 function approvalsStateFile() { return path.join(app.getPath("userData"), "approvals-window.json"); }
 // every display's visible area (taskbar excluded), the PRIMARY first: it is the fallback when the saved screen is gone
@@ -3554,6 +3555,19 @@ function refreshApprovalsTray() {
 }
 function initApprovalsDock() {
   mainWindow.on("closed", () => { approvalsQuitting = true; closeApprovalsWindow(); });
+  // v1.154.0 one count for everything that waits on the owner: permission prompts + asks from the last 3 days (tray tooltip, dock window title; the chip counts the same in the renderer)
+  let lastAskKey = null;
+  const badge = () => {
+    try {
+      const rows = dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()), n = approvalItems().length + dockAsks.recentCount(rows);
+      if (approvalsTray) approvalsTray.setToolTip(n ? "Agent Desktop - " + n + " waiting for you" : "Agent Desktop - nothing waiting");
+      if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.setTitle(n ? "THYRA - " + n + " waiting" : "THYRA - Approvals");
+      const k = dockAsks.listKey(rows);
+      if (lastAskKey !== null && k !== lastAskKey) { for (const w of [mainWindow, approvalsWin]) { if (w && !w.isDestroyed()) w.webContents.send("approvals-changed"); } }
+      lastAskKey = k;
+    } catch (e) { /* the badge is cosmetic */ }
+  };
+  setInterval(badge, 5000).unref(); setTimeout(badge, 2000);
   app.on("before-quit", () => { approvalsQuitting = true; try { saveApprovalsState(undefined); } catch (e) { /* quitting */ } });
   if (!testMode.TEST_MODE) {   // a sandbox instance must never take the real tray slot or the owner's shortcut
     try {
@@ -5064,7 +5078,10 @@ ipcMain.handle("list-open-questions", () => {
     if (!/^[\w.-]+\.json$/.test(f)) continue;
     try { const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8").replace(/^\uFEFF/, "")); if (d && d.id && d.agent && d.question) out.push(d); } catch (e) { /* half-written or bad file: skip */ }
   }
-  return out.slice(0, 100);
+  // 2026-11-05: was slice(0,100), which hid every ask past the 100th file name (163 open): the confirm window and inline cards said
+  // "already answered or withdrawn" for the newest ones. Newest first, generous cap.
+  out.sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  return out.slice(0, 1000);
 });
 ipcMain.handle("resolve-open-question", (event, id) => {
   if (!/^[\w-]+$/.test(String(id || ""))) return false;
@@ -5089,6 +5106,29 @@ ipcMain.handle("seal-answer", (event, id, text, via, shown) => {
     if (!r.ok) console.error("[agent-desktop] seal-answer refused: " + r.error);
     return r;
   } catch (e) { console.error("[agent-desktop] seal-answer failed: " + (e && e.message)); return { ok: false, error: String(e && e.message || e).slice(0, 200) }; }
+});
+// v1.154.0 THYRA "Questions for you" (src/dockAsks.js has the rules): the dock window / pop-up lists the open asks and a click delivers through the
+// main window's renderer (answer-once.js: type into the ASKING agent's chat, seal, resolve) -- the same path as the inline cards.
+// Only the main window and the dock window may call these; the answer is re-checked against the ask file here AND again in the renderer.
+ipcMain.handle("dock-asks-list", (event) => {
+  if (!isApprovalsSender(event)) return { ok: false, rows: [] };
+  return { ok: true, rows: dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()) };
+});
+let dockAskSeq = 0;
+ipcMain.handle("dock-ask-answer", async (event, req) => {
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = await dockAsks.answerFromDock({
+    readOne: (id) => dockAsks.readOne(openQuestionsDir(), id),
+    deliver: (d) => new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
+      const reqId = "da" + (++dockAskSeq) + "-" + Date.now();
+      const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 30 s; it may still arrive, check the agent's chat before answering again" }); }, 30000);
+      answerOnceWaiting.set(reqId, { resolve, timer });
+      try { mainWindow.webContents.send("dock-ask-deliver", { reqId, id: d.id, label: d.label, shown: d.shown }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
+    }),
+  }, req && { id: req.id, label: req.label, shown: req.shown });
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* the list refreshes by itself */ } }
+  return r;
 });
 // v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
 // has the threat model) and handed to the renderer, which types the answer into the asking agent's chat exactly like a queue button.

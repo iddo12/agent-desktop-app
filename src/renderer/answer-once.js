@@ -17,7 +17,13 @@
     for (var i = 0; i < rows.length; i++) { var f = norm(rows[i].folder), d = norm(rows[i].display); if (a === f || a === d || (f && f.indexOf(a + " ") === 0) || (d && d.indexOf(a + " ") === 0)) return rows[i]; }
     return null;
   }
-  window.AnswerOncePure = { findIds: findIds, matchAgent: matchAgent };   // bubbleText is DOM-bound, checked in the sandbox
+  // v1.154.0 the THYRA dock draws its own copy of an ask; delivery from there must be of the SAME question the file holds now (the seal binds it too)
+  function sameAsShown(ask, shown) {
+    if (!shown || !ask) return false;
+    return String(shown.question) === String(ask.question) && String(shown.agent) === String(ask.agent) && JSON.stringify(Array.isArray(shown.quick) ? shown.quick : null) === JSON.stringify(Array.isArray(ask.quick) ? ask.quick : [])
+      && String(shown.context || "") === String(ask.context || "") && !!shown.merav === !!ask.merav && String(shown.created || "") === String(ask.created || "");
+  }
+  window.AnswerOncePure = { findIds: findIds, matchAgent: matchAgent, sameAsShown: sameAsShown };   // bubbleText is DOM-bound, checked in the sandbox
 
   var asks = {}, answeredHere = {}, inflight = {}, ver = 0, lastLoad = 0, loading = null;
   function rows() {
@@ -39,9 +45,10 @@
 
   // ---- the one delivery path ----
   // Returns {ok, error?, retry?}. Re-reads the question first, so a stale card can never answer something already answered or changed.
-  function answer(id, label, sealIt) {
+  // shownOverride (dock): the question exactly as the dock drew it; refused if the file differs. Without it, what the card showed (asks[id]) is used.
+  function answer(id, label, sealIt, shownOverride) {
     if (inflight[id]) return Promise.resolve({ ok: false, error: "already sending" });
-    var shown = asks[id] ? { question: asks[id].question, agent: asks[id].agent, quick: asks[id].quick || [], context: asks[id].context || "", merav: !!asks[id].merav, created: asks[id].created || "" } : null;   // what the card displayed
+    var shown = shownOverride ? shownOverride : asks[id] ? { question: asks[id].question, agent: asks[id].agent, quick: asks[id].quick || [], context: asks[id].context || "", merav: !!asks[id].merav, created: asks[id].created || "" } : null;   // what the card displayed
     inflight[id] = true; updateCards();
     var fin = function (r) {
       delete inflight[id];
@@ -53,6 +60,7 @@
       var ask = (qs || []).filter(function (q) { return q && q.id === id; })[0];
       if (!ask) return { ok: false, error: "that question is already answered or withdrawn" };
       if (!Array.isArray(ask.quick) || ask.quick.indexOf(label) < 0) return { ok: false, error: "not one of the question's quick answers" };
+      if (shownOverride && !sameAsShown(ask, shownOverride)) return { ok: false, error: "the question changed since it was shown" };
       asks[id] = ask;
       var rs = rows(); if (!rs.length) return { ok: false, retry: true, error: "agent list not loaded yet" };
       var hit = matchAgent(ask.agent, rs); if (!hit || !hit.path) return { ok: false, error: "the asking agent (" + ask.agent + ") is not in the list" };
@@ -111,6 +119,13 @@
     window.api.onAnswerOnceDeliver(function (p) {
       if (!p || !p.reqId) return;
       answer(String(p.id || ""), String(p.answer || "")).then(function (r) { window.api.answerOnceResult({ reqId: p.reqId, ok: !!r.ok, error: r.error || "", retry: !!r.retry }); });
+    });
+  }
+  // v1.154.0 a click in the THYRA dock / pop-up: main already re-read the file; this is the same delivery as a card click (sealed, bound to what the dock showed)
+  if (window.api && window.api.onDockAskDeliver) {
+    window.api.onDockAskDeliver(function (p) {
+      if (!p || !p.reqId) return;
+      answer(String(p.id || ""), String(p.label || ""), true, p.shown).then(function (r) { window.api.answerOnceResult({ reqId: p.reqId, ok: !!r.ok, error: r.error || "", retry: !!r.retry }); });
     });
   }
   setInterval(function () { if (document.querySelector(".ao-card")) refresh(true); }, 15000);
