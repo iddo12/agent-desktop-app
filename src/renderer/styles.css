@@ -2021,3 +2021,23 @@ button.danger:not(:disabled):hover { filter: brightness(1.1); }
 .hidden-agents-toggle { font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
 .hidden-agents-toggle:hover { border-color: var(--accent); }
 .hidden-agents-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* v1.153.0 Approvals pop-up (approvals-popup.js) */
+#approvals-popup { position: fixed; right: 16px; bottom: 16px; width: 460px; max-width: calc(100vw - 32px); max-height: 70vh; display: flex; flex-direction: column; z-index: 9000; background: #fff8f4; color: #3b1c10; border: 1px solid #c96442; border-left: 6px solid #c96442; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.3); font-size: 13px; }
+#approvals-popup.hidden { display: none; }
+#approvals-popup .ap-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; font-weight: 700; font-size: 14px; }
+#approvals-popup .ap-head .ap-x { margin-left: auto; background: none; border: 0; cursor: pointer; font-size: 16px; color: inherit; }
+#approvals-popup .ap-list { overflow-y: auto; padding: 0 12px; }
+#approvals-popup .ap-item { padding: 8px 0; border-top: 1px solid #ecd2c6; }
+#approvals-popup .ap-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#approvals-popup .ap-name { font-weight: 700; }
+#approvals-popup .ap-tool { background: #c96442; color: #fff; border-radius: 4px; padding: 0 6px; font-size: 11px; }
+#approvals-popup .ap-wait { margin-left: auto; font-size: 11px; opacity: .7; }
+#approvals-popup .ap-act { font-family: Consolas, monospace; font-size: 12px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; max-height: 4.8em; overflow: auto; background: #fff; border: 1px solid #ecd2c6; border-radius: 4px; padding: 3px 6px; }
+#approvals-popup .ap-btns { display: flex; gap: 6px; align-items: center; }
+#approvals-popup button.ap-yes, #approvals-popup button.ap-no, #approvals-popup button.ap-all, #approvals-popup button.ap-denyall { border-radius: 6px; padding: 3px 12px; cursor: pointer; border: 1px solid #8a4a30; }
+#approvals-popup .ap-yes, #approvals-popup .ap-all { background: #2e7d32; color: #fff; border-color: #2e7d32; }
+#approvals-popup .ap-no, #approvals-popup .ap-denyall { background: #fff; color: #7a2a14; }
+#approvals-popup .ap-msg { font-size: 12px; opacity: .85; }
+#approvals-popup .ap-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #ecd2c6; align-items: center; flex-wrap: wrap; }
+#approvals-popup .ap-note { font-size: 11px; opacity: .7; padding: 0 12px 8px; }

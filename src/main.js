@@ -1295,7 +1295,7 @@ if (!gotSingleInstanceLock) {
     applyClaudeIntegration(); // v1.121.0: only with the person's consent (Setup > Claude Code integration); v1.77.2: a no-op in test mode
     reapOrphanedBackgroundAgentProcesses();
     setInterval(reapOrphanedBackgroundAgentProcesses, REAPER_INTERVAL_MS);
-    setInterval(() => { checkApprovalBlocked().catch((e) => logStuckWatchdog(`checkApprovalBlocked error: ${e.message}`)); }, 60 * 1000).unref();
+    setInterval(() => { checkApprovalBlocked().catch((e) => logStuckWatchdog(`checkApprovalBlocked error: ${e.message}`)); }, 3 * 1000).unref(); // v1.153.0: 3 s (was 60 s) so the Approvals pop-up appears within seconds; the scan is a few cached stats
     setInterval(() => {
       checkForStuckTurns().catch((e) => logStuckWatchdog(`checkForStuckTurns error: ${e.message}`));
     }, STUCK_CHECK_INTERVAL_MS);
@@ -3354,6 +3354,9 @@ const approvalRestartAt = new Map();
 // the app only said "Working..."). approvalPending drives a visible banner with Approve / Deny that only the owner's click
 // answers (nothing is ever approved automatically), and makes the stuck-turn watchdog leave the agent alone.
 const approvalPending = new Map();      // agentPath -> { needs, since }
+// v1.153.0 APPROVALS POP-UP: shown after 2 s of waiting (the 90 s rule below now only governs the Haiku auto-restart and the log line)
+const APPROVAL_SHOW_MS = 2 * 1000;
+let approvalsLastKey = "";
 async function checkApprovalBlocked() {
   const now = Date.now();
   // Scans the daemon's job files, NOT ptySessions: an agent whose tab was never opened has no attach client, and the
@@ -3373,7 +3376,7 @@ async function checkApprovalBlocked() {
     const since = approvalBlockedSince.get(agentPath) || now;
     if (!approvalBlockedSince.has(agentPath)) logStuckWatchdog(`approval-blocked: ${agentPath} - first seen waiting for "${String(st.needs).slice(0, 120)}"`);
     approvalBlockedSince.set(agentPath, since);
-    if (now - since < 90 * 1000) continue;
+    if (now - since < APPROVAL_SHOW_MS) continue;
     // only the agent's CURRENT conversation counts: an old killed job file can keep "blocked" forever
     // (newest transcript file by mtime, not listConversations(): that returns [] for a session whose only human turn is a
     // handoff prompt, which is exactly the kind of session that hangs)
@@ -3383,6 +3386,13 @@ async function checkApprovalBlocked() {
       for (const fn of fs.readdirSync(pdir)) { if (!/\.jsonl$/.test(fn)) continue; const t = fs.statSync(path.join(pdir, fn)).mtimeMs; if (t > bestT) { bestT = t; best = fn; } }
       if (!best || best.replace(/\.jsonl$/, "") !== st.sessionId || st.state !== "working") continue;
     } catch (_) { continue; }
+    // shown in the Approvals pop-up and the banner. A CHANGED request is a new request: new `since`, so a click on the old card is refused.
+    {
+      const needs = String(st.needs).slice(0, 600), cur = approvalPending.get(agentPath);
+      if (cur && cur.needs !== needs) { approvalBlockedSince.set(agentPath, now); approvalPending.set(agentPath, { needs, since: now }); }
+      else if (!cur) approvalPending.set(agentPath, { needs, since });
+    }
+    if (now - since < 90 * 1000) continue;
     let model = "";
     try {
       const fd = fs.openSync(st.linkScanPath, "r"); const size = fs.fstatSync(fd).size; const len = Math.min(size, 256 * 1024);
@@ -3392,7 +3402,7 @@ async function checkApprovalBlocked() {
     const secs = Math.round((now - since) / 1000);
     const haiku = /haiku/i.test(model);
     logStuckWatchdog(`approval-blocked: ${agentPath} - waiting ${secs}s for "${String(st.needs).slice(0, 160)}" (${model || "model unknown"})${haiku ? " - Haiku session, restarting it on the pinned model" : " - left alone, this approval is the owner's"}`);
-    if (!haiku) approvalPending.set(agentPath, { needs: String(st.needs).slice(0, 600), since });   // shown as a banner with Approve / Deny (renderer approval-banner.js)
+    if (haiku) approvalPending.delete(agentPath);   // a Haiku session is restarted below instead of asking the owner
     if (haiku && now - (approvalRestartAt.get(agentPath) || 0) > 20 * 60 * 1000) {
       approvalRestartAt.set(agentPath, now);
       approvalBlockedSince.delete(agentPath);
@@ -3400,30 +3410,93 @@ async function checkApprovalBlocked() {
       catch (e) { logStuckWatchdog(`approval-blocked: ${agentPath} - restart failed: ${e.message}`); }
     }
   }
+  notifyApprovalsChanged();
 }
 ipcMain.handle("approval-pending-get", (event, { agentPath }) => {
   const p = approvalPending.get(agentPath);
   return p ? { needs: p.needs, since: p.since, promptOnScreen: promptLikelyOpen(agentPath) } : null;
 });
-// the owner's click only. Enter takes the prompt's default "Yes"; Escape declines.
-ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
-  // v1.71.1 (Testing agent review): the click must answer EXACTLY the prompt the banner showed.
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, reason: "not from the main window" };
-  if (answer !== "approve" && answer !== "deny") return { ok: false, reason: "bad answer" };
+// One answer to one prompt, shared by the banner (approval-answer) and the Approvals pop-up. Returns { ok } or { ok:false, reason }. `via` is for the log.
+function answerApproval(agentPath, answer, since, via, expectNeeds) {
   const s = ptySessions.get(agentPath);
   if (!s || !s.proc) return { ok: false, reason: "this agent is not attached; open its Terminal tab once, or use Session > Restart session" };
   const pend = approvalPending.get(agentPath);
   if (!pend) return { ok: false, reason: "nothing is waiting for approval" };
   if (since !== pend.since) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
+  if (expectNeeds != null && String(expectNeeds) !== String(pend.needs)) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
   const diag = () => approvalScreen.diagnose({ shortLen: (dialogTails.get(agentPath) || "").length, longLen: (dialogLongTails.get(agentPath) || "").length, dialogOpen: dialogOpenFor(agentPath), promptWaiting: deliveryScreen.promptWaiting(dialogTails.get(agentPath) || ""), longOpen: approvalScreen.longPromptOpen(dialogLongTails.get(agentPath)), cmdShort: approvalScreen.commandOnScreen(dialogTails.get(agentPath), pend.needs), cmdLong: approvalScreen.commandOnScreen(dialogLongTails.get(agentPath), pend.needs), needsLen: String(pend.needs).length });
   if (!promptLikelyOpen(agentPath)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED prompt-not-on-screen ${diag()}`); return { ok: false, reason: "the prompt is not on the screen; use Session > Restart session" }; }
   // v1.152.3: the start of a long command has scrolled out of the 1500-char text; look in the 8000-char one too
   if (!approvalScreen.openPromptFor(dialogLongTails.get(agentPath), pend.needs)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED not-the-same-prompt ${diag()}`); return { ok: false, reason: "the prompt on the agent's screen is not the one shown here; use Session > Restart session" }; }
-  logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} for "${String(pend.needs).slice(0, 160)}"`);
+  logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} (${via}) for "${String(pend.needs).slice(0, 160)}"`);
+  approvalsLog({ agent: agentPath, answer, via, since, needs: pend.needs, result: "sent" });
   writeToPtyChunked(s.proc, agentPath, answer === "approve" ? "\r" : "\x1b");
   approvalPending.delete(agentPath);        // the next prompt (if any) must be seen and read again, never approved by a second click on this card
   approvalBlockedSince.delete(agentPath);
   return { ok: true };
+}
+// the owner's click only. Enter takes the prompt's default "Yes"; Escape declines.
+ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
+  // v1.71.1 (Testing agent review): the click must answer EXACTLY the prompt the banner showed.
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, reason: "not from the main window" };
+  if (answer !== "approve" && answer !== "deny") return { ok: false, reason: "bad answer" };
+  const r = answerApproval(agentPath, answer, since, "banner", null);
+  if (r.ok) notifyApprovalsChanged();
+  return r;
+});
+
+// ===== v1.153.0 APPROVALS POP-UP (src/approvalsPopup.js has the rules) =====
+const approvalsPopup = require("./approvalsPopup");
+let approvalsLogObj = null;
+function approvalsLog(rec) {
+  try {
+    if (!approvalsLogObj) {
+      approvalsLogObj = approvalsPopup.createLog({
+        file: path.join(require("./sealedAnswers").stateDir(), "approvals.jsonl"),
+        sign: (r) => { if (testMode.TEST_MODE && !process.env.AGENT_DESKTOP_SEALED_DIR) return null; return getSealer().signReceipt(r); },
+      });
+    }
+    approvalsLogObj.add(rec);
+  } catch (e) { logStuckWatchdog(`approvals log failed: ${e.message}`); }
+}
+function approvalItems() {
+  const attached = (ap) => !!(ptySessions.get(ap) && ptySessions.get(ap).proc);
+  return approvalsPopup.buildItems(approvalPending, (ap, needs) => { try { return attached(ap) && promptLikelyOpen(ap) && approvalScreen.openPromptFor(dialogLongTails.get(ap), needs); } catch (e) { return false; } }, (ap) => path.basename(ap), Date.now());
+}
+function notifyApprovalsChanged() {
+  try {
+    const items = approvalItems(), key = approvalsPopup.listKey(items);
+    if (key === approvalsLastKey) return;
+    const before = approvalsLastKey ? approvalsLastKey.split("\n").length : 0;
+    approvalsLastKey = key;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("approvals-changed");
+    if (items.length > before && !mainWindow.isFocused()) mainWindow.flashFrame(true);
+  } catch (e) { /* never break the scan */ }
+}
+// sandbox only: fake waiting agents (see src/approvalsTestHook.js); does nothing unless the test mode and AGENT_DESKTOP_FAKE_APPROVALS are both set
+require("./approvalsTestHook").install({ testMode, ptySessions, dialogTails, dialogLongTails, trackDialog });
+ipcMain.handle("approvals-list", (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, items: [] };
+  return { ok: true, items: approvalItems() };
+});
+// decisions: [{agentPath, since, needs, answer}] exactly as drawn. Sequential, 250 ms apart, each re-checked by answerApproval.
+ipcMain.handle("approvals-decide", async (event, { decisions, via }) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, error: "not from the main window", results: [] };
+  const shown = Array.isArray(decisions) ? decisions.map((d) => (d && typeof d.needs === "string") ? d.needs : null) : [];
+  const c = approvalsPopup.checkBatch(decisions);
+  if (!c.ok) return { ok: false, error: c.error, results: [] };
+  const how = via === "all" ? "popup-all" : "popup-item";
+  const results = [];
+  for (let i = 0; i < c.decisions.length; i++) {
+    const d = c.decisions[i];
+    const r = shown[i] == null ? { ok: false, reason: "no displayed request to check against" } : answerApproval(d.agentPath, d.answer, d.since, how, shown[i]);
+    if (!r.ok) approvalsLog({ agent: d.agentPath, answer: d.answer, via: how, since: d.since, needs: shown[i] || "", result: "refused", reason: String(r.reason).slice(0, 200) });
+    results.push({ agentPath: d.agentPath, ok: !!r.ok, reason: r.reason || "" });
+    if (i < c.decisions.length - 1) await new Promise((res) => setTimeout(res, 250));
+  }
+  notifyApprovalsChanged();
+  return { ok: true, results };
 });
 function typeIntoPty(agentPath, text) {
   const s = ptySessions.get(agentPath);

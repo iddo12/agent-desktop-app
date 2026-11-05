@@ -40,6 +40,18 @@ function message(s) {
 function rawPub(keyObj) { return (keyObj.type === "private" ? crypto.createPublicKey(keyObj) : keyObj).export({ type: "spki", format: "der" }).subarray(-32); }
 function kidOf(pubRaw) { return crypto.createHash("sha256").update(pubRaw).digest("hex").slice(0, 16); }
 
+function receiptMessage(r) {
+  const o = Object.assign({}, r); delete o.sig;
+  return Buffer.from("approval-receipt-v1" + JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]])), "utf8");
+}
+function verifyReceipt(r, pub) {
+  try {
+    if (!r || !pub || r.kid !== pub.kid || kidOf(Buffer.from(pub.pub, "hex")) !== pub.kid) return false;
+    const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(pub.pub, "hex")]);
+    return crypto.verify(null, receiptMessage(r), crypto.createPublicKey({ key: spki, format: "der", type: "spki" }), Buffer.from(String(r.sig || ""), "base64"));
+  } catch (e) { return false; }
+}
+
 // Pure check used by the tests; shared_tools\sealed_verify.py is the same rule for agents. pub = {kid, pub(hex)} from pub.json.
 function verify(seal, ask, pub, o) {
   o = o || {}; const now = o.now == null ? Date.now() : o.now;
@@ -110,7 +122,15 @@ function createSealer(io) {
     fs.appendFileSync(ledger, JSON.stringify({ id: s.id, ts: s.ts, nonce: s.nonce, answer: s.answer, via: s.via }) + "\n");
     return s;
   }
-  return { seal, publicInfo: () => { load(); return { kid: kidOf(pub), pub: pub.toString("hex") }; }, dir };
+  // APPROVAL RECEIPTS (approvals pop-up): the same key signs a line of the approvals log. Domain-separated prefix, so a receipt can never be
+  // replayed as an answer seal and vice versa. rec is plain JSON data; the returned object is rec + {kid, sig}.
+  function signReceipt(rec) {
+    load();
+    const out = Object.assign({}, rec, { kid: kidOf(pub) });
+    out.sig = crypto.sign(null, receiptMessage(out), priv).toString("base64");
+    return out;
+  }
+  return { seal, signReceipt, publicInfo: () => { load(); return { kid: kidOf(pub), pub: pub.toString("hex") }; }, dir };
 }
 
 // The IPC body: seal the owner's answer into the OPEN question file (the renderer then calls resolve-open-question, which moves it to answered\).
@@ -136,4 +156,4 @@ function sealIntoFile(sealer, questionsDir, id, text, via, shown) {
   return { ok: true, kid: s.kid };
 }
 
-module.exports = { stateDir, qhash, message, verify, createSealer, sealIntoFile, kidOf };
+module.exports = { verifyReceipt, stateDir, qhash, message, verify, createSealer, sealIntoFile, kidOf };
