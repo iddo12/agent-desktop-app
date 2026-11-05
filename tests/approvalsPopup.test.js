@@ -75,5 +75,11 @@ const f3 = path.join(dir, "e.jsonl");
 ok(ap.createLog({ file: f3, sign: () => { throw new Error("no key"); } }).add({ agent: "A", answer: "deny", via: "banner", since: 1, needs: "n", result: "sent" }));
 eq(JSON.parse(fs.readFileSync(f3, "utf8")).sealed, false);
 
+// downgrade: a log whose lines were re-written as sealed:false (chain recomputed) must not verify against a public key
+const fd = path.join(dir, "d.jsonl"); const dl = ap.createLog({ file: fd, sign: (r) => sealer.signReceipt(r) }); dl.add({ agent: "A", answer: "approve", via: "banner", since: 1, needs: "n", result: "sent" });
+ok(ap.verifyLog(fd, pub, sa.verifyReceipt).ok);
+const fu = path.join(dir, "d2.jsonl"); ap.createLog({ file: fu, sign: () => null }).add({ agent: "A", answer: "approve", via: "banner", since: 1, needs: "n", result: "sent" });
+const vu = ap.verifyLog(fu, pub, sa.verifyReceipt); ok(!vu.ok && vu.unsigned.length === 1, "unsigned lines are reported, never ok");
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("approvalsPopup.test.js: " + n + " asserts passed");

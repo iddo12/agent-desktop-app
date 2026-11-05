@@ -81,15 +81,16 @@ function createLog(io) {
 }
 // Checks the chain and every signature. pub = {kid, pub}. Returns { ok, lines, bad: [line numbers] }.
 function verifyLog(file, pub, verifyReceipt) {
-  let lines; try { lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean); } catch (e) { return { ok: true, lines: 0, bad: [] }; }
-  const bad = []; let prev = "genesis";
+  let lines; try { lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean); } catch (e) { return { ok: true, lines: 0, bad: [], unsigned: [] }; }
+  const bad = [], unsigned = []; let prev = "genesis";
   lines.forEach((l, i) => {
     let r; try { r = JSON.parse(l); } catch (e) { bad.push(i + 1); prev = crypto.createHash("sha256").update(l, "utf8").digest("hex"); return; }
     if (r.prev !== prev) bad.push(i + 1);
-    else if (r.sealed && !verifyReceipt(r, pub)) bad.push(i + 1);
+    else if (r.sealed !== true) unsigned.push(i + 1);          // an unsigned line (or sealed:false written by a forger) never verifies
+    else if (!verifyReceipt(r, pub)) bad.push(i + 1);
     prev = crypto.createHash("sha256").update(l, "utf8").digest("hex");
   });
-  return { ok: bad.length === 0, lines: lines.length, bad };
+  return { ok: bad.length === 0 && unsigned.length === 0, lines: lines.length, bad, unsigned };
 }
 
 module.exports = { parseNeeds, buildItems, listKey, checkBatch, createLog, verifyLog, MAX_DECISIONS };

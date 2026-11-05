@@ -3,7 +3,7 @@
 // Nothing is approved automatically and a prompt that appears after the panel was drawn is never covered by "Approve all".
 (function () {
   if (!window.api || !window.api.approvalsList) return;
-  let box = null, items = [], hidden = false, hiddenKey = "", busy = false, lastDraw = "";
+  let box = null, items = [], hidden = false, hiddenKey = "", busy = false, lastDraw = "", changedAt = 0, shownKey = "";
   const msgs = new Map();
   const STR = { title: (n) => (n === 1 ? "1 agent is waiting for your approval" : n + " agents are waiting for your approval"), all: (n) => "Approve all " + n, denyAll: "Deny all", yes: "Approve", no: "Deny", hide: "Hide",
     notYet: "The prompt is not on this agent's screen yet; it cannot be answered from here.", note: "Your click goes into each agent's prompt. Nothing is approved on its own. Every answer is logged." };
@@ -19,9 +19,11 @@
     const b = ensure(), k = keyOf(items);
     if (!items.length || (hidden && hiddenKey === k)) { b.classList.add("hidden"); b.textContent = ""; lastDraw = ""; return; }
     if (hidden && hiddenKey !== k) hidden = false;     // something new arrived: show again
-    const sig = k + "|" + busy + "|" + Array.from(msgs.entries()).join(",");
+    if (k !== shownKey) { shownKey = k; changedAt = Date.now(); setTimeout(draw, 1100); }   // buttons stay disabled for 1 s after the list changes, so a click cannot land on a different set than the one the owner was looking at
+    const sig = k + "|" + busy + "|" + (Date.now() - changedAt < 1000) + "|" + Array.from(msgs.entries()).join(",");
     if (sig === lastDraw) { b.querySelectorAll(".ap-wait").forEach((w, i) => { if (items[i]) w.textContent = fmt(Date.now() - items[i].since); }); return; }
     lastDraw = sig;
+    const settling = Date.now() - changedAt < 1000;
     b.textContent = "";
     const act = items.filter((i) => i.answerable);
     const head = el("div", "ap-head"); head.append(el("span", "", STR.title(items.length)));
@@ -36,7 +38,7 @@
       row.append(top, el("div", "ap-act", it.action || it.needs));
       const btns = el("div", "ap-btns");
       if (it.answerable) {
-        const mk = (label, cls, ans) => { const bt = el("button", cls, label); bt.disabled = busy; bt.addEventListener("click", (ev) => { if (ev.isTrusted) decide([it], ans, "item"); }); return bt; };
+        const mk = (label, cls, ans) => { const bt = el("button", cls, label); bt.disabled = busy || settling; bt.addEventListener("click", (ev) => { if (ev.isTrusted) decide([it], ans, "item"); }); return bt; };
         btns.append(mk(STR.yes, "ap-yes", "approve"), mk(STR.no, "ap-no", "deny"));
       } else btns.append(el("span", "ap-msg", STR.notYet));
       const m = msgs.get(it.agentPath); if (m) btns.append(el("span", "ap-msg", m));
@@ -44,8 +46,8 @@
     }
     const foot = el("div", "ap-foot");
     if (act.length) {
-      const all = el("button", "ap-all", STR.all(act.length)); all.disabled = busy; all.addEventListener("click", (ev) => { if (ev.isTrusted) decide(act, "approve", "all"); });
-      const da = el("button", "ap-denyall", STR.denyAll); da.disabled = busy; da.addEventListener("click", (ev) => { if (ev.isTrusted) decide(act, "deny", "all"); });
+      const all = el("button", "ap-all", STR.all(act.length)); all.disabled = busy || settling; all.addEventListener("click", (ev) => { if (ev.isTrusted) decide(act, "approve", "all"); });
+      const da = el("button", "ap-denyall", STR.denyAll); da.disabled = busy || settling; da.addEventListener("click", (ev) => { if (ev.isTrusted) decide(act, "deny", "all"); });
       foot.append(all, da);
     }
     b.append(head, list, foot, el("div", "ap-note", STR.note));
