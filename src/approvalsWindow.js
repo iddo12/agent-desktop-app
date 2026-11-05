@@ -4,29 +4,31 @@
 "use strict";
 const fs = require("fs"), path = require("path");
 
-const DEFAULT = { width: 340, height: 420 }, MIN = { width: 220, height: 140 }, MAX_SIZE = 4000;
+const DEFAULT = { width: 340, height: 420 }, MIN = { width: 220, height: 140 }, TAB = { width: 200, height: 34 }, MAX_SIZE = 4000;
 
 function readState(file) {
   try {
     const j = JSON.parse(fs.readFileSync(file, "utf8"));
     const b = j && j.bounds, num = (v) => typeof v === "number" && isFinite(v);
-    return { open: j && j.open === true, onTop: !(j && j.onTop === false), bounds: b && num(b.x) && num(b.y) && num(b.width) && num(b.height) ? { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) } : null };
-  } catch (e) { return { open: false, onTop: true, bounds: null }; }
+    const rb = (b) => (b && num(b.x) && num(b.y) && num(b.width) && num(b.height) ? { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) } : null);
+    return { open: j && j.open === true, onTop: !(j && j.onTop === false), collapsed: !!(j && j.collapsed === true), bounds: rb(b), full: rb(j && j.full) };
+  } catch (e) { return { open: false, onTop: true, collapsed: false, bounds: null, full: null }; }
 }
 function writeState(file, st) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = file + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify({ open: !!st.open, onTop: st.onTop !== false, bounds: st.bounds || null }));
+    fs.writeFileSync(tmp, JSON.stringify({ open: !!st.open, onTop: st.onTop !== false, collapsed: !!st.collapsed, bounds: st.bounds || null, full: st.full || null }));
     fs.renameSync(tmp, file);
     return true;
   } catch (e) { return false; }
 }
 // workAreas: [{x,y,width,height}] of every display. Returns bounds that are at least half visible on some display, size within limits;
 // a position on a screen that is gone falls back to the top-right corner of the primary (first) work area.
-function clampBounds(saved, workAreas) {
+function clampBounds(saved, workAreas, minSize) {
+  const mn = minSize || MIN;
   const wa = (workAreas && workAreas.length) ? workAreas : [{ x: 0, y: 0, width: 1280, height: 720 }];
-  const size = (b) => ({ width: Math.max(MIN.width, Math.min(MAX_SIZE, Math.round(b ? b.width : DEFAULT.width))), height: Math.max(MIN.height, Math.min(MAX_SIZE, Math.round(b ? b.height : DEFAULT.height))) });
+  const size = (b) => ({ width: Math.max(mn.width, Math.min(MAX_SIZE, Math.round(b ? b.width : DEFAULT.width))), height: Math.max(mn.height, Math.min(MAX_SIZE, Math.round(b ? b.height : DEFAULT.height))) });
   const s = size(saved);
   if (saved) {
     for (const a of wa) {
@@ -38,4 +40,4 @@ function clampBounds(saved, workAreas) {
   const w = Math.min(s.width, p.width), h = Math.min(s.height, p.height);
   return { x: p.x + p.width - w - 16, y: p.y + 16, width: w, height: h };
 }
-module.exports = { readState, writeState, clampBounds, DEFAULT, MIN };
+module.exports = { readState, writeState, clampBounds, DEFAULT, MIN, TAB };

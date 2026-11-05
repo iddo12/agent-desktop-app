@@ -4,7 +4,7 @@
 (function () {
   if (!window.api || !window.api.approvalsList) return;
   const WIN = !!(document.body && document.body.dataset.thyraWindow === "1");   // the dock window: always shown, compact, own preload
-  let docked = false, onTop = true;
+  let docked = false, onTop = true, collapsed = false;
   let box = null, items = [], hidden = false, hiddenKey = "", busy = false, lastDraw = "", changedAt = 0, shownKey = "";
   const msgs = new Map();
   const STR = { title: (n) => (n === 1 ? "1 agent is waiting for your approval" : n + " agents are waiting for your approval"), all: (n) => "Approve all " + n, denyAll: "Deny all", yes: "Approve", no: "Deny", hide: "Hide",
@@ -23,19 +23,24 @@
     if (!WIN && (docked || !items.length || (hidden && hiddenKey === k))) { b.classList.add("hidden"); b.textContent = ""; lastDraw = ""; return; }
     if (hidden && hiddenKey !== k) hidden = false;     // something new arrived: show again
     if (k !== shownKey) { shownKey = k; changedAt = Date.now(); setTimeout(draw, 1100); }   // buttons stay disabled for 1 s after the list changes, so a click cannot land on a different set than the one the owner was looking at
-    const sig = k + "|" + busy + "|" + (Date.now() - changedAt < 1000) + "|" + Array.from(msgs.entries()).join(",");
+    const sig = k + "|" + collapsed + "|" + onTop + "|" + busy + "|" + (Date.now() - changedAt < 1000) + "|" + Array.from(msgs.entries()).join(",");
     if (sig === lastDraw) { b.querySelectorAll(".ap-wait").forEach((w, i) => { if (items[i]) w.textContent = fmt(Date.now() - items[i].since); }); return; }
     lastDraw = sig;
     const settling = Date.now() - changedAt < 1000;
     b.textContent = "";
     const act = items.filter((i) => i.answerable);
-    const head = el("div", "ap-head"); head.append(el("span", "", items.length ? STR.title(items.length) : "Approvals"));
+    if (WIN) document.body.dataset.collapsed = collapsed ? "1" : "";
+    const head = el("div", "ap-head"); head.append(el("span", "", collapsed ? "Approvals" + (items.length ? " " + items.length : "") : (items.length ? STR.title(items.length) : "Approvals")));
     const x = el("button", "ap-x", "×"); x.title = STR.hide; x.addEventListener("click", (ev) => { if (!ev.isTrusted) return; hidden = true; hiddenKey = keyOf(items); draw(); });
     if (WIN) {
-      const pin = el("button", "ap-x", onTop ? "On top" : "Normal"); pin.title = "Keep this window above all others"; pin.addEventListener("click", async (ev) => { if (!ev.isTrusted) return; const r = await window.api.approvalsWindow("ontop-toggle").catch(() => null); if (r) { onTop = !!r.onTop; lastDraw = ""; draw(); } });
+      const pin = el("button", "ap-x", onTop ? "Top: on" : "Top: off"); pin.title = "Keep this window above all others"; pin.addEventListener("click", async (ev) => { if (!ev.isTrusted) return; const r = await window.api.approvalsWindow("ontop-toggle").catch(() => null); if (r) { onTop = !!r.onTop; lastDraw = ""; draw(); } });
       const cl = el("button", "ap-x", "Close"); cl.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("close"); });
-      head.append(pin, cl);
+      const toggle = async () => { const r = await window.api.approvalsWindow("collapse-toggle").catch(() => null); if (r) { collapsed = !!r.collapsed; lastDraw = ""; draw(); } };
+      const col = el("button", "ap-x", collapsed ? "Expand" : "Collapse"); col.title = "Shrink to a small tab, or expand again"; col.addEventListener("click", (ev) => { if (ev.isTrusted) toggle(); });
+      const mn = el("button", "ap-x", "Min"); mn.title = "Minimize (restore from the taskbar, the tray icon or Ctrl+Alt+A)"; mn.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("minimize"); });
+      if (collapsed) head.append(col); else head.append(pin, col, mn, cl);
     } else head.append(x);
+    if (WIN && collapsed) { b.append(head); b.classList.remove("hidden"); return; }
     const list = el("div", "ap-list");
     for (const it of items) {
       const row = el("div", "ap-item"), top = el("div", "ap-top");
@@ -88,6 +93,6 @@
   window.api.onApprovalsChanged(() => refresh());
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-  if (WIN && window.api.approvalsWindow) window.api.approvalsWindow("state").then((r) => { if (r) onTop = !!r.onTop; lastDraw = ""; draw(); }).catch(() => {});
+  if (WIN && window.api.approvalsWindow) window.api.approvalsWindow("state").then((r) => { if (r) { onTop = !!r.onTop; collapsed = !!r.collapsed; } lastDraw = ""; draw(); }).catch(() => {});
   refresh();
 })();

@@ -91,8 +91,12 @@ ok(aw.clampBounds({ x: 0, y: 0, width: 10, height: 10 }, two).width === 220 && a
 ok(aw.clampBounds({ x: -290, y: 0, width: 300, height: 300 }, two).x === 1920 - 300 - 16, "mostly off-screen -> moved back");
 const sf = path.join(os.tmpdir(), "aw-state-" + process.pid + ".json");
 ok(aw.writeState(sf, { open: true, onTop: false, bounds: { x: 5, y: 6, width: 300, height: 200 } }));
-eq(aw.readState(sf), { open: true, onTop: false, bounds: { x: 5, y: 6, width: 300, height: 200 } });
-fs.writeFileSync(sf, "{broken"); eq(aw.readState(sf), { open: false, onTop: true, bounds: null }, "bad file -> defaults");
+eq(aw.readState(sf), { open: true, onTop: false, collapsed: false, bounds: { x: 5, y: 6, width: 300, height: 200 }, full: null });
+fs.writeFileSync(sf, "{broken"); eq(aw.readState(sf), { open: false, onTop: true, collapsed: false, bounds: null, full: null }, "bad file -> defaults");
+aw.writeState(sf, { open: true, collapsed: true, bounds: { x: 9, y: 9, width: 200, height: 34 }, full: { x: 9, y: 9, width: 340, height: 420 } });
+eq(aw.readState(sf).collapsed, true); eq(aw.readState(sf).full.height, 420);
+eq(aw.clampBounds({ x: 9, y: 9, width: 200, height: 34 }, two, aw.TAB).height, 34, "a collapsed tab keeps its small size");
+ok(aw.clampBounds({ x: 9, y: 9, width: 200, height: 34 }, two).height === 140, "without the tab minimum it would grow");
 fs.rmSync(sf, { force: true });
 
 fs.rmSync(dir, { recursive: true, force: true });

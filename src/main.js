@@ -3480,6 +3480,11 @@ function notifyApprovalsChanged(force) {
 const approvalsWindowLib = require("./approvalsWindow");
 let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
 function approvalsStateFile() { return path.join(app.getPath("userData"), "approvals-window.json"); }
+// every display's visible area (taskbar excluded), the PRIMARY first: it is the fallback when the saved screen is gone
+function approvalsWorkAreas() {
+  const prim = screen.getPrimaryDisplay();
+  return [prim.workArea].concat(screen.getAllDisplays().filter((d) => d.id !== prim.id).map((d) => d.workArea));
+}
 function isApprovalsSender(event) {
   try {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) return true;
@@ -3488,21 +3493,23 @@ function isApprovalsSender(event) {
 }
 function saveApprovalsState(open) {
   const cur = approvalsWindowLib.readState(approvalsStateFile());
-  let bounds = cur.bounds;
-  if (approvalsWin && !approvalsWin.isDestroyed()) { try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } }
-  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, bounds });
+  let bounds = cur.bounds, full = cur.full, collapsed = cur.collapsed;
+  if (approvalsWin && !approvalsWin.isDestroyed()) { collapsed = !!approvalsWin.__thyraCollapsed; try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } if (!collapsed) full = null; else if (approvalsWin.__thyraFull) full = approvalsWin.__thyraFull; }
+  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, collapsed, bounds, full });
 }
 function openApprovalsWindow() {
-  if (approvalsWin && !approvalsWin.isDestroyed()) { approvalsWin.show(); return; }
+  if (approvalsWin && !approvalsWin.isDestroyed()) { if (approvalsWin.isMinimized()) approvalsWin.restore(); approvalsWin.show(); return; }
   const st = approvalsWindowLib.readState(approvalsStateFile());
-  const b = approvalsWindowLib.clampBounds(st.bounds, screen.getAllDisplays().map((d) => d.workArea));
+  const was = st.collapsed ? approvalsWindowLib.TAB : approvalsWindowLib.MIN;   // a collapsed window is a small tab
+  const b = approvalsWindowLib.clampBounds(st.bounds, approvalsWorkAreas(), was);
   approvalsWin = new BrowserWindow({
-    ...b, minWidth: approvalsWindowLib.MIN.width, minHeight: approvalsWindowLib.MIN.height, show: false, autoHideMenuBar: true,
+    ...b, minWidth: Math.min(was.width, 120), minHeight: Math.min(was.height, 28), show: false, autoHideMenuBar: true,
     title: "THYRA - Approvals", backgroundColor: "#fff8f4",
     icon: path.join(__dirname, "..", "build", testMode.TEST_MODE && !demo.ON ? "icon-sandbox.ico" : "icon.ico"),
     webPreferences: { preload: path.join(__dirname, "approvals-window-preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const w = approvalsWin;
+  w.__thyraCollapsed = !!st.collapsed; w.__thyraFull = st.full || null;
   w.setMenuBarVisibility(false);
   if (st.onTop) w.setAlwaysOnTop(true, "floating");
   w.webContents.on("will-navigate", (e) => e.preventDefault());
@@ -3515,8 +3522,28 @@ function openApprovalsWindow() {
   saveApprovalsState(true);
   refreshApprovalsTray();
 }
+// Collapse to a small tab (when it blocks the work) and back; the full size is remembered and restored in the same place.
+function toggleApprovalsCollapse() {
+  const w = approvalsWin; if (!w || w.isDestroyed()) return false;
+  const T = approvalsWindowLib.TAB, wa = () => approvalsWorkAreas();
+  if (!w.__thyraCollapsed) {
+    const nb = w.getNormalBounds(); w.__thyraFull = nb; w.__thyraCollapsed = true;
+    w.setMinimumSize(Math.min(T.width, 120), Math.min(T.height, 28));
+    w.setBounds(approvalsWindowLib.clampBounds({ x: nb.x, y: nb.y, width: T.width, height: T.height }, wa(), T));
+  } else {
+    const cur = w.getNormalBounds(), f = w.__thyraFull || approvalsWindowLib.DEFAULT; w.__thyraCollapsed = false;
+    w.setMinimumSize(approvalsWindowLib.MIN.width, approvalsWindowLib.MIN.height);
+    w.setBounds(approvalsWindowLib.clampBounds({ x: cur.x, y: cur.y, width: f.width, height: f.height }, wa()));
+    w.__thyraFull = null;
+  }
+  saveApprovalsState(true);
+  return !!w.__thyraCollapsed;
+}
 function closeApprovalsWindow() { if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.close(); }
-function toggleApprovalsWindow() { if (approvalsWin && !approvalsWin.isDestroyed()) closeApprovalsWindow(); else openApprovalsWindow(); }
+function toggleApprovalsWindow() {
+  if (approvalsWin && !approvalsWin.isDestroyed()) { if (approvalsWin.isMinimized()) { approvalsWin.restore(); approvalsWin.showInactive(); } else closeApprovalsWindow(); }   // minimized: one click / the shortcut brings it back
+  else openApprovalsWindow();
+}
 function refreshApprovalsTray() {
   if (!approvalsTray) return;
   const open = !!(approvalsWin && !approvalsWin.isDestroyed());
@@ -3547,7 +3574,9 @@ ipcMain.handle("approvals-window", (event, { action }) => {
   if (action === "toggle" && !fromDock) { toggleApprovalsWindow(); return { ok: true }; }
   if (action === "close" && fromDock) { closeApprovalsWindow(); return { ok: true }; }
   if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.setAlwaysOnTop(on, "floating"); saveApprovalsState(true); return { ok: true, onTop: on }; }
-  if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true };
+  if (action === "minimize" && fromDock) { approvalsWin.minimize(); return { ok: true }; }
+  if (action === "collapse-toggle" && fromDock) { return { ok: true, collapsed: toggleApprovalsCollapse() }; }
+  if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true, collapsed: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.__thyraCollapsed), minimized: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isMinimized()) };
   return { ok: false };
 });
 // sandbox only: fake waiting agents (see src/approvalsTestHook.js); does nothing unless the test mode and AGENT_DESKTOP_FAKE_APPROVALS are both set
