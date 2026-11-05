@@ -88,7 +88,7 @@
     chip.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("open"); });
     document.body.appendChild(chip);
     const upd = () => { chip.textContent = items.length ? "Approvals " + items.length : "Approvals"; chip.classList.toggle("ap-chip-hot", items.length > 0); chip.style.display = docked ? "none" : ""; };
-    const oldDraw = draw; draw = function () { oldDraw(); upd(); };   // eslint-disable-line no-func-assign
+    const oldDraw = draw; draw = function () { oldDraw(); upd(); };
   }
   window.api.onApprovalsChanged(() => refresh());
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
