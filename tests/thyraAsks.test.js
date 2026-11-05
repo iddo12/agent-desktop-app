@@ -163,6 +163,14 @@ ok(!da.checkAnswer({ id: noQuick.id, label: "Yes", shown: da.shownOf(noQuick) },
   ok(/thyra-asks\.js[\s\S]*approvals-popup\.js/.test(rd("renderer/approvals-window.html")) && /thyra-asks\.js[\s\S]*approvals-popup\.js/.test(rd("renderer/index.html")), "both pages load thyra-asks.js before the popup script");
   ok(/waiting\(\)/.test(rd("renderer/approvals-popup.js")) && /asks\.recentCount\(\)/.test(rd("renderer/approvals-popup.js")), "chip count = prompts + recent asks");
   ok(!/slice\(0, 100\)/.test(rd("main.js").split('ipcMain.handle("list-open-questions"')[1].split("resolve-open-question")[0]), "list-open-questions has no 100 cap");
+  // THYRA's own look: no second taskbar button, own amber icons (not the Agent Desktop logo)
+  const mainSrc = rd("main.js"), bd = path.join(__dirname, "..", "build");
+  ok(/title: "THYRA - Approvals".*skipTaskbar: true/.test(mainSrc), "dock window is skipTaskbar");
+  ok(/new Tray\(thyraIcon\(false\)\)/.test(mainSrc) && /icon: thyraIcon\(false\)/.test(mainSrc), "tray and dock window use the THYRA icon");
+  for (const f of ["icon-thyra.ico", "icon-thyra-badge.ico", "icon-thyra.png", "icon-thyra-badge.png", "make-thyra-icon.py"]) ok(fs.existsSync(path.join(bd, f)), f + " exists");
+  ok(!fs.readFileSync(path.join(bd, "icon-thyra.ico")).equals(fs.readFileSync(path.join(bd, "icon.ico"))), "not the Agent Desktop icon");
+  const ico = fs.readFileSync(path.join(bd, "icon-thyra.ico")); const sizes = []; for (let i = 0; i < ico.readUInt16LE(4); i++) sizes.push(ico[6 + i * 16] || 256);
+  ok(sizes.includes(16) && sizes.includes(32), "ico has 16 and 32 px images");
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("thyraAsks: " + n + " checks passed");
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -3480,6 +3480,8 @@ function notifyApprovalsChanged(force) {
 const approvalsWindowLib = require("./approvalsWindow");
 const dockAsks = require("./dockAsks");   // v1.154.0 "Questions for you"
 let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
+// THYRA's own amber bell icons (build/make-thyra-icon.py): plain, and with a red dot while something waits. Not the Agent Desktop logo.
+function thyraIcon(badge) { return path.join(__dirname, "..", "build", badge ? "icon-thyra-badge.ico" : "icon-thyra.ico"); }
 function approvalsStateFile() { return path.join(app.getPath("userData"), "approvals-window.json"); }
 // every display's visible area (taskbar excluded), the PRIMARY first: it is the fallback when the saved screen is gone
 function approvalsWorkAreas() {
@@ -3505,8 +3507,8 @@ function openApprovalsWindow() {
   const b = approvalsWindowLib.clampBounds(st.bounds, approvalsWorkAreas(), was);
   approvalsWin = new BrowserWindow({
     ...b, minWidth: Math.min(was.width, 120), minHeight: Math.min(was.height, 28), show: false, autoHideMenuBar: true,
-    title: "THYRA - Approvals", backgroundColor: "#fff8f4",
-    icon: path.join(__dirname, "..", "build", testMode.TEST_MODE && !demo.ON ? "icon-sandbox.ico" : "icon.ico"),
+    title: "THYRA - Approvals", backgroundColor: "#fff8f4", skipTaskbar: true,   // one taskbar button only (Agent Desktop's); the dock is reached by its tray icon, Ctrl+Alt+A or the chip
+    icon: thyraIcon(false),
     webPreferences: { preload: path.join(__dirname, "approvals-window-preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const w = approvalsWin;
@@ -3556,10 +3558,11 @@ function refreshApprovalsTray() {
 function initApprovalsDock() {
   mainWindow.on("closed", () => { approvalsQuitting = true; closeApprovalsWindow(); });
   // v1.154.0 one count for everything that waits on the owner: permission prompts + asks from the last 3 days (tray tooltip, dock window title; the chip counts the same in the renderer)
-  let lastAskKey = null;
+  let lastAskKey = null, approvalsTrayBadge = false;
   const badge = () => {
     try {
       const rows = dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()), n = approvalItems().length + dockAsks.recentCount(rows);
+      if (approvalsTray) { if (!!n !== approvalsTrayBadge) { approvalsTrayBadge = !!n; try { approvalsTray.setImage(thyraIcon(approvalsTrayBadge)); } catch (e) { /* icon only */ } } }
       if (approvalsTray) approvalsTray.setToolTip(n ? "Agent Desktop - " + n + " waiting for you" : "Agent Desktop - nothing waiting");
       if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.setTitle(n ? "THYRA - " + n + " waiting" : "THYRA - Approvals");
       const k = dockAsks.listKey(rows);
@@ -3571,7 +3574,7 @@ function initApprovalsDock() {
   app.on("before-quit", () => { approvalsQuitting = true; try { saveApprovalsState(undefined); } catch (e) { /* quitting */ } });
   if (!testMode.TEST_MODE) {   // a sandbox instance must never take the real tray slot or the owner's shortcut
     try {
-      approvalsTray = new Tray(path.join(__dirname, "..", "build", "icon.ico"));
+      approvalsTray = new Tray(thyraIcon(false));
       approvalsTray.setToolTip("Agent Desktop - approvals");
       approvalsTray.on("click", () => toggleApprovalsWindow());
       refreshApprovalsTray();

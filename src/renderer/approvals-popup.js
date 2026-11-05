@@ -40,7 +40,7 @@
       const cl = el("button", "ap-x", "Close"); cl.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("close"); });
       const toggle = async () => { const r = await window.api.approvalsWindow("collapse-toggle").catch(() => null); if (r) { collapsed = !!r.collapsed; lastDraw = ""; draw(); } };
       const col = el("button", "ap-x", collapsed ? "Expand" : "Collapse"); col.title = "Shrink to a small tab, or expand again"; col.addEventListener("click", (ev) => { if (ev.isTrusted) toggle(); });
-      const mn = el("button", "ap-x", "Min"); mn.title = "Minimize (restore from the taskbar, the tray icon or Ctrl+Alt+A)"; mn.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("minimize"); });
+      const mn = el("button", "ap-x", "Min"); mn.title = "Minimize (restore from the amber tray icon or Ctrl+Alt+A; it has no taskbar button)"; mn.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("minimize"); });
       if (collapsed) head.append(col); else head.append(pin, col, mn, cl);
     } else head.append(x);
     if (WIN && collapsed) { b.append(head); b.classList.remove("hidden"); return; }
