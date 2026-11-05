@@ -81,5 +81,19 @@ ok(ap.verifyLog(fd, pub, sa.verifyReceipt).ok);
 const fu = path.join(dir, "d2.jsonl"); ap.createLog({ file: fu, sign: () => null }).add({ agent: "A", answer: "approve", via: "banner", since: 1, needs: "n", result: "sent" });
 const vu = ap.verifyLog(fu, pub, sa.verifyReceipt); ok(!vu.ok && vu.unsigned.length === 1, "unsigned lines are reported, never ok");
 
+// ---- dock window helpers ----
+const aw = require("../src/approvalsWindow");
+const two = [{ x: 0, y: 0, width: 1920, height: 1040 }, { x: 1920, y: 0, width: 1280, height: 720 }];
+eq(aw.clampBounds({ x: 2000, y: 50, width: 300, height: 300 }, two), { x: 2000, y: 50, width: 300, height: 300 }, "second monitor position kept");
+eq(aw.clampBounds({ x: 2000, y: 50, width: 300, height: 300 }, [two[0]]), { x: 1920 - 300 - 16, y: 16, width: 300, height: 300 }, "monitor unplugged -> top-right of the primary");
+eq(aw.clampBounds(null, [two[0]]), { x: 1920 - 340 - 16, y: 16, width: 340, height: 420 }, "default size");
+ok(aw.clampBounds({ x: 0, y: 0, width: 10, height: 10 }, two).width === 220 && aw.clampBounds({ x: 0, y: 0, width: 10, height: 10 }, two).height === 140, "minimum size");
+ok(aw.clampBounds({ x: -290, y: 0, width: 300, height: 300 }, two).x === 1920 - 300 - 16, "mostly off-screen -> moved back");
+const sf = path.join(os.tmpdir(), "aw-state-" + process.pid + ".json");
+ok(aw.writeState(sf, { open: true, onTop: false, bounds: { x: 5, y: 6, width: 300, height: 200 } }));
+eq(aw.readState(sf), { open: true, onTop: false, bounds: { x: 5, y: 6, width: 300, height: 200 } });
+fs.writeFileSync(sf, "{broken"); eq(aw.readState(sf), { open: false, onTop: true, bounds: null }, "bad file -> defaults");
+fs.rmSync(sf, { force: true });
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("approvalsPopup.test.js: " + n + " asserts passed");

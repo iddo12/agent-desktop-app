@@ -11,7 +11,7 @@ syncGuard.install();
 require("./appLogRing").install();
 // v1.121.0: where ARGUS, Memory, Keep working and the usage code find their files comes from the configuration layer (src/featureCtx.js)
 const featureCtx = require("./featureCtx").create({ cfg: require("./appConfig"), guard: testGuard });
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification, screen, Tray, globalShortcut } = require("electron");
 // v1.93.0: AD_PERF=1 only - per-IPC timing, event-loop stalls, memory, optional sync-fs accounting (src/perfLog.js).
 // Must wrap ipcMain before any handler below is registered. A no-op without the env var.
 const perfLog = require("./perfLog");
@@ -1287,6 +1287,7 @@ if (!gotSingleInstanceLock) {
   });
   app.whenReady().then(() => {
     createWindow();
+    try { initApprovalsDock(); } catch (e) { logStuckWatchdog(`approvals dock init failed: ${e.message}`); }
     if (demo.ON) { // v1.86.0 demo mode: no watchdogs, sweeps, timers or CLI work - just the window on the fictional data
       markStartupSweepDone(false);
       writeRuntimeStamp();
@@ -3463,26 +3464,101 @@ function approvalItems() {
   const attached = (ap) => !!(ptySessions.get(ap) && ptySessions.get(ap).proc);
   return approvalsPopup.buildItems(approvalPending, (ap, needs) => { try { return attached(ap) && promptLikelyOpen(ap) && approvalScreen.openPromptFor(dialogLongTails.get(ap), needs); } catch (e) { return false; } }, (ap) => path.basename(ap), Date.now());
 }
-function notifyApprovalsChanged() {
+function notifyApprovalsChanged(force) {
   try {
     const items = approvalItems(), key = approvalsPopup.listKey(items);
-    if (key === approvalsLastKey) return;
+    if (key === approvalsLastKey && !force) return;
     const before = approvalsLastKey ? approvalsLastKey.split("\n").length : 0;
     approvalsLastKey = key;
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.webContents.send("approvals-changed");
-    if (items.length > before && !mainWindow.isFocused()) mainWindow.flashFrame(true);
+    for (const w of [mainWindow, approvalsWin]) { if (w && !w.isDestroyed()) w.webContents.send("approvals-changed"); }
+    if (items.length > before && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused() && !(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isVisible())) mainWindow.flashFrame(true);
   } catch (e) { /* never break the scan */ }
 }
+// ===== v1.153.0 THYRA DOCK WINDOW: the Approvals list as a small movable always-on-top window (src/approvalsWindow.js) =====
+// Same owner-click-only IPC as the pop-up. Opened from the tray icon, Ctrl+Alt+A, or the "Approvals" chip in the main window; remembers its
+// position, size, always-on-top choice and whether it was open (reopens after a restart). A saved position on a monitor that is gone is moved back on screen.
+const approvalsWindowLib = require("./approvalsWindow");
+let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
+function approvalsStateFile() { return path.join(app.getPath("userData"), "approvals-window.json"); }
+function isApprovalsSender(event) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) return true;
+    return !!(approvalsWin && !approvalsWin.isDestroyed() && event.sender === approvalsWin.webContents);
+  } catch (e) { return false; }
+}
+function saveApprovalsState(open) {
+  const cur = approvalsWindowLib.readState(approvalsStateFile());
+  let bounds = cur.bounds;
+  if (approvalsWin && !approvalsWin.isDestroyed()) { try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } }
+  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, bounds });
+}
+function openApprovalsWindow() {
+  if (approvalsWin && !approvalsWin.isDestroyed()) { approvalsWin.show(); return; }
+  const st = approvalsWindowLib.readState(approvalsStateFile());
+  const b = approvalsWindowLib.clampBounds(st.bounds, screen.getAllDisplays().map((d) => d.workArea));
+  approvalsWin = new BrowserWindow({
+    ...b, minWidth: approvalsWindowLib.MIN.width, minHeight: approvalsWindowLib.MIN.height, show: false, autoHideMenuBar: true,
+    title: "THYRA - Approvals", backgroundColor: "#fff8f4",
+    icon: path.join(__dirname, "..", "build", testMode.TEST_MODE && !demo.ON ? "icon-sandbox.ico" : "icon.ico"),
+    webPreferences: { preload: path.join(__dirname, "approvals-window-preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  const w = approvalsWin;
+  w.setMenuBarVisibility(false);
+  if (st.onTop) w.setAlwaysOnTop(true, "floating");
+  w.webContents.on("will-navigate", (e) => e.preventDefault());
+  w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  w.once("ready-to-show", () => { if (!w.isDestroyed()) w.showInactive(); notifyApprovalsChanged(true); });   // never steals focus from what the owner is typing
+  const later = () => { clearTimeout(approvalsSaveTimer); approvalsSaveTimer = setTimeout(() => { if (!w.isDestroyed()) saveApprovalsState(true); }, 400); };
+  w.on("move", later); w.on("resize", later);
+  w.on("closed", () => { clearTimeout(approvalsSaveTimer); approvalsWin = null; if (!approvalsQuitting) approvalsWindowLib.writeState(approvalsStateFile(), Object.assign(approvalsWindowLib.readState(approvalsStateFile()), { open: false })); notifyApprovalsChanged(true); refreshApprovalsTray(); });
+  w.loadFile(path.join(__dirname, "renderer", "approvals-window.html"));
+  saveApprovalsState(true);
+  refreshApprovalsTray();
+}
+function closeApprovalsWindow() { if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.close(); }
+function toggleApprovalsWindow() { if (approvalsWin && !approvalsWin.isDestroyed()) closeApprovalsWindow(); else openApprovalsWindow(); }
+function refreshApprovalsTray() {
+  if (!approvalsTray) return;
+  const open = !!(approvalsWin && !approvalsWin.isDestroyed());
+  approvalsTray.setContextMenu(Menu.buildFromTemplate([
+    { label: open ? "Close the approvals window" : "Open the approvals window", click: () => toggleApprovalsWindow() },
+    { label: "Show Agent Desktop", click: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } } },
+  ]));
+}
+function initApprovalsDock() {
+  mainWindow.on("closed", () => { approvalsQuitting = true; closeApprovalsWindow(); });
+  app.on("before-quit", () => { approvalsQuitting = true; try { saveApprovalsState(undefined); } catch (e) { /* quitting */ } });
+  if (!testMode.TEST_MODE) {   // a sandbox instance must never take the real tray slot or the owner's shortcut
+    try {
+      approvalsTray = new Tray(path.join(__dirname, "..", "build", "icon.ico"));
+      approvalsTray.setToolTip("Agent Desktop - approvals");
+      approvalsTray.on("click", () => toggleApprovalsWindow());
+      refreshApprovalsTray();
+    } catch (e) { logStuckWatchdog(`approvals tray failed: ${e.message}`); }
+    try { if (!globalShortcut.register("CommandOrControl+Alt+A", () => toggleApprovalsWindow())) logStuckWatchdog("approvals shortcut Ctrl+Alt+A is taken by another program"); } catch (e) { /* no shortcut */ }
+    app.on("will-quit", () => { try { globalShortcut.unregisterAll(); } catch (e) { /* quitting */ } });
+  }
+  if (approvalsWindowLib.readState(approvalsStateFile()).open) setTimeout(() => { try { openApprovalsWindow(); } catch (e) { logStuckWatchdog(`approvals window reopen failed: ${e.message}`); } }, 1500);
+}
+ipcMain.handle("approvals-window", (event, { action }) => {
+  if (!isApprovalsSender(event)) return null;
+  const fromDock = !!(approvalsWin && !approvalsWin.isDestroyed() && event.sender === approvalsWin.webContents);
+  if (action === "open" && !fromDock) { openApprovalsWindow(); return { ok: true }; }
+  if (action === "toggle" && !fromDock) { toggleApprovalsWindow(); return { ok: true }; }
+  if (action === "close" && fromDock) { closeApprovalsWindow(); return { ok: true }; }
+  if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.setAlwaysOnTop(on, "floating"); saveApprovalsState(true); return { ok: true, onTop: on }; }
+  if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true };
+  return { ok: false };
+});
 // sandbox only: fake waiting agents (see src/approvalsTestHook.js); does nothing unless the test mode and AGENT_DESKTOP_FAKE_APPROVALS are both set
 require("./approvalsTestHook").install({ testMode, ptySessions, dialogTails, dialogLongTails, trackDialog });
 ipcMain.handle("approvals-list", (event) => {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, items: [] };
-  return { ok: true, items: approvalItems() };
+  if (!isApprovalsSender(event)) return { ok: false, items: [] };
+  return { ok: true, items: approvalItems(), docked: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isVisible()) };
 });
 // decisions: [{agentPath, since, needs, answer}] exactly as drawn. Sequential, 250 ms apart, each re-checked by answerApproval.
 ipcMain.handle("approvals-decide", async (event, { decisions, via }) => {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, error: "not from the main window", results: [] };
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window", results: [] };
   const shown = Array.isArray(decisions) ? decisions.map((d) => (d && typeof d.needs === "string") ? d.needs : null) : [];
   const c = approvalsPopup.checkBatch(decisions);
   if (!c.ok) return { ok: false, error: c.error, results: [] };

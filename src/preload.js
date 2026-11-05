@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld("api", {
   agentDialogOpen: (agentPath) => ipcRenderer.invoke("agent-dialog-open", { agentPath }),
   approvalPending: (agentPath) => ipcRenderer.invoke("approval-pending-get", { agentPath }),
   approvalAnswer: (agentPath, answer, since) => ipcRenderer.invoke("approval-answer", { agentPath, answer, since }),
+  approvalsWindow: (action) => ipcRenderer.invoke("approvals-window", { action }),   // v1.153.0 dock window: "open" | "toggle" | "state"
   approvalsList: () => ipcRenderer.invoke("approvals-list"),   // v1.153.0 Approvals pop-up
   approvalsDecide: (decisions, via) => ipcRenderer.invoke("approvals-decide", { decisions, via }),
   onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
