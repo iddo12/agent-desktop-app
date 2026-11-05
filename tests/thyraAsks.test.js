@@ -171,6 +171,48 @@ ok(!da.checkAnswer({ id: noQuick.id, label: "Yes", shown: da.shownOf(noQuick) },
   ok(!fs.readFileSync(path.join(bd, "icon-thyra.ico")).equals(fs.readFileSync(path.join(bd, "icon.ico"))), "not the Agent Desktop icon");
   const ico = fs.readFileSync(path.join(bd, "icon-thyra.ico")); const sizes = []; for (let i = 0; i < ico.readUInt16LE(4); i++) sizes.push(ico[6 + i * 16] || 256);
   ok(sizes.includes(16) && sizes.includes(32), "ico has 16 and 32 px images");
+  // ---- v1.154.1: age text, "No longer needed" (no answer, no seal), wrapping/scrollbar CSS, always-on-top ----
+  const AT = ctx2.window.ThyraAsks.ageText;
+  eq([AT(10000), AT(5 * 60000), AT(2 * 3600000), AT(40 * 3600000), AT(2 * DAY), AT(2 * DAY + 3600000)], ["now", "5 min", "2 h", "40 h", "2 days", "2 days"], "age text");
+  eq(AT(47 * 3600000), "47 h", "just under 2 days stays hours");
+  const qdir = fs.mkdtempSync(path.join(os.tmpdir(), "thyra-dismiss-")); fs.mkdirSync(path.join(qdir, "answered"));
+  const put = (a) => fs.writeFileSync(path.join(qdir, a.id + ".json"), JSON.stringify(a));
+  const dd = (extra) => Object.assign({ readOne: (id) => da.readOne(qdir, id), resolve: (id) => { fs.renameSync(path.join(qdir, id + ".json"), path.join(qdir, "answered", id + ".json")); return true; } }, extra);
+  put(fresh); put(noQuick);
+  let dr = da.dismissFromDock(dd(), { id: fresh.id, shown: da.shownOf(mk(fresh.id, { question: "other" })) }); ok(!dr.ok && /changed/.test(dr.error) && fs.existsSync(path.join(qdir, fresh.id + ".json")), "dismiss refuses a changed ask");
+  dr = da.dismissFromDock(dd(), { id: "20269999-000000-zzzz", shown }); ok(!dr.ok && /already answered or withdrawn/.test(dr.error), "dismiss refuses a missing/stale ask");
+  dr = da.dismissFromDock(dd(), { id: fresh.id }); ok(!dr.ok, "dismiss needs the displayed question");
+  dr = da.dismissFromDock(dd(), { id: "../x", shown }); ok(!dr.ok, "bad id");
+  dr = da.dismissFromDock(dd(), { id: fresh.id, shown }); ok(dr.ok, "dismiss ok");
+  const moved = JSON.parse(fs.readFileSync(path.join(qdir, "answered", fresh.id + ".json"), "utf8"));
+  ok(!fs.existsSync(path.join(qdir, fresh.id + ".json")) && !("seal" in moved) && !("answer" in moved), "file moved to answered\ with NO seal and NO answer written");
+  dr = da.dismissFromDock(dd(), { id: noQuick.id, shown: da.shownOf(noQuick) }); ok(dr.ok, "an ask without quick answers can be cleared too");
+  dr = da.dismissFromDock(dd({ resolve: () => { throw new Error("EPERM"); } }), { id: "x-1", shown }); ok(!dr.ok);
+  fs.rmSync(qdir, { recursive: true, force: true });
+  // renderer: untrusted ignored, trusted sends {id, shown} once and the row goes
+  const dis = []; let dlist = rows.slice();
+  const api3 = { dockAsksList: async () => ({ ok: true, rows: dlist }), dockAskAnswer: async () => ({ ok: true }), dockAskDismiss: async (r) => { dis.push(r); dlist = dlist.filter((x) => x.id !== r.id); return { ok: true }; } };
+  let clock3 = NOW; const A3 = ctx2.window.ThyraAsks.create({ api: api3, el: E, fmt: String, onChange() {}, now: () => clock3, later() {} });
+  await A3.refresh(); clock3 += 1100;
+  const rowd = A3.rows()[1];
+  eq(A3.dismiss({ isTrusted: false }, rowd), null, "untrusted dismiss ignored"); eq(dis.length, 0);
+  const pdm = A3.dismiss({ isTrusted: true }, rowd); eq(A3.dismiss({ isTrusted: true }, rowd), null, "second click while sending ignored"); await pdm;
+  eq(dis.length, 1); eq(dis[0], { id: rowd.id, shown: { question: rowd.question, agent: rowd.agent, quick: rowd.quick, context: rowd.context, merav: false, created: rowd.created } });
+  eq(A3.rows().filter((r) => r.id === rowd.id).length, 0, "cleared row is gone");
+  { const pp = E("div"); A3.render(pp); ok(find(pp, (x) => x.className === "ap-dismiss").length === A3.rows().filter((r) => !r.older).length, "every recent row has a No longer needed button"); ok(find(pp, (x) => x.className === "ap-wait").every((x) => /^(now|\d+ (min|h|days?))$/.test(x.textContent)), "age on every row"); }
+  // CSS: wrapping, margin, visible scrollbar, header/buttons fixed above the list
+  const css = rd("renderer/approvals-window.css");
+  ok(/\.ap-btns \{[^}]*flex-wrap: wrap/.test(css) && /overflow-wrap: anywhere/.test(css) && /min-width: 0/.test(css), "wrapping rules");
+  ok(/\.ap-list \{[^}]*overflow-y: scroll/.test(css) && /::-webkit-scrollbar \{/.test(css) && /::-webkit-scrollbar-track/.test(css) && /::-webkit-scrollbar-thumb/.test(css), "always-visible styled scrollbar");
+  ok(/\.ap-list \{[^}]*padding: 0 12px 0 8px/.test(css), "right margin so nothing touches the edge");
+  ok(/\.ap-head \{[^}]*flex: 0 0 auto/.test(css) && /\.ap-head \{[^}]*flex-wrap: wrap/.test(css), "header buttons wrap and stay above the list");
+  // main: narrow IPC for dismiss, top level that holds
+  ok(/dock-ask-dismiss/.test(rd("main.js")) && /dockAskDismiss/.test(rd("approvals-window-preload.js")) && /dockAskDismiss/.test(rd("preload.js")));
+  ok(/isApprovalsSender\(event\)\) return \{ ok: false, error: "not from the main window" \};\s*const r = dockAsks\.dismissFromDock/.test(rd("main.js").replace(/\r/g, "")), "dismiss IPC refuses other senders");
+  ok(!/getSealer|sealAnswer|sealIntoFile|seal-answer/.test(rd("main.js").split('ipcMain.handle("dock-ask-dismiss"')[1].split("v1.152.0 ANSWER ONCE")[0]), "dismiss path never touches the sealer");
+  const mj = rd("main.js");
+  ok(/setAlwaysOnTop\(true, "screen-saver"\)/.test(mj) && /moveTop\(\)/.test(mj) && /setInterval\(\(\) => \{ if \(w\.isDestroyed\(\)\) clearInterval\(topTimer\); else reassert\(\); \}, 3000\)/.test(mj) && /w\.on\("blur"/.test(mj), "always-on-top re-asserted on blur and every 3 s");
+  ok(!/parent:/.test(mj.split("function openApprovalsWindow()")[1].split("w.loadFile")[0]), "dock window has no parent/owner");
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("thyraAsks: " + n + " checks passed");
 })().catch((e) => { console.error(e); process.exit(1); });

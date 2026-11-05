@@ -87,4 +87,22 @@ async function answerFromDock(deps, request) {
   return d && d.ok ? { ok: true } : { ok: false, error: String(d && d.error || "unknown error").slice(0, 200), retry: !!(d && d.retry) };
 }
 
-module.exports = { createdMs, readAll, readOne, buildRows, recentCount, listKey, checkAnswer, answerFromDock, shownOf, RECENT_MS, MAX_ROWS };
+// "No longer needed": clears an ask WITHOUT sending anything and WITHOUT a seal (the file just moves to answered\, like `ask_iddo.py resolve`).
+// Same re-read rules as an answer: the file must still exist and still be what the dock drew. deps = { readOne(id), resolve(id)->bool }.
+function checkDismiss(request, current) {
+  const r = request || {};
+  if (typeof r.id !== "string" || !ID_RX.test(r.id)) return { ok: false, error: "bad question id" };
+  if (!current) return { ok: false, error: "that question is already answered or withdrawn" };
+  const c = checkAnswer({ id: r.id, label: quickOf(current)[0] || "-", shown: r.shown }, current);
+  if (!c.ok && !/quick answers/.test(c.error)) return c;    // a no-quick ask has no label to match; every other refusal stands
+  return { ok: true };
+}
+function dismissFromDock(deps, request) {
+  const r = request || {};
+  const c = checkDismiss(r, typeof r.id === "string" ? deps.readOne(r.id) : null);
+  if (!c.ok) return { ok: false, error: c.error };
+  let done = false; try { done = !!deps.resolve(r.id); } catch (e) { done = false; }
+  return done ? { ok: true } : { ok: false, error: "could not move the question file" };
+}
+
+module.exports = { checkDismiss, dismissFromDock, createdMs, readAll, readOne, buildRows, recentCount, listKey, checkAnswer, answerFromDock, shownOf, RECENT_MS, MAX_ROWS };

@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld("api", {
   approvalsDecide: (decisions, via) => ipcRenderer.invoke("approvals-decide", { decisions, via }),
   dockAsksList: () => ipcRenderer.invoke("dock-asks-list"),   // v1.154.0 "Questions for you" in the THYRA dock / pop-up
   dockAskAnswer: (req) => ipcRenderer.invoke("dock-ask-answer", req),
+  dockAskDismiss: (req) => ipcRenderer.invoke("dock-ask-dismiss", req),   // v1.154.1 "No longer needed": clears an ask, no answer, no seal
   onDockAskDeliver: (callback) => { ipcRenderer.on("dock-ask-deliver", (event, payload) => callback(payload)); },   // main -> this window: type the chosen answer into the asking agent's chat
   onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
   getTranscriptQuietMs: (agentPath) => ipcRenderer.invoke("get-transcript-quiet-ms", { agentPath }),

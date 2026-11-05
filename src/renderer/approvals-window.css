@@ -25,6 +25,21 @@ html, body { margin: 0; height: 100%; background: #fff8f4; color: #3b1c10; font:
 #approvals-popup .ap-qbtn { background: #fff; color: #3b1c10; border-color: #c96442; }
 #approvals-popup .ap-done { font-size: 11px; color: #2e7d32; padding: 3px 0; }
 #approvals-popup .ap-older { margin: 6px 0; background: none; color: inherit; border-color: #d9b8a8; font-size: 11px; }
+/* v1.154.1: everything wraps to the window width, nothing touches the right edge, the list has a visible scrollbar and header/buttons stay above it */
+html, body { min-width: 0; }
+#approvals-popup { min-width: 0; max-width: 100%; }
+#approvals-popup .ap-head { min-width: 0; padding-right: 12px; }
+#approvals-popup .ap-head span { min-width: 0; overflow-wrap: anywhere; }
+#approvals-popup .ap-list { overflow-y: scroll; overflow-x: hidden; padding: 0 12px 0 8px; scrollbar-gutter: stable; }
+#approvals-popup .ap-list::-webkit-scrollbar { width: 10px; }
+#approvals-popup .ap-list::-webkit-scrollbar-track { background: #f3e3da; border-left: 1px solid #ecd2c6; }
+#approvals-popup .ap-list::-webkit-scrollbar-thumb { background: #c96442; border-radius: 5px; border: 2px solid #f3e3da; min-height: 30px; }
+#approvals-popup .ap-item, #approvals-popup .ap-top, #approvals-popup .ap-q, #approvals-popup .ap-act, #approvals-popup .ap-msg, #approvals-popup .ap-done { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+#approvals-popup .ap-btns { flex-wrap: wrap; min-width: 0; }
+#approvals-popup button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+#approvals-popup .ap-foot { padding-right: 12px; }
+#approvals-popup .ap-dismiss { background: none; border: 1px dashed #b98a76; color: #7a2a14; font-size: 11px; padding: 1px 6px; margin-left: auto; }
+#approvals-popup .ap-ask .ap-wait { display: inline !important; }
 @media (max-height: 220px) { #approvals-popup .ap-act { -webkit-line-clamp: 1; } #approvals-popup .ap-head { padding: 3px 8px; } }
 @media (max-width: 280px) { #approvals-popup .ap-wait, #approvals-popup .ap-tool { display: none; } }
 body[data-collapsed="1"] #approvals-popup { border-left-width: 3px; }

@@ -3500,6 +3500,17 @@ function saveApprovalsState(open) {
   if (approvalsWin && !approvalsWin.isDestroyed()) { collapsed = !!approvalsWin.__thyraCollapsed; try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } if (!collapsed) full = null; else if (approvalsWin.__thyraFull) full = approvalsWin.__thyraFull; }
   approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, collapsed, bounds, full });
 }
+// v1.154.1 Always-on-top that holds: the highest topmost band ("screen-saver"), re-asserted on every blur/focus change of any window, on hide/show and every 3 s
+// while Top is on (another app's window or a focus change can push a topmost window down the z-order). moveTop() does not take focus; the window has no
+// parent/owner and nothing hides it on blur.
+function assertApprovalsOnTop(w) {
+  try {
+    if (!w || w.isDestroyed() || !w.isAlwaysOnTop() && !w.__thyraWantTop) return;
+    w.__thyraWantTop = true;
+    w.setAlwaysOnTop(true, "screen-saver");
+    if (w.isVisible() && !w.isMinimized()) w.moveTop();
+  } catch (e) { /* cosmetic */ }
+}
 function openApprovalsWindow() {
   if (approvalsWin && !approvalsWin.isDestroyed()) { if (approvalsWin.isMinimized()) approvalsWin.restore(); approvalsWin.show(); return; }
   const st = approvalsWindowLib.readState(approvalsStateFile());
@@ -3514,9 +3525,16 @@ function openApprovalsWindow() {
   const w = approvalsWin;
   w.__thyraCollapsed = !!st.collapsed; w.__thyraFull = st.full || null;
   w.setMenuBarVisibility(false);
-  if (st.onTop) w.setAlwaysOnTop(true, "floating");
+  w.__thyraWantTop = !!st.onTop;
+  if (st.onTop) assertApprovalsOnTop(w);
   w.webContents.on("will-navigate", (e) => e.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  w.__thyraWantTop = !!st.onTop;
+  const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w); };
+  w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
+  const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 3000); topTimer.unref();
+  const appEv = () => setTimeout(reassert, 50); app.on("browser-window-blur", appEv); app.on("browser-window-focus", appEv);
+  w.once("closed", () => { clearInterval(topTimer); app.removeListener("browser-window-blur", appEv); app.removeListener("browser-window-focus", appEv); });
   w.once("ready-to-show", () => { if (!w.isDestroyed()) w.showInactive(); notifyApprovalsChanged(true); });   // never steals focus from what the owner is typing
   const later = () => { clearTimeout(approvalsSaveTimer); approvalsSaveTimer = setTimeout(() => { if (!w.isDestroyed()) saveApprovalsState(true); }, 400); };
   w.on("move", later); w.on("resize", later);
@@ -3590,7 +3608,7 @@ ipcMain.handle("approvals-window", (event, { action }) => {
   if (action === "open" && !fromDock) { openApprovalsWindow(); return { ok: true }; }
   if (action === "toggle" && !fromDock) { toggleApprovalsWindow(); return { ok: true }; }
   if (action === "close" && fromDock) { closeApprovalsWindow(); return { ok: true }; }
-  if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.setAlwaysOnTop(on, "floating"); saveApprovalsState(true); return { ok: true, onTop: on }; }
+  if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.__thyraWantTop = on; if (on) assertApprovalsOnTop(approvalsWin); else approvalsWin.setAlwaysOnTop(false); saveApprovalsState(true); return { ok: true, onTop: on }; }
   if (action === "minimize" && fromDock) { approvalsWin.minimize(); return { ok: true }; }
   if (action === "collapse-toggle" && fromDock) { return { ok: true, collapsed: toggleApprovalsCollapse() }; }
   if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true, collapsed: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.__thyraCollapsed), minimized: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isMinimized()) };
@@ -5131,6 +5149,15 @@ ipcMain.handle("dock-ask-answer", async (event, req) => {
     }),
   }, req && { id: req.id, label: req.label, shown: req.shown });
   if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* the list refreshes by itself */ } }
+  return r;
+});
+ipcMain.handle("dock-ask-dismiss", (event, req) => {
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = dockAsks.dismissFromDock({
+    readOne: (id) => dockAsks.readOne(openQuestionsDir(), id),
+    resolve: (id) => { const dir = openQuestionsDir(); fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(path.join(dir, id + ".json"), path.join(dir, "answered", id + ".json")); return true; },   // no seal, nothing typed
+  }, req && { id: req.id, shown: req.shown });
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* list refreshes by itself */ } }
   return r;
 });
 // v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
