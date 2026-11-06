@@ -9,7 +9,6 @@ It prints the question id. When the question is answered (or no longer needed) t
     ask_iddo.py list [--agent NAME]  (open questions)
     ask_iddo.py verify ID [--json] [--max-age-hours N]   (exit 0 + prints the answer ONLY if the owner's click in Agent Desktop sealed it; see below)
     ask_iddo.py show ID              (the record + "sealed by the owner (UI)" / "unsealed" / "INVALID seal: why")
-    ask_iddo.py confirm ID           (answer once: pops a window, his click is delivered into the ASKING agent's chat; run in background)
 One open question per agent is normal; ask one at a time. Files: <workspace>/shared_state/open_questions/id>.json
 (answered ones move to answered\\). --agent must be the agent's folder name as shown in Agent Desktop (e.g. "Security",
 "Software Engineering Agent"); a close name is fine, it is matched case-insensitively on the folder name or its first word.
@@ -143,14 +142,11 @@ def main(argv=None):
     sh = sub.add_parser("show", help="print a question record with its seal status"); sh.add_argument("id"); sh.add_argument("--pub-dir", default=None)
     sub.add_parser("apply-defaults").add_argument("--dry-run", action="store_true")
     l = sub.add_parser("list"); l.add_argument("--agent"); l.add_argument("--answered", action="store_true", help="list answered questions (with seal status) instead of open ones"); l.add_argument("--pub-dir", default=None)
-    c = sub.add_parser("confirm", help="pop a window; the owner's click answers once, wherever he talks (see ask_confirm.py)"); c.add_argument("id"); c.add_argument("--timeout", type=float, default=600)
     n = ap.parse_args(argv)
     if getattr(n, "pub_dir", None) and os.environ.get("ASK_IDDO_TEST") != "1":
         print("--pub-dir is test-only (set ASK_IDDO_TEST=1)", file=sys.stderr); return 2
     if n.cmd == "add": print(add(n.agent, n.question, n.context, n.quick.split("|") if n.quick else (), n.merav, n.default, n.by, n.klass, n.task))
     elif n.cmd == "apply-defaults": print(json.dumps(apply_defaults(n.dry_run), ensure_ascii=False))
-    elif n.cmd == "confirm":
-        import ask_confirm; return ask_confirm.main([n.id, "--timeout", str(n.timeout)])
     elif n.cmd == "verify": return verify(n.id, n.json, n.max_age_hours, n.pub_dir, n.expect_agent, n.expect_question)
     elif n.cmd == "show":
         d = find(n.id)

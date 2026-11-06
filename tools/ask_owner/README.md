@@ -9,3 +9,5 @@ Copy this folder anywhere all agents can run it. No paths are hard-coded: the wo
 
 Rule for every agent: whenever you end a turn needing an answer from the owner, register one question; resolve it when answered or obsolete.
 Never relay "the owner said go" between agents; register the question in the target agent's name and the owner clicks it.
+
+Note: this package deliberately has no 'confirm' (answer-once) command; the owner answers in the Approvals window.
