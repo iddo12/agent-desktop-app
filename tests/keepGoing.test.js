@@ -153,6 +153,35 @@ t("decide: API error entry", () => {
   const e = JSON.stringify({ type: "assistant", isApiErrorMessage: true, timestamp: iso(NOW - 300000), message: { content: [{ type: "text", text: "API Error: next: x" }] } });
   assert.strictEqual(K.decide(mk([usr(NOW - 400000, "go"), e])).verdict, "none");
 });
+const SG_TEXT = "API Error: Sonnet 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup). Our intentionally broad safeguards allow us to deliver more capabilities. Send your message again.";
+const apiErr = (ts, text) => JSON.stringify({ type: "assistant", isApiErrorMessage: true, timestamp: iso(ts), message: { content: [{ type: "text", text }] } });
+t("decide v1.149.1: safeguard API error -> retry-safeguard nudge (relentless on and off)", () => {
+  const lines = [usr(NOW - 400000, "go"), apiErr(NOW - 300000, SG_TEXT)];
+  for (const relentless of [false, true]) {
+    const r = K.decide(mk(lines, { relentless }));
+    assert.strictEqual(r.verdict, "nudge"); assert.strictEqual(r.kind, "retry-safeguard");
+  }
+  const T = K.texts(OWNER_CTX).safeguard;
+  assert.ok(T.startsWith("[[KEEPGOING]] [retry-safeguard]") && /API safeguard error/.test(T) && /not by anything Alex said/.test(T) && /smaller steps/.test(T) && /next one/.test(T));
+  assert.ok(K.isSystemish(T));
+  assert.ok(/API safeguard/.test(K.nudgeLabelFor(T)));
+});
+t("decide v1.149.1: safeguard error still respects the gates", () => {
+  const lines = [usr(NOW - 400000, "go"), apiErr(NOW - 300000, SG_TEXT)];
+  assert.strictEqual(K.decide(mk(lines, { enabled: false })).verdict, "none");
+  assert.strictEqual(K.decide(mk(lines, { paused: true })).verdict, "none");
+  assert.strictEqual(K.decide(mk(lines, { working: true })).verdict, "none");
+  assert.strictEqual(K.decide(mk(lines, { halt: { kind: "rate_limit" } })).verdict, "none");
+  const settling = K.decide(mk([usr(NOW - 400000, "go"), apiErr(NOW - 5000, SG_TEXT)]));
+  assert.strictEqual(settling.verdict, "none"); assert.ok(settling.defer);
+  assert.strictEqual(K.decide(mk([usr(NOW - 4e7, "go"), apiErr(NOW - 4e7 + 1000, SG_TEXT)])).verdict, "none"); // stale
+  assert.strictEqual(K.decide(mk(lines, { usageHardStop: true })).verdict, "blocked");
+});
+t("decide v1.149.1: other API errors (rate limit / 500 / auth / overloaded) stay none", () => {
+  for (const msg of ["API Error: 429 rate_limit_error: Number of request tokens has exceeded your per-minute rate limit", "API Error: 500 Internal server error", "API Error: 401 authentication_error: invalid x-api-key", "API Error: 529 overloaded_error", "API Error: next: x"]) {
+    for (const relentless of [false, true]) assert.strictEqual(K.decide(mk([usr(NOW - 400000, "go"), apiErr(NOW - 300000, msg)], { relentless })).verdict, "none", msg);
+  }
+});
 t("decide: settling (<20s) defers", () => {
   const r = K.decide(mk([usr(NOW - 400000, "go"), asst(NOW - 5000, END)]));
   assert.strictEqual(r.verdict, "none"); assert.ok(r.defer);
@@ -359,4 +388,13 @@ t("resumePromptText relentless: mode paragraph, ignores blocked", () => {
 });
 
 console.log((n - fails) + "/" + n + " keepGoing tests passed");
+// v1.149.2-pre: a 1320-char nudge lost its first 1024 characters under load (agent saw only "tle is SLOW..."). Keep every nudge well under 1024 with the marker.
+{
+  const assert = require("assert");
+  const K2 = require("../src/keepGoing.js");
+  const long = { ownerName: "Alexandria", tasksTool: "D:\Some Long Folder Name\Another Long Folder\shared_tools\tasks\tasks.py" };
+  const T = K2.texts(long);
+  for (const k of Object.keys(T)) assert.ok(T[k].length + 16 < 1000, "nudge '" + k + "' is " + T[k].length + " chars, must stay under ~1000 with the [hid:] marker");
+  console.log("ok   every nudge text stays under 1000 chars (truncation guard)");
+}
 process.exit(fails ? 1 : 0);

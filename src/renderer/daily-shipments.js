@@ -58,17 +58,173 @@
         return r;
       }
 
+      // Carrier list comes from the main process (data.carriers); "" = let 17TRACK / the number format decide.
+      function carrierSelect(selected) {
+        const sel = el("select", "daily-input ship-sel");
+        sel.append(Object.assign(el("option", null, "Carrier: auto-detect"), { value: "" }));
+        for (const c of (data && data.carriers) || []) {
+          const o = el("option", null, c.name); o.value = c.id;
+          if (c.id === selected) o.selected = true;
+          sel.append(o);
+        }
+        sel.title = "Optional. Leave on auto-detect unless you know the carrier.";
+        return sel;
+      }
+      const shortDay = (ms) => { const d = new Date(ms); return Number.isFinite(d.getTime()) ? `${d.getDate()} ${MONTHS[d.getMonth()]}` : ""; };
+      // what the owner sees to tell parcels apart: merchant, product, order id, order date
+      const orderLabel = (s) => [s.merchant, s.title && s.title !== s.merchant ? s.title : "", s.orderId ? "order " + s.orderId : "", s.orderAt ? "ordered " + shortDay(s.orderAt) : ""].filter(Boolean).join(" - ");
+
+      // 16-17 plain digits look like order numbers: the main process answers needsConfirm; the next press of the SAME button is
+      // relabelled "Use it anyway" and sends force:true. Returns a click handler for run(force) -> act() result.
+      function confirmable(button, run) {
+        let force = false;
+        return async () => {
+          const r = await run(force);
+          if (r && r.needsConfirm) { force = true; button.textContent = "Use it anyway"; }
+          return r;
+        };
+      }
+      // A parcel that has no valid tracking number yet (only an order number came by mail): box to paste the real one.
+      function numberBox(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Tracking number for: " + (orderLabel(s) || "this parcel")));
+        const line = el("div", "ship-add");
+        const inp = el("input", "daily-input grow");
+        inp.placeholder = "Paste the tracking number (not the order number)";
+        inp.maxLength = 400; inp.setAttribute("dir", "auto");
+        const sel = carrierSelect("");
+        let go = () => {};
+        const saveBtn = btn("Save number", "daily-btn sm pri", () => go());
+        go = confirmable(saveBtn, (force) => { const v = inp.value.trim(); return v ? act("add-number", s.id, { text: v, carrier: sel.value, force }, "Tracking number saved.") : null; });
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+        inp.addEventListener("input", () => { saveBtn.textContent = "Save number"; });
+        line.append(inp, sel, saveBtn);
+        w.append(line);
+        return w;
+      }
+      // A picture (clipboard / file) -> JPEG data URL, longest side <= 1800 px so a 4K screen stays small and readable.
+      // The main process refuses any request over 262144 characters, so the picture is stepped down (size, then quality) until its
+      // data URL is <= 230000 characters (= shipments-vision.js MAX_DATAURL_CHARS). Text stays readable down to ~900 px.
+      async function imageToDataUrl(blob) {
+        const bmp = await createImageBitmap(blob);
+        for (const side of [1600, 1300, 1100, 950, 800]) {
+          for (const q of [0.8, 0.7, 0.6, 0.5]) {
+            const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+            const c = document.createElement("canvas");
+            c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+            c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+            const url = c.toDataURL("image/jpeg", q);
+            if (url.length <= 230000) return url;
+          }
+        }
+        throw new Error("too big");
+      }
+      // Screenshot of the shop's order / Track-package page: the app reads the tracking numbers AND which items are in which parcel.
+      const reading = new Set();   // card ids whose screenshot is being read (survives re-renders)
+      function orderTools(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Order " + s.orderId + ". The mail cannot tell how many parcels it ships in. More than one? Paste a screenshot of its \"Track package\" page (cards, numbers and items are made for you), or use \"Split: another parcel\" to add a card by hand."));
+        const status = el("div", "ship-muted sm", "");
+        const line = el("div", "ship-add");
+        async function send(blob) {
+          if (busy) return;
+          status.textContent = "Reading the picture (about 20 seconds)...";
+          status.className = "ship-reading";
+          zone.textContent = "Reading the picture...";
+          reading.add(s.id);
+          say("Reading the screenshot - about 20 seconds.");
+          try {
+            const image = await imageToDataUrl(blob);
+            const r = await act("screenshot", s.id, { image, orderId: s.orderId }, null);
+            if (r && r.ok) say("Read the screenshot: " + (r.summary || []).join("; "));
+            else status.textContent = (r && r.reason) || "That did not work.";
+          } catch (e) { status.textContent = "Could not use that picture."; }
+          finally { reading.delete(s.id); zone.textContent = IDLE; }
+        }
+        const IDLE = "Hover here and press Ctrl+V to paste a screenshot";
+        const zone = el("div", "daily-input grow ship-paste", IDLE);
+        zone.tabIndex = 0;
+        zone.addEventListener("mouseenter", () => { if (!busy) { zone.focus(); } });   // no click needed: pointing at the box is enough
+        zone.addEventListener("focus", () => { if (!reading.has(s.id)) zone.textContent = "Ready - press Ctrl+V now"; });
+        zone.addEventListener("blur", () => { if (!reading.has(s.id)) zone.textContent = IDLE; });
+        zone.addEventListener("paste", (e) => {
+          const f = Array.from((e.clipboardData && e.clipboardData.items) || []).find((i) => /^image\//.test(i.type));
+          if (!f) { status.textContent = "No picture on the clipboard."; return; }
+          e.preventDefault(); send(f.getAsFile());
+        });
+        const file = el("input", null); file.type = "file"; file.accept = "image/*"; file.hidden = true;
+        file.addEventListener("change", () => { if (file.files && file.files[0]) send(file.files[0]); file.value = ""; });
+        const pick = btn("Choose image...", "daily-btn sm", () => file.click());
+        const more = btn("Split: another parcel", "daily-btn sm pri", () => act("split", s.id, null, "Added a card for this order. Paste its tracking number."));
+        line.append(zone, pick, file, more);
+        w.append(line, status);
+        return w;
+      }
+      // 17TRACK could not identify or find the number: say so plainly and let the owner set the carrier later.
+      function carrierBox(s) {
+        const w = el("div", "ship-numbox");
+        w.append(el("div", "ship-muted sm", "Once you know the carrier, pick it here and the number is registered again with it."));
+        const line = el("div", "ship-add");
+        const sel = carrierSelect(s.carrier === "other" ? "" : s.carrier);
+        line.append(sel, btn("Set carrier", "daily-btn sm pri", () => act("set-carrier", s.id, { carrier: sel.value || "auto" }, "Carrier set. Checking again...")));
+        w.append(line);
+        return w;
+      }
+      // the line that says WHY there is no live state (replaces the old generic "state comes from the email" text)
+      function reasonLine(s) {
+        if (s.needsNumber) return el("div", "ship-ev ship-warnline", "No tracking number yet - the email only had the order number. Paste the real tracking number below.");
+        if (s.cantTrack) return el("div", "ship-ev ship-warnline", "Can't track this package yet - ask the sender which carrier they use.");
+        if (s.reason && s.reason.text) return el("div", "ship-ev ship-muted", s.reason.text);
+        return el("div", "ship-ev ship-muted", s.source === "email" ? "Not checked by the tracking service yet." : "Waiting for the first tracking event.");
+      }
+      const PROBLEM = new Set(["quota", "key_refused", "rate", "error"]);
+
+      // Contents of a parcel (best effort: only what the shop's mail said). Pictures are local thumbnails fetched once by the main process.
+      const picCache = new Map();   // thumb file name -> data URL ("" while loading / missing)
+      function wantPics(list) {
+        const need = [];
+        for (const s of list) for (const it of (s.items || [])) if (it.thumb && !picCache.has(it.thumb)) { picCache.set(it.thumb, ""); need.push(it.thumb); }
+        if (need.length && api.thumbs) api.thumbs(need.slice(0, 100)).then((m) => { let any = false; for (const k of Object.keys(m || {})) { picCache.set(k, m[k]); any = true; } if (any) ctx.rerender(); }).catch(() => {});
+      }
+      function contentsBlock(s) {
+        let items = Array.isArray(s.items) ? s.items : [];
+        if (s.title && items.length && items.every((x) => x.cat)) items = [];   // the title already names the products; categories add nothing
+        const box = el("div", "ship-items");
+        let any = false;
+        if (items.length) {
+          any = true;
+          for (const it of items) {
+            const one = el("div", "ship-item");
+            const src = it.thumb && picCache.get(it.thumb);
+            if (src) { const im = document.createElement("img"); im.className = "ship-pic"; im.src = src; im.alt = ""; one.append(im); }
+            one.append(el("span", "ship-item-t", (it.qty > 1 ? it.qty + " x " : "") + it.name));
+            box.append(one);
+          }
+        }
+        const total = s.itemCount || 0;
+        if (s.orderCount && total && s.orderCount > total) { any = true; box.append(el("div", "ship-muted", `This parcel has ${total} of the ${s.orderCount} items ordered; ${s.orderCount - total} not shipped yet.`)); }
+        else if (!items.length && total) { any = true; box.append(el("div", "ship-muted", total + (total === 1 ? " item" : " items"))); }
+        return any ? box : null;
+      }
+
       function row(s, now, archived) {
         const r = el("div", "ship-row" + (archived ? " archived" : ""));
         const ico = el("div", "ship-ico", CARRIER_ICON[s.carrier] || "?");
         ico.title = s.carrierName;
         const main = el("div", "ship-main");
         const l1 = el("div", "ship-l1");
-        const name = s.title || s.merchant || (s.numbers[0] ? s.carrierName : "Parcel");
+        // 2026-10-27 (owner): the bold first name is ALWAYS the sender (Amazon, iHerb, B&H...), never the product; the product is its own line below
+        const senderFrom = (s.from || "").split(/[,(<]/)[0].trim();
+        const name = s.merchant || senderFrom || (s.numbers[0] ? s.carrierName : "Parcel");
         l1.append(el("b", "ship-name", name), chipEl(s.effective));
-        if (s.merchant && s.title && s.merchant !== s.title) l1.append(el("span", "ship-merch", s.merchant));
+        if (s.split && s.orderId) {
+          const sibs = ((data && data.items) || []).filter((x) => x.split && x.orderId === s.orderId && !x.archived);
+          if (sibs.length > 1) l1.append(el("span", "ship-chip mute", "Parcel " + (sibs.findIndex((x) => x.id === s.id) + 1) + " of " + sibs.length));
+        }
+        if (s.review) l1.append(el("span", "ship-chip mute", "Review sample"));
         const l2 = el("div", "ship-l2");
-        l2.append(el("span", "ship-carrier", s.carrierName));
+        if (!s.needsNumber) l2.append(el("span", "ship-carrier", s.carrierName));
+        else if (s.orderId) l2.append(el("span", "ship-carrier", "Order " + s.orderId + (s.orderAt ? ", " + shortDay(s.orderAt) : "")));
         for (const n of s.numbers.slice(0, 3)) {
           const nb = btn(n.no, "ship-no", () => { copyText(n.no); say("Tracking number copied."); });
           nb.title = `${n.carrierName} - click to copy`;
@@ -76,6 +232,10 @@
         }
         if (s.eta && !archived) l2.append(el("span", "ship-eta", "ETA " + dayText(s.eta, now)));
         main.append(l1, l2);
+        const cb = contentsBlock(s);
+        // the product line only when there is no item list with names/pictures below (otherwise it would say the same thing twice)
+        if (s.title && s.title !== name && s.title !== "From " + s.from && !(Array.isArray(s.items) && s.items.some((x) => !x.cat))) main.append(el("div", "ship-prod", s.title));
+        if (cb) main.append(cb);
         if (s.action && !archived) main.append(el("div", "ship-action " + (CHIP[s.effective] || [0, ""])[1], s.action + " !"));
         const ev = s.lastEvent;
         if (ev && ev.text) {
@@ -86,7 +246,15 @@
           const tail = [ev.place, ev.at ? ago(ev.at, now) : ""].filter(Boolean).join(" - ");
           if (tail) { const p = el("span", "ship-ev-p", " (" + tail + ")"); p.setAttribute("dir", "auto"); l3.append(p); }
           main.append(l3);
-        } else if (!archived) main.append(el("div", "ship-ev ship-muted", s.source === "email" ? "No live tracking yet - state comes from the email." : "Waiting for the first tracking event."));
+        } else if (!archived) main.append(reasonLine(s));
+        if (!archived && ev && ev.text && s.reason && PROBLEM.has(s.reason.reason)) main.append(el("div", "ship-ev ship-warnline", s.reason.text));
+        // 2026-10-27: ONE tools block per order, on its FIRST open card (the one a card needing action shows at the top of the list)
+        if (!archived && s.orderId && s.merchant) {
+          const sameOrder = ((data && data.items) || []).filter((x) => x.orderId === s.orderId && !x.archived);
+          if ((sameOrder[0] && sameOrder[0].id === s.id) || s.needsNumber) main.append(orderTools(s));   // a later card still waiting for its number gets the screenshot box too
+        }
+        if (!archived && s.needsNumber) main.append(numberBox(s));
+        else if (!archived && s.cantTrack) main.append(carrierBox(s));
         if (s.events && s.events.length > 1) {
           const det = el("details", "ship-hist");
           det.append(el("summary", "ship-muted", "Tracking history (" + s.events.length + " steps)"));
@@ -126,22 +294,55 @@
         return g;
       }
 
+      // + Add shipment: only the number is required. Carrier is optional (17TRACK auto-detects), label and "Review sample" are optional.
+      // While a number is typed, parcels still waiting for a number are listed so it can be attached to the right order.
       function addBar() {
+        const box = el("div", "daily-card ship-addcard");
         const w = el("div", "ship-add");
         const inp = el("input", "daily-input grow");
-        inp.placeholder = "Paste a tracking number, a tracking link or an SMS - or dictate it";
+        inp.placeholder = "Tracking number (or paste a tracking link or an SMS)";
         inp.maxLength = 400;
         inp.setAttribute("dir", "auto");
-        const go = async () => {
+        const w2 = el("div", "ship-add");
+        const sel = carrierSelect("");
+        const label = el("input", "daily-input grow");
+        label.placeholder = "Sender or product (optional)";
+        label.maxLength = 120; label.setAttribute("dir", "auto");
+        const rv = document.createElement("input"); rv.type = "checkbox";
+        const rvl = el("label", "ship-chk"); rvl.append(rv, document.createTextNode(" Review sample"));
+        rvl.title = "Tag this parcel as a product sent to you for review";
+        const pick = el("div", "ship-pick");
+        let go = () => {};
+        const addBtn = btn("Add", "daily-btn pri", () => go());
+        go = confirmable(addBtn, async (force) => {
           const v = inp.value.trim();
-          if (!v) return;
-          const r = await act("add", null, { text: v }, "Added.");
-          if (r && r.ok) { showAdd = false; ctx.rerender(); }
+          if (!v) return null;
+          const r = await act("add", null, { text: v, carrier: sel.value, label: label.value.trim(), review: rv.checked, force }, "Added.");
+          if (r && r.ok) { showAdd = false; ctx.rerender(); if (r.note) say(r.note); }
+          return r;
+        });
+        const showPick = () => {
+          pick.textContent = "";
+          const v = inp.value.trim();
+          const open = (data && data.items || []).filter((s) => s.needsNumber && !s.archived);
+          if (!v || !open.length) return;
+          pick.append(el("div", "ship-muted sm", "Which order is this? These parcels are still waiting for a tracking number:"));
+          for (const s of open.slice(0, 12)) {
+            const line = el("div", "ship-pickrow");
+            let pickGo = () => {};
+            const pb = btn("This one", "daily-btn sm", () => pickGo());
+            pickGo = confirmable(pb, async (force) => { const r = await act("add-number", s.id, { text: v, carrier: sel.value, force }, "Tracking number attached."); if (r && r.ok) { showAdd = false; ctx.rerender(); } return r; });
+            line.append(el("span", "ship-pickt", orderLabel(s) || "Parcel"), pb);
+            pick.append(line);
+          }
         };
+        inp.addEventListener("input", () => { addBtn.textContent = "Add"; showPick(); });
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); if (e.key === "Escape") { showAdd = false; ctx.rerender(); } });
-        w.append(inp, btn("Add", "daily-btn pri", go), btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
+        w.append(inp, sel);
+        w2.append(label, rvl, addBtn, btn("Cancel", "daily-btn", () => { showAdd = false; ctx.rerender(); }));
+        box.append(w, w2, pick);
         setTimeout(() => inp.focus(), 0);
-        return w;
+        return box;
       }
 
       // Password field -> IPC -> safeStorage in the main process. The key is never shown again, only "key stored".
@@ -190,6 +391,7 @@
           if (!data) { wrap.append(el("div", "daily-muted daily-pad", "Loading shipments...")); return wrap; }
         }
         const now = data.now;
+        wantPics(data.items || []);
         const p = data.provider;
         const bar = el("div", "ship-bar");
         bar.append(btn("+ Add shipment", "daily-btn pri", () => { showAdd = !showAdd; ctx.rerender(); }));

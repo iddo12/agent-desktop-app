@@ -17,6 +17,7 @@ const gmailMod = require("./gmail");
 const imapMod = require("./imap");
 const shipMain = require("./shipments-main");
 const shipTrack = require("./shipments-track");
+const shipVision = require("./shipments-vision");
 const decMain = require("./decisions-main");
 const triMain = require("./triage-main");
 const triModel = require("./triage-model");
@@ -103,8 +104,15 @@ function writeJsonAtomic(file, value) {
     withFsRetry(() => {
       fs.writeFileSync(tmp, text, "utf8");
       try { fs.copyFileSync(file, file + ".bak"); } catch (e) { /* first write: nothing to back up */ }
-      fs.renameSync(tmp, file);
-    });
+      try { fs.renameSync(tmp, file); }
+      catch (e) {
+        // 2026-10-27: a synced-folder client or antivirus can hold the target open so a rename over it fails with EPERM for longer than the retries
+        // (shipments.json, "operation not permitted, rename"). Overwriting in place works while a handle is open; the .bak is already made.
+        if (!e || (e.code !== "EPERM" && e.code !== "EBUSY" && e.code !== "EACCES")) throw e;
+        fs.writeFileSync(file, text, "utf8");
+        try { fs.unlinkSync(tmp); } catch (e2) { /* already gone */ }
+      }
+    }, { attempts: 8, delayMs: 500 });
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch (e2) { /* already gone */ }
     throw e;
@@ -123,7 +131,7 @@ const providers = {
   },
 };
 
-function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMode, log, runPython, fetchProduct, makeThumb, getMainWindow, deliverToAgent, knownAgent }) {
+function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMode, log, runPython, fetchProduct, makeThumb, getMainWindow, deliverToAgent, knownAgent, privateCliDir }) {
   const say = typeof log === "function" ? log : () => {};
   const notices = [];   // damaged-store notices, kept until dismissed (daily-notices-clear)
   // Every daily-* channel: only the main window's own frame may call it (same idea as IRIS), and an oversized
@@ -357,20 +365,42 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
   // Shipments (v1.76.0): own store, mail scan through the existing read-only mail code, tracking keys only in this process.
   const shipTracker = shipTrack.createTracker({ dataDir: dataDir || path.join(dir, "..", "daily-keys-unavailable"), safeStorage: dataDir ? safeStorage : null, log: say,
     fakeProvider: testMode && process.env.AGENT_DESKTOP_SHIPMENTS_FAKE === "1" ? shipTrack.createFake({}) : null });
+  // Screenshot reader: one Sonnet call through Agent Desktop's own private Claude CLI, read-only (Read tool only), in an empty temp folder.
+  const shotDir = path.join(dataDir || require("os").tmpdir(), "shipments-shots");
+  const shotReader = shipVision.createReader({
+    testMode, tmpDir: shotDir, stubFile: path.join(dataDir || shotDir, "shipments-shot-stub.txt"),
+    callModel: ({ prompt, dir }) => new Promise((resolve, reject) => {
+      const exe = typeof privateCliDir === "function" ? path.join(privateCliDir(), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe") : "";
+      if (!exe || !fs.existsSync(exe)) return reject(new Error("no private Claude CLI"));
+      const args = ["-p", "--model", "sonnet", "--output-format", "text", "--no-session-persistence", "--tools", "Read", "--allowedTools", "Read",
+        "--setting-sources", "project", "--disable-slash-commands", "--strict-mcp-config"];
+      let out = "", done = false, child;
+      const finish = (err, v) => { if (done) return; done = true; clearTimeout(timer); err ? reject(err) : resolve(v); };
+      const timer = setTimeout(() => { try { child.kill(); } catch (e) { /* gone */ } finish(new Error("timed out")); }, 120000);
+      try { child = require("child_process").spawn(exe, args, { cwd: dir, windowsHide: true, stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, DISABLE_AUTOUPDATER: "1" } }); }
+      catch (e) { return finish(e); }
+      child.stdout.on("data", (d) => { if (out.length < 20000) out += d.toString("utf-8"); });
+      child.on("error", finish);
+      child.on("close", (code) => (code === 0 ? finish(null, out) : finish(new Error("exit " + code))));
+      child.stdin.on("error", () => {});
+      child.stdin.end(prompt);
+    }),
+  });
   const shipments = shipMain.createService({
-    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow,
+    file: f("shipments.json"), readStore, writeJsonAtomic, tracker: shipTracker, notices, testMode, say, now: clockNow, readScreenshot: shotReader.read, makeThumb: (url, id) => makeThumbFor(url, id), cropPicture: (dataUrl, box, id) => cropThumbFor(dataUrl, box, id),
     getMails: async (now) => {
       if (testMode) return [];
       const out = [];
-      try { out.push(...mailfeed.loadShipmentMails(dc.mailFeedFile(), now)); } catch (e) { say("shipments feed: " + e.message); }
+      // Gmail first: its copy has the full body and the picture urls; the Betterbird snippet of the same mail is only a fallback (shipments-main dedupeMails keeps the richer one)
       try { if (gmail) out.push(...(await gmail.shipmentMails(now))); } catch (e) { say("shipments gmail: " + e.message); }
+      try { out.push(...mailfeed.loadShipmentMails(dc.mailFeedFile(), now)); } catch (e) { say("shipments feed: " + e.message); }
       return out;
     },
   });
   if (!testMode) shipments.syncTimer();
   ipcMain.handle("daily-shipments-load", async (e, args) => { try { return await shipments.load(args); } catch (err) { say("shipments load failed: " + err.message); return { ok: false, reason: err.message }; } });
   ipcMain.handle("daily-shipments-refresh", async () => { try { return await shipments.refreshNow(); } catch (err) { return { ok: false, reason: err.message }; } });
-  ipcMain.handle("daily-shipments-op", (e, args) => { try { return shipments.op(args); } catch (err) { return { ok: false, reason: err.message }; } });
+  ipcMain.handle("daily-shipments-op", async (e, args) => { try { return await shipments.op(args); } catch (err) { return { ok: false, reason: err.message }; } });
   ipcMain.handle("daily-shipments-key", (e, args) => { try { return shipments.setKey(args); } catch (err) { return { ok: false, reason: err.message }; } });
   // Decisions (v1.78.0): open tasks that need the owner, of every agent; an answer is delivered to that agent (verified path injected from main.js).
   // Test mode reads fixtures and never updates the real task store; with no delivery function nothing can be answered.
@@ -436,6 +466,21 @@ function init({ ipcMain: rawIpc, cfg, dataDir, safeStorage, openExternal, testMo
     }
   });
 
+  // A product picture cut out of a pasted screenshot: box = [left, top, right, bottom] as fractions of the image; kept as a small PNG next to the others.
+  async function cropThumbFor(dataUrl, box, id) {
+    const img = nativeImage.createFromDataURL(String(dataUrl || ""));
+    if (img.isEmpty() || !Array.isArray(box) || box.length !== 4) return "";
+    const sz = img.getSize();
+    const x = Math.max(0, Math.round(box[0] * sz.width)), y = Math.max(0, Math.round(box[1] * sz.height));
+    const w = Math.min(sz.width - x, Math.round((box[2] - box[0]) * sz.width)), h = Math.min(sz.height - y, Math.round((box[3] - box[1]) * sz.height));
+    if (w < 16 || h < 16) return "";
+    const part = img.crop({ x, y, width: w, height: h });
+    const small = part.resize(w >= h ? { width: Math.min(w, 160) } : { height: Math.min(h, 160) });
+    fs.mkdirSync(thumbDir, { recursive: true });
+    const name = String(id).replace(/[^\w-]/g, "") + ".png";
+    fs.writeFileSync(path.join(thumbDir, name), small.toPNG());
+    return name;
+  }
   // Thumbnails: download the product image (same SSRF rules), shrink it, keep a small PNG under daily/thumbs/.
   async function makeThumbFor(imageUrl, id) {
     if (makeThumb) return makeThumb(imageUrl, id, thumbDir);

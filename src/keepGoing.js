@@ -25,11 +25,20 @@
 
   // v1.74.0: the text of the next-project nudge. The marker stays first (isSystemish / nudgeLabel); "[next-project]" tells the label apart.
   const NEXT_PROJECT_TAG = "[next-project]";
+  // v1.149.1: the API itself cut the last turn off with a content-safeguard / usage-policy refusal (not a rate limit, auth or server error, so
+  // halt handling does not own it). The agent is told so plainly; nothing the owner said is the cause.
+  const SAFEGUARD_TAG = "[retry-safeguard]";
+  const SAFEGUARD_RX = /safeguards? flagged|usage polic|acceptable use|legal\/aup|send your message again/i;
+  function safeguardText(ctx) {
+    return NUDGE_MARKER + " " + SAFEGUARD_TAG + " Your last turn was cut off by an API safeguard error (a content filter on the API side), not by anything " + whoOf(ctx) + " said or any fault of yours. " +
+      "Continue your open work now, using tool calls, in smaller steps: do one small piece at a time and keep your messages short. Do not repeat the exact text that was cut off; reword it or leave it out. " +
+      "If your task list has other tasks, take the next one. If you really need approval or are done, end with a line 'BLOCKED: <reason>' or 'DONE: <summary>'.";
+  }
   // v1.136.1-pre: how to move through the Task List (only when the task tool is known)
   function tasksSentence(ctx) {
     if (!(ctx && ctx.tasksTool)) return "";
-    const base = "python \"" + ctx.tasksTool + "\" --agent \"<your agent folder name>\" ";
-    return "After you finish or get blocked on the current item, take the top \"not started\" task (find it with `" + base + "--board`) with `" + base + "--start <ID>`, report progress with `" + base + "--working <ID> --note \"...\"`, and mark it finished with `" + base + "--close`. ";
+    // v1.149.2: kept short on purpose. A 1320-char nudge lost its first 1024 characters under load (the agent saw only the tail), see CLAUDE.md.
+    return "Take the top \"not started\" task: `python \"" + ctx.tasksTool + "\" --agent \"<your folder>\" --board`; --start <ID>, --working <ID> --note \"..\", --close. ";
   }
   function modeParagraph(ctx) {
     const who = whoOf(ctx);
@@ -38,17 +47,17 @@
       ? "Run `python \"" + ctx.tasksTool + "\" --agent \"<your agent folder name>\" --list`, "
       : "Open your own task list (your handoff file or task tool), ";
     return "Mode: " + who + " ordered keep-working-regardless. Do not stop. " + list +
-      "pick the next open task that does not need " + who + " (not " + needs + ", not BLOCKED) and do it. If your current item is blocked, record why on the task with `--note` and switch to the next one. " + tasksSentence(ctx) +
-      "When the fleet throttle is SLOW, prefer cheap work in your own area and start no fan-outs. Never take an action that needs approval or is externally visible (publish, send, push, delete, merge) without that approval. " +
-      "When nothing is left that you can do, reply with exactly one final line `NOTHING-LEFT: <one line>`.";
+      "pick the next open task that does not need " + who + " (not " + needs + ", not BLOCKED) and do it; if blocked, note why (`--note`) and switch. " + tasksSentence(ctx) +
+      "If the fleet throttle is SLOW, do cheap work in your own area, no fan-outs. Never publish, send, push, delete or merge without approval. " +
+      "When nothing is left, reply with exactly one final line `NOTHING-LEFT: <one line>`.";
   }
   function nextProjectText(ctx) { return NUDGE_MARKER + " " + NEXT_PROJECT_TAG + " " + modeParagraph(ctx); }
   function nextProjectQuestionText(ctx) {
     return NUDGE_MARKER + " " + NEXT_PROJECT_TAG + " Your last message ended with a question. Do not wait for an answer: decide yourself on the safe default, " +
       "record the question on the task as " + (ctx && ctx.ownerName ? "NEEDS " + String(ctx.ownerName).toUpperCase() : "NEEDS USER") + " (`tasks.py --note`), and move on. " + modeParagraph(ctx);
   }
-  const NUDGE_TEXT = nudgeText(null), NEXT_PROJECT_TEXT = nextProjectText(null), NEXT_PROJECT_QUESTION_TEXT = nextProjectQuestionText(null); // neutral wording; the glue sends texts(ctx)
-  function texts(ctx) { return { nudge: nudgeText(ctx), nextProject: nextProjectText(ctx), nextProjectQuestion: nextProjectQuestionText(ctx) }; }
+  const NUDGE_TEXT = nudgeText(null), NEXT_PROJECT_TEXT = nextProjectText(null), NEXT_PROJECT_QUESTION_TEXT = nextProjectQuestionText(null), SAFEGUARD_TEXT = safeguardText(null); // neutral wording; the glue sends texts(ctx)
+  function texts(ctx) { return { nudge: nudgeText(ctx), nextProject: nextProjectText(ctx), nextProjectQuestion: nextProjectQuestionText(ctx), safeguard: safeguardText(ctx) }; }
 
   const LIMITS = {
     quietMs: 20 * 1000,            // the last entry must be this old (the agent may be about to continue by itself)
@@ -325,7 +334,9 @@
     if (!p || !p.last) return none("no transcript yet");
     const last = p.last;
     if (last.role !== "assistant") return none("last entry is not an assistant reply");
-    if (last.apiError) return none("last entry is an API error");
+    // v1.149.1: a safeguard / usage-policy refusal is nudgeable (kind "retry-safeguard"); every other API error stays with the halt handling
+    const sg = !!(last.apiError && SAFEGUARD_RX.test(last.text));
+    if (last.apiError && !sg) return none("last entry is an API error");
     if (last.toolUse) return none("last entry is a tool call (still working)");
     const text = last.text;
     if (/^\s*Handoff saved\b/i.test(text) || (p.lastHuman && isHandoffPrompt(p.lastHuman.text))) return none("handoff turn");
@@ -341,9 +352,9 @@
     const h = p.lastHuman;
     const missionOn = !!(c.mission && c.mission.active && !c.mission.firstTurnDone && h && h.isResume && p.workToolUses === 0 &&
       c.now - (c.mission.since || 0) < LIMITS.missionMaxAgeMs);
-    let cls = proto ? protoVerdict(proto) : classify(text); // relentless + BLOCKED:/DONE: line: the line is read, then answered with the next project
-    let kind = null, question = false;
-    if (rel && cls.verdict !== "nudge" && !cls.external) {
+    let cls = sg ? { verdict: "nudge", reason: "API safeguard error cut the last turn" } : proto ? protoVerdict(proto) : classify(text); // relentless + BLOCKED:/DONE: line: the line is read, then answered with the next project
+    let kind = sg ? "retry-safeguard" : null, question = false;
+    if (rel && !sg && cls.verdict !== "nudge" && !cls.external) {
       const tailS = tailSentences(text);
       if (RX.announce.test(tailS) && RX.external.test(tailS)) cls = { verdict: "none", reason: "announced action is externally visible (push/send/publish...): never nudged", external: true };
       else if (cls.verdict !== "none" || text) { // done / blocked / question / plain report -> the next project (an empty message stays none)
@@ -378,11 +389,12 @@
     const t = String(text || "");
     const i = t.indexOf(NUDGE_MARKER);
     if (i === -1 || i >= 40) return null;
+    if (t.indexOf(SAFEGUARD_TAG) !== -1 && t.indexOf(SAFEGUARD_TAG) < 60) return "Keep going - retry: your last turn was cut off by an API safeguard error";
     if (t.indexOf(NEXT_PROJECT_TAG) !== -1 && t.indexOf(NEXT_PROJECT_TAG) < 60) return "Keep going - next project: pick the next open task";
     return "Keep going - nudge: you announced a next step, please do it now";
   }
 
-  const api = { READ_ONLY_TOOLS, NUDGE_MARKER, RESUME_MARKER, NUDGE_TEXT, NEXT_PROJECT_TEXT, NEXT_PROJECT_QUESTION_TEXT, texts, setOwner, OWN_SRC, LIMITS, LIMITS_RELENTLESS, parseTail, classify, protocolOf, decide, hashText, parseHandoff, resumePromptText,
+  const api = { READ_ONLY_TOOLS, NUDGE_MARKER, RESUME_MARKER, NUDGE_TEXT, NEXT_PROJECT_TEXT, NEXT_PROJECT_QUESTION_TEXT, SAFEGUARD_TEXT, SAFEGUARD_RX, texts, setOwner, OWN_SRC, LIMITS, LIMITS_RELENTLESS, parseTail, classify, protocolOf, decide, hashText, parseHandoff, resumePromptText,
     isSystemish, isHandoffPrompt, nudgeLabelFor, stripMarkers };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.KeepGoing = api;

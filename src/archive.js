@@ -760,6 +760,38 @@ function getLastRealProgressMs(sessionCwd) {
   return best;
 }
 
+// 2026-10-31: newest write time of a sub-agent transcript (<session>/subagents/*.jsonl) of the agent's two newest sessions, or null.
+// Why: a parent session that spawned background sub-agents (Specs, lanes) writes NOTHING to its own transcript while they work, so
+// the stuck-turn watchdog saw "no growth" and restarted/escalated a healthy agent (Specs, 30 Oct 23:33-23:53: sub-agent wrote until 23:47).
+function getSubagentActivityMs(sessionCwd) {
+  let best = null;
+  try {
+    const files = [];
+    for (const jsonlPath of findJsonlFiles(sessionCwd)) {
+      try { files.push({ jsonlPath, mtimeMs: cachedStat(jsonlPath).mtimeMs }); } catch (e) { /* skip */ }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const f of files.slice(0, 2)) {
+      const dir = path.join(f.jsonlPath.slice(0, -".jsonl".length), "subagents");
+      let names;
+      try { names = fs.readdirSync(dir); } catch (e) { continue; }
+      for (const n of names) {
+        if (!n.endsWith(".jsonl")) continue;
+        try { const m = fs.statSync(path.join(dir, n)).mtimeMs; if (best == null || m > best) best = m; } catch (e) { /* gone */ }
+      }
+    }
+  } catch (e) { return null; }
+  return best;
+}
+
+// Newest sign of life of this agent: its own transcript OR any of its sub-agents' transcripts.
+function getLatestActivityMs(sessionCwd) {
+  const own = getLatestTranscriptMtimeMs(sessionCwd);
+  const sub = getSubagentActivityMs(sessionCwd);
+  if (own == null) return sub;
+  return sub != null && sub > own ? sub : own;
+}
+
 function getLatestTranscriptMtimeMs(sessionCwd) {
   let latest = null;
   for (const jsonlPath of findJsonlFiles(sessionCwd)) {
@@ -2030,6 +2062,8 @@ module.exports = {
   getLiveTranscriptBlocks,
   getSessionActivity,
   getLatestTranscriptMtimeMs,
+  getSubagentActivityMs,
+  getLatestActivityMs,
   getLatestTranscriptSizeBytes,
   loadUsageFileCache,
   saveUsageFileCache,

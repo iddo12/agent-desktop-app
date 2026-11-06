@@ -17,14 +17,14 @@ t("carrier detection from number formats", () => {
   assert.strictEqual(M.detectCarrier("garbage").carrier, "other");
 });
 t("ambiguous digit numbers use the sender hint, else low confidence", () => {
-  assert.deepStrictEqual(M.detectCarrier("878247853307", "fedex"), { carrier: "fedex", confidence: "high" });
-  assert.strictEqual(M.detectCarrier("878247853307").confidence, "low");
+  assert.deepStrictEqual(M.detectCarrier("870000000004", "fedex"), { carrier: "fedex", confidence: "high" });
+  assert.strictEqual(M.detectCarrier("870000000004").confidence, "low");
   assert.strictEqual(M.detectCarrier("1234567890", "dhl").carrier, "dhl");
   assert.strictEqual(M.detectCarrier("1234567890").carrier, "dhl");
 });
 t("carrier page urls and number normalisation", () => {
-  assert.strictEqual(M.normNumber(" 8782-4785 3307 "), "878247853307");
-  assert.strictEqual(M.trackUrl("fedex", "878247853307"), "https://www.fedex.com/fedextrack/?trknbr=878247853307");
+  assert.strictEqual(M.normNumber(" 8700-0000 0004 "), "870000000004");
+  assert.strictEqual(M.trackUrl("fedex", "870000000004"), "https://www.fedex.com/fedextrack/?trknbr=870000000004");
   assert.strictEqual(M.trackUrl("amazon", "TBA123456789012"), "");
   assert.ok(M.trackUrl("ups", "1Z999AA10123456784").includes("tracknum=1Z999AA10123456784"));
 });
@@ -87,13 +87,13 @@ t("stuck rule: no change for N days while in transit", () => {
 });
 t("applyEvents sets last event, state, eta, and a new event resets the stuck clock", () => {
   const s = M.makeShipment({ numbers: ["RR123456789IL"], state: "shipped", stateAt: NOW - 8 * DAY, lastChangeAt: NOW - 8 * DAY }, NOW);
-  const ch = M.applyEvents(s, [{ at: NOW - 3600000, text: "Arrived at post office", place: "Haifa" }, { at: NOW - 3 * DAY, text: "Departed facility", place: "Tel Aviv" }], NOW, { eta: "2026-10-09" });
+  const ch = M.applyEvents(s, [{ at: NOW - 3600000, text: "Arrived at post office", place: "Testville" }, { at: NOW - 3 * DAY, text: "Departed facility", place: "Tel Aviv" }], NOW, { eta: "2026-10-09" });
   assert.strictEqual(ch, true);
-  assert.strictEqual(s.lastEvent.place, "Haifa");
+  assert.strictEqual(s.lastEvent.place, "Testville");
   assert.strictEqual(s.eta.slice(0, 10), "2026-10-09");
   assert.notStrictEqual(M.effectiveState(s, NOW), "exception_stuck");
   assert.strictEqual(s.polledOk, true);
-  assert.strictEqual(M.applyEvents(s, [{ at: NOW - 3600000, text: "Arrived at post office", place: "Haifa" }], NOW + 1000), false);   // same event: no change
+  assert.strictEqual(M.applyEvents(s, [{ at: NOW - 3600000, text: "Arrived at post office", place: "Testville" }], NOW + 1000), false);   // same event: no change
 });
 t("an older event never overrides a newer state", () => {
   const s = M.makeShipment({ numbers: ["RR123456789IL"], state: "action_pickup", stateAt: NOW - DAY, lastChangeAt: NOW - DAY }, NOW);
@@ -119,12 +119,12 @@ t("mark picked up archives and keeps history; bring back works", () => {
 });
 t("merge: same number from two mails is one parcel; same mail twice is a no-op", () => {
   const list = [];
-  const a = M.mergeCandidate(list, { numbers: [{ no: "878247853307", carrier: "fedex" }], state: "shipped", msgId: "m1", at: NOW - 2 * DAY, merchant: "Cartoni SPA" }, NOW);
+  const a = M.mergeCandidate(list, { numbers: [{ no: "870000000004", carrier: "fedex" }], state: "shipped", msgId: "m1", at: NOW - 2 * DAY, merchant: "Acme SPA" }, NOW);
   assert.strictEqual(a.created, true);
-  const b = M.mergeCandidate(list, { numbers: [{ no: "8782 4785 3307" }], state: "in_transit", msgId: "m2", at: NOW - DAY }, NOW);
+  const b = M.mergeCandidate(list, { numbers: [{ no: "8700 0000 0004" }], state: "in_transit", msgId: "m2", at: NOW - DAY }, NOW);
   assert.strictEqual(b.created, false); assert.strictEqual(list.length, 1);
   assert.strictEqual(list[0].state, "in_transit");
-  const c = M.mergeCandidate(list, { numbers: [{ no: "878247853307" }], state: "in_transit", msgId: "m2", at: NOW - DAY }, NOW);
+  const c = M.mergeCandidate(list, { numbers: [{ no: "870000000004" }], state: "in_transit", msgId: "m2", at: NOW - DAY }, NOW);
   assert.strictEqual(c.changed, false);
 });
 t("merge: two numbers for one parcel (AliExpress LP + Israel Post RR) via order id", () => {
@@ -183,6 +183,11 @@ t("makeShipment cleans junk and caps text", () => {
   const s = M.makeShipment({ numbers: [null, 5, "  ", { no: "rr1" }], title: "a\u0000b" + "z".repeat(500), state: "bogus", eta: "nonsense" }, NOW);
   assert.ok(s.title.length <= 120 && !/\u0000/.test(s.title));
   assert.strictEqual(s.state, "ordered"); assert.strictEqual(s.eta, null);
+});
+t("a carrier's \"final status\" (handed to the next carrier) is never shown as stuck", () => {
+  const s = { state: "shipped", carrier: "aramex", numbers: [{ no: "2300000002" }], lastChangeAt: NOW - 21 * DAY, stateAt: NOW - 21 * DAY, lastEvent: { text: "This is final status for this shipment tracking number.", place: "LYON - MALPENSA - ITALY", at: NOW - 21 * DAY }, events: [{ text: "x", at: NOW - 21 * DAY }] };
+  assert.strictEqual(M.effectiveState(s, NOW), "shipped");
+  assert.strictEqual(M.effectiveState(Object.assign({}, s, { lastEvent: { text: "Departed hub", at: NOW - 21 * DAY } }), NOW), "exception_stuck");
 });
 console.log(`shipments: ${n - fails}/${n} passed`);
 process.exit(fails ? 1 : 0);

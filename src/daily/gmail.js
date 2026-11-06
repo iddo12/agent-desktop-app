@@ -46,6 +46,28 @@ function request(method, urlStr, { headers, body, timeoutMs } = {}) {
   });
 }
 
+// -> the verified sender domain, or "" . Only Gmail's own TOPMOST Authentication-Results header (authserv-id mx.google.com; every later
+// copy is ignored, it could be attacker-supplied) counts, and only with dmarc=pass for the very domain in From. The From header must be ONE plain
+// address (no quotes, comments or second address) so this check and shipments-email read the same domain.
+function senderVerified(msg) {
+  const from = headerOf(msg, "From").trim();
+  const m0 = /^(?:[^"()<>,;@]*<([^<>@\s"(),;]+@([^<>@\s"(),;]+))>|([^<>@\s"(),;]+@([^<>@\s"(),;]+)))\s*$/.exec(from);
+  const fromDom = m0 ? String(m0[2] || m0[4] || "").toLowerCase().replace(/\.$/, "") : "";
+  if (!fromDom) return "";
+  const hs = (msg && msg.payload && msg.payload.headers) || [];
+  const top = hs.find((h) => h && String(h.name).toLowerCase() === "authentication-results");
+  const v = top ? String(top.value || "").trim() : "";
+  if (!/^mx\.google\.com\s*;/i.test(v)) return "";
+  // clause by clause (comments and quoted strings removed first): the clause must be exactly "dmarc=pass ..." and carry its own header.from
+  const clean = v.replace(/\([^()]*\)/g, " ").replace(/"[^"]*"/g, " ");
+  for (const clause of clean.split(";").slice(1)) {
+    const toks = clause.trim().split(/\s+/);
+    if (!/^dmarc=pass$/i.test(toks[0] || "")) continue;
+    const hf = toks.slice(1).map((t) => /^header\.from=(.+)$/i.exec(t)).find(Boolean);
+    if (hf && hf[1].toLowerCase().replace(/\.$/, "") === fromDom) return fromDom;
+  }
+  return "";
+}
 function headerOf(msg, name) {
   const hs = (msg && msg.payload && msg.payload.headers) || [];
   const h = hs.find((x) => x && String(x.name).toLowerCase() === name.toLowerCase());
@@ -77,6 +99,31 @@ function classifyThread(thread, me, now) {
   return Object.assign(base, { kind: "needAnswer", from: clean(fromRaw, 160), at: t, unread: labels.includes("UNREAD"), important: labels.includes("IMPORTANT") || labels.includes("STARRED") });
 }
 
+// Same walk, with the alt text of each picture: [{src, alt}] (at most 40, same filters). Product names live in alt; the Shipments service
+// pairs a picture with an item only for a known shop image host (shipments-email.js), after the DMARC gate.
+function htmlImageAlts(payload, depth, out) {
+  out = out || [];
+  if (!payload || (depth || 0) > 6 || out.length >= 40) return out;
+  if (String(payload.mimeType) === "text/html" && payload.body && payload.body.data) {
+    let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
+    t = t.slice(0, 300000);
+    const re = /<img\b[^<>]{0,1500}>/gi;
+    let m;
+    while ((m = re.exec(t)) && out.length < 40) {
+      const tag = m[0];
+      const sm = /\bsrc\s*=\s*["'](https:\/\/[^"'\s<>]{4,400})["']/i.exec(tag);
+      if (!sm) continue;
+      const w = /\bwidth\s*=\s*["']?(\d+)/i.exec(tag);
+      if (w && +w[1] < 60) continue;
+      const am = /\balt\s*=\s*(?:"([^"]{0,300})"|'([^']{0,300})')/i.exec(tag);
+      const alt = clean(String(am ? (am[1] != null ? am[1] : am[2]) : "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, " "), 120);
+      const src = sm[1].replace(/&amp;/g, "&");
+      if (!out.some((x) => x.src === src)) out.push({ src, alt });
+    }
+  }
+  for (const p of payload.parts || []) htmlImageAlts(p, (depth || 0) + 1, out);
+  return out;
+}
 function create({ dataDir, safeStorage, openExternal, client, log, request: req, exportFile }) {
   const say = typeof log === "function" ? log : () => {};
   const call = req || request;
@@ -208,11 +255,30 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
     const mt = String(payload.mimeType || "");
     if (payload.body && payload.body.data && (mt === "text/plain" || (mt === "text/html" && !(payload.parts || []).length))) {
       let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
-      return mt === "text/html" ? t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ") : t;
+      return mt === "text/html" ? t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<\/(?:p|div|tr|td|li|h\d|table)>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ") : t;
     }
     let plain = "", other = "";
     for (const p of payload.parts || []) { const x = bodyText(p, (depth || 0) + 1); if (String(p.mimeType) === "text/plain") plain += x + "\n"; else other += x + "\n"; }
     return (plain.trim() ? plain : other).slice(0, 40000);
+  }
+  // Picture urls of a message, in document order (https only, at most 24): product photos in parcel mails. Fetched later by the Shipments service.
+  function htmlImages(payload, depth, out) {
+    out = out || [];
+    if (!payload || (depth || 0) > 6 || out.length >= 24) return out;
+    if (String(payload.mimeType) === "text/html" && payload.body && payload.body.data) {
+      let t = ""; try { t = Buffer.from(String(payload.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch (e) { t = ""; }
+      t = t.slice(0, 300000);                                           // bounded work on hostile mail
+      const re = /<img\b[^<>]{0,1000}?\bsrc\s*=\s*["'](https:\/\/[^"'\s<>]{4,400})["'][^<>]{0,1000}>/gi;
+      let m;
+      while ((m = re.exec(t)) && out.length < 24) {
+        const w = /\bwidth\s*=\s*["']?(\d+)/i.exec(m[0]);
+        if (w && +w[1] < 60) continue;                                   // icons and tracking pixels
+        const u = m[1].replace(/&amp;/g, "&");
+        if (!out.includes(u)) out.push(u);
+      }
+    }
+    for (const p of payload.parts || []) htmlImages(p, (depth || 0) + 1, out);
+    return out;
   }
   async function shipmentMails(now, opts) {
     const accts = readAccounts();
@@ -229,7 +295,7 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
         const mails = [];
         for (const m of msgs) {
           if (!m) continue;
-          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID") || m.id) });
+          mails.push({ from: clean(headerOf(m, "From"), 160), subject: clean(headerOf(m, "Subject"), 200), body: bodyText(m.payload).slice(0, 30000), images: htmlImages(m.payload), imageAlts: htmlImageAlts(m.payload), verified: senderVerified(m), date: new Date(Number(m.internalDate) || now).toISOString(), messageId: normId(headerOf(m, "Message-ID")) });   // no header: "" so the extractor derives the same hash key for the Betterbird copy
         }
         shipCache.set(a.email, { at: Date.now(), mails });
         out.push(...mails);
@@ -282,4 +348,4 @@ function create({ dataDir, safeStorage, openExternal, client, log, request: req,
   };
 }
 
-module.exports = { create, classifyThread, SCOPE };
+module.exports = { create, classifyThread, SCOPE, senderVerified, htmlImageAlts };

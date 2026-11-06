@@ -1030,12 +1030,13 @@
   // v1.139.0 SKILLS & PLUGINS: a third tab, same pattern (skills.js + styles-skills.css, window.skillsView). SUB_TABS maps a tab id to its module.
   const SUB_TABS = {
     recs: { script: "recs.js", css: "styles-recs.css", view: () => window.recsView, opening: "Opening the recommendations...", failed: "The recommendations tab could not load. Switch tabs and back to try again." },
+    improve: { script: "improve.js", css: "styles-improve.css", view: () => window.improveView, opening: "Opening How to improve...", failed: "The How to improve tab could not load. Switch tabs and back to try again." },
     skills: { script: "skills.js", css: "styles-skills.css", view: () => window.skillsView, opening: "Opening Skills & Plugins...", failed: "The Skills & Plugins tab could not load. Switch tabs and back to try again." },
   };
   function unmountSub(id) { const t = SUB_TABS[id], v = t && t.view(); if (v) v.unmount(); }
   function renderTabs() {
     const bar = el("div", "rc-tabs"); bar.setAttribute("role", "tablist");
-    [["findings", "Findings"], ["recs", "My Recommendations"], ["skills", "Skills & Plugins"]].forEach(([id, word]) => {
+    [["findings", "Findings"], ["recs", "My Recommendations"], ["skills", "Skills & Plugins"], ["improve", "How to improve"]].forEach(([id, word]) => {
       const b = el("button", "", word); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", (S.tab || "findings") === id ? "true" : "false");
       if (id === "skills") b.title = "What the weekly Skills & Plugins watch will look at, and what it found.";
       b.addEventListener("click", () => { if ((S.tab || "findings") === id) return; unmountSub(S.tab); S.tab = id; render(); });
@@ -1065,6 +1066,7 @@
     headHost.appendChild(renderTabs());                       // v1.133.0: Findings | Recommendations (v1.139.0: | Skills & Plugins)
     if (S.tab === "recs") { mountRecs(); return; }
     if (S.tab === "skills") { mountSub("skills"); return; }
+    if (S.tab === "improve") { mountSub("improve"); return; }
     if (!S.snap) { bodyHost.appendChild(el("div", "rs-muted rs-pad", "Reading this week's digests...")); return; }
     const main = el("div", "rs-main");
     if (S.snap.needsSetup && window.NeedsSetup) { bodyHost.appendChild(main); main.appendChild(window.NeedsSetup.card("research")); return; } // v1.121.0: the calm card with a Set up button

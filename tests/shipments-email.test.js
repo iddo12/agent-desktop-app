@@ -9,17 +9,17 @@ function t(name, fn) { n++; try { fn(); } catch (e) { fails++; console.error("FA
 const one = (mail) => { const r = E.extractShipments(mail, NOW); assert.strictEqual(r.length, 1, "expected one candidate for: " + mail.subject); return r[0]; };
 
 const FEDEX = {
-  from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 878247853307", date: "2026-10-05T07:12:00Z", messageId: "<fx1@fedex.com>",
-  body: "Cartoni SPA, Rome IT is sending you a package.\n\nTracking number: 878247853307\nFrom: Cartoni SPA, Rome, IT\nDelivering to: Haifa, IL\nScheduled delivery: Thursday, 8 Oct 2026\n\nTrack your shipment: https://www.fedex.com/fedextrack/?trknbr=878247853307\n",
+  from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 870000000004", date: "2026-10-05T07:12:00Z", messageId: "<fx1@fedex.com>",
+  body: "Acme SPA, Rome IT is sending you a package.\n\nTracking number: 870000000004\nFrom: Acme SPA, Rome, IT\nDelivering to: Testville, IL\nScheduled delivery: Thursday, 8 Oct 2026\n\nTrack your shipment: https://www.fedex.com/fedextrack/?trknbr=870000000004\n",
 };
-t("FedEx 'You're getting a shipment 878247853307' from Cartoni SPA, Rome", () => {
+t("FedEx 'You're getting a shipment 870000000004' from Acme SPA, Rome", () => {
   const c = one(FEDEX);
-  assert.deepStrictEqual(c.numbers, [{ no: "878247853307", carrier: "fedex" }]);
+  assert.deepStrictEqual(c.numbers, [{ no: "870000000004", carrier: "fedex" }]);
   assert.strictEqual(c.carrier, "fedex");
   assert.strictEqual(c.state, "shipped");
-  assert.ok(/Cartoni SPA/.test(c.from) && /Rome/.test(c.from));
-  assert.strictEqual(c.merchant, "Cartoni SPA");
-  assert.strictEqual(c.to, "Haifa");
+  assert.ok(/Acme SPA/.test(c.from) && /Rome/.test(c.from));
+  assert.strictEqual(c.merchant, "Acme SPA");
+  assert.strictEqual(c.to, "Testville");
   assert.strictEqual(c.eta.slice(0, 10), "2026-10-08");
 });
 t("numeric dates read as day/month unless the first part exceeds 12", () => {
@@ -33,8 +33,8 @@ t("numeric dates read as day/month unless the first part exceeds 12", () => {
   assert.strictEqual(E.parseDateText("no date here"), null);
 });
 t("FedEx subject only (feed without a body) still yields the number", () => {
-  const c = one({ from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 878247853307", date: "2026-10-05T07:12:00Z", messageId: "<fx2@fedex.com>" });
-  assert.strictEqual(c.numbers[0].no, "878247853307");
+  const c = one({ from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 870000000004", date: "2026-10-05T07:12:00Z", messageId: "<fx2@fedex.com>" });
+  assert.strictEqual(c.numbers[0].no, "870000000004");
   assert.strictEqual(c.numbers[0].carrier, "fedex");
 });
 t("UPS update with link and label", () => {
@@ -114,14 +114,14 @@ t("random mail from people is ignored", () => {
   assert.strictEqual(E.looksLikeShipment({ from: "FedEx <TrackingUpdates@fedex.com>", subject: "anything" }), true);
 });
 t("html bodies are stripped, hostile text is not executed or kept as markup", () => {
-  const c = one({ from: "FedEx <TrackingUpdates@fedex.com>", subject: "FedEx shipment 878247853307", date: "2026-10-05T07:12:00Z", messageId: "<h1>",
-    body: "<html><style>.x{}</style><body><script>alert(1)</script><p>From: <b>Acme &amp; Co, Berlin</b></p><p>Tracking number 878247853307</p></body></html>" });
-  assert.strictEqual(c.numbers[0].no, "878247853307");
+  const c = one({ from: "FedEx <TrackingUpdates@fedex.com>", subject: "FedEx shipment 870000000004", date: "2026-10-05T07:12:00Z", messageId: "<h1>",
+    body: "<html><style>.x{}</style><body><script>alert(1)</script><p>From: <b>Acme &amp; Co, Berlin</b></p><p>Tracking number 870000000004</p></body></html>" });
+  assert.strictEqual(c.numbers[0].no, "870000000004");
   assert.ok(!/[<>]/.test(c.from), c.from);
 });
 t("end to end: two mails, one parcel", () => {
   const list = [];
-  for (const m of [FEDEX, { from: "FedEx <TrackingUpdates@fedex.com>", subject: "FedEx: your shipment is out for delivery 878247853307", date: "2026-10-07T06:00:00Z", messageId: "<fx3>", body: "Tracking number 878247853307" }]) {
+  for (const m of [FEDEX, { from: "FedEx <TrackingUpdates@fedex.com>", subject: "FedEx: your shipment is out for delivery 870000000004", date: "2026-10-07T06:00:00Z", messageId: "<fx3>", body: "Tracking number 870000000004" }]) {
     for (const c of E.extractShipments(m, NOW)) M.mergeCandidate(list, c, NOW);
   }
   assert.strictEqual(list.length, 1);
@@ -131,8 +131,8 @@ t("end to end: two mails, one parcel", () => {
 t("parseAddInput: number, link, sms, dictation, junk", () => {
   assert.deepStrictEqual(E.parseAddInput("RR123456789IL").numbers, [{ no: "RR123456789IL", carrier: "israelpost" }]);
   assert.strictEqual(E.parseAddInput("https://www.ups.com/track?tracknum=1Z999AA10123456784").numbers[0].carrier, "ups");
-  const d = E.parseAddInput("tracking 878247853307 FedEx from Cartoni");
-  assert.strictEqual(d.numbers[0].carrier, "fedex"); assert.strictEqual(d.title, "Cartoni");
+  const d = E.parseAddInput("tracking 870000000004 FedEx from Acme");
+  assert.strictEqual(d.numbers[0].carrier, "fedex"); assert.strictEqual(d.title, "Acme");
   assert.strictEqual(E.parseAddInput("דואר ישראל: חבילה RR987654321IL ממתינה לך").numbers[0].no, "RR987654321IL");
   assert.strictEqual(E.parseAddInput("hello").ok, false);
   assert.strictEqual(E.parseAddInput("").ok, false);

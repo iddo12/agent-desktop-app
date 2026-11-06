@@ -11,7 +11,7 @@ syncGuard.install();
 require("./appLogRing").install();
 // v1.121.0: where ARGUS, Memory, Keep working and the usage code find their files comes from the configuration layer (src/featureCtx.js)
 const featureCtx = require("./featureCtx").create({ cfg: require("./appConfig"), guard: testGuard });
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, Notification, screen, Tray, globalShortcut } = require("electron");
 // v1.93.0: AD_PERF=1 only - per-IPC timing, event-loop stalls, memory, optional sync-fs accounting (src/perfLog.js).
 // Must wrap ipcMain before any handler below is registered. A no-op without the env var.
 const perfLog = require("./perfLog");
@@ -42,6 +42,8 @@ const {
   getLiveTranscriptBlocks,
   getSessionActivity,
   getLatestTranscriptMtimeMs,
+  getLatestActivityMs,
+  getSubagentActivityMs,
   getLatestTranscriptSizeBytes,
   getLastRealProgressMs,
   getHaltInfo,
@@ -1285,6 +1287,7 @@ if (!gotSingleInstanceLock) {
   });
   app.whenReady().then(() => {
     createWindow();
+    try { initApprovalsDock(); } catch (e) { logStuckWatchdog(`approvals dock init failed: ${e.message}`); }
     if (demo.ON) { // v1.86.0 demo mode: no watchdogs, sweeps, timers or CLI work - just the window on the fictional data
       markStartupSweepDone(false);
       writeRuntimeStamp();
@@ -1293,7 +1296,7 @@ if (!gotSingleInstanceLock) {
     applyClaudeIntegration(); // v1.121.0: only with the person's consent (Setup > Claude Code integration); v1.77.2: a no-op in test mode
     reapOrphanedBackgroundAgentProcesses();
     setInterval(reapOrphanedBackgroundAgentProcesses, REAPER_INTERVAL_MS);
-    setInterval(() => { checkApprovalBlocked().catch((e) => logStuckWatchdog(`checkApprovalBlocked error: ${e.message}`)); }, 60 * 1000).unref();
+    setInterval(() => { checkApprovalBlocked().catch((e) => logStuckWatchdog(`checkApprovalBlocked error: ${e.message}`)); }, 3 * 1000).unref(); // v1.153.0: 3 s (was 60 s) so the Approvals pop-up appears within seconds; the scan is a few cached stats
     setInterval(() => {
       checkForStuckTurns().catch((e) => logStuckWatchdog(`checkForStuckTurns error: ${e.message}`));
     }, STUCK_CHECK_INTERVAL_MS);
@@ -3352,6 +3355,9 @@ const approvalRestartAt = new Map();
 // the app only said "Working..."). approvalPending drives a visible banner with Approve / Deny that only the owner's click
 // answers (nothing is ever approved automatically), and makes the stuck-turn watchdog leave the agent alone.
 const approvalPending = new Map();      // agentPath -> { needs, since }
+// v1.153.0 APPROVALS POP-UP: shown after 2 s of waiting (the 90 s rule below now only governs the Haiku auto-restart and the log line)
+const APPROVAL_SHOW_MS = 2 * 1000;
+let approvalsLastKey = "";
 async function checkApprovalBlocked() {
   const now = Date.now();
   // Scans the daemon's job files, NOT ptySessions: an agent whose tab was never opened has no attach client, and the
@@ -3371,7 +3377,7 @@ async function checkApprovalBlocked() {
     const since = approvalBlockedSince.get(agentPath) || now;
     if (!approvalBlockedSince.has(agentPath)) logStuckWatchdog(`approval-blocked: ${agentPath} - first seen waiting for "${String(st.needs).slice(0, 120)}"`);
     approvalBlockedSince.set(agentPath, since);
-    if (now - since < 90 * 1000) continue;
+    if (now - since < APPROVAL_SHOW_MS) continue;
     // only the agent's CURRENT conversation counts: an old killed job file can keep "blocked" forever
     // (newest transcript file by mtime, not listConversations(): that returns [] for a session whose only human turn is a
     // handoff prompt, which is exactly the kind of session that hangs)
@@ -3381,6 +3387,13 @@ async function checkApprovalBlocked() {
       for (const fn of fs.readdirSync(pdir)) { if (!/\.jsonl$/.test(fn)) continue; const t = fs.statSync(path.join(pdir, fn)).mtimeMs; if (t > bestT) { bestT = t; best = fn; } }
       if (!best || best.replace(/\.jsonl$/, "") !== st.sessionId || st.state !== "working") continue;
     } catch (_) { continue; }
+    // shown in the Approvals pop-up and the banner. A CHANGED request is a new request: new `since`, so a click on the old card is refused.
+    {
+      const needs = String(st.needs).slice(0, 600), cur = approvalPending.get(agentPath);
+      if (cur && cur.needs !== needs) { approvalBlockedSince.set(agentPath, now); approvalPending.set(agentPath, { needs, since: now }); }
+      else if (!cur) approvalPending.set(agentPath, { needs, since });
+    }
+    if (now - since < 90 * 1000) continue;
     let model = "";
     try {
       const fd = fs.openSync(st.linkScanPath, "r"); const size = fs.fstatSync(fd).size; const len = Math.min(size, 256 * 1024);
@@ -3390,7 +3403,7 @@ async function checkApprovalBlocked() {
     const secs = Math.round((now - since) / 1000);
     const haiku = /haiku/i.test(model);
     logStuckWatchdog(`approval-blocked: ${agentPath} - waiting ${secs}s for "${String(st.needs).slice(0, 160)}" (${model || "model unknown"})${haiku ? " - Haiku session, restarting it on the pinned model" : " - left alone, this approval is the owner's"}`);
-    if (!haiku) approvalPending.set(agentPath, { needs: String(st.needs).slice(0, 600), since });   // shown as a banner with Approve / Deny (renderer approval-banner.js)
+    if (haiku) approvalPending.delete(agentPath);   // a Haiku session is restarted below instead of asking the owner
     if (haiku && now - (approvalRestartAt.get(agentPath) || 0) > 20 * 60 * 1000) {
       approvalRestartAt.set(agentPath, now);
       approvalBlockedSince.delete(agentPath);
@@ -3398,30 +3411,232 @@ async function checkApprovalBlocked() {
       catch (e) { logStuckWatchdog(`approval-blocked: ${agentPath} - restart failed: ${e.message}`); }
     }
   }
+  notifyApprovalsChanged();
 }
 ipcMain.handle("approval-pending-get", (event, { agentPath }) => {
   const p = approvalPending.get(agentPath);
   return p ? { needs: p.needs, since: p.since, promptOnScreen: promptLikelyOpen(agentPath) } : null;
 });
-// the owner's click only. Enter takes the prompt's default "Yes"; Escape declines.
-ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
-  // v1.71.1 (Testing agent review): the click must answer EXACTLY the prompt the banner showed.
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, reason: "not from the main window" };
-  if (answer !== "approve" && answer !== "deny") return { ok: false, reason: "bad answer" };
+// One answer to one prompt, shared by the banner (approval-answer) and the Approvals pop-up. Returns { ok } or { ok:false, reason }. `via` is for the log.
+function answerApproval(agentPath, answer, since, via, expectNeeds) {
   const s = ptySessions.get(agentPath);
   if (!s || !s.proc) return { ok: false, reason: "this agent is not attached; open its Terminal tab once, or use Session > Restart session" };
   const pend = approvalPending.get(agentPath);
   if (!pend) return { ok: false, reason: "nothing is waiting for approval" };
   if (since !== pend.since) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
+  if (expectNeeds != null && String(expectNeeds) !== String(pend.needs)) return { ok: false, reason: "the request changed while you were looking; read the new one and click again" };
   const diag = () => approvalScreen.diagnose({ shortLen: (dialogTails.get(agentPath) || "").length, longLen: (dialogLongTails.get(agentPath) || "").length, dialogOpen: dialogOpenFor(agentPath), promptWaiting: deliveryScreen.promptWaiting(dialogTails.get(agentPath) || ""), longOpen: approvalScreen.longPromptOpen(dialogLongTails.get(agentPath)), cmdShort: approvalScreen.commandOnScreen(dialogTails.get(agentPath), pend.needs), cmdLong: approvalScreen.commandOnScreen(dialogLongTails.get(agentPath), pend.needs), needsLen: String(pend.needs).length });
   if (!promptLikelyOpen(agentPath)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED prompt-not-on-screen ${diag()}`); return { ok: false, reason: "the prompt is not on the screen; use Session > Restart session" }; }
   // v1.152.3: the start of a long command has scrolled out of the 1500-char text; look in the 8000-char one too
   if (!approvalScreen.openPromptFor(dialogLongTails.get(agentPath), pend.needs)) { logStuckWatchdog(`approval-answer: ${agentPath} REFUSED not-the-same-prompt ${diag()}`); return { ok: false, reason: "the prompt on the agent's screen is not the one shown here; use Session > Restart session" }; }
-  logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} for "${String(pend.needs).slice(0, 160)}"`);
+  logStuckWatchdog(`approval-answer: ${agentPath} - the owner chose ${answer === "approve" ? "APPROVE" : "DENY"} (${via}) for "${String(pend.needs).slice(0, 160)}"`);
+  approvalsLog({ agent: agentPath, answer, via, since, needs: pend.needs, result: "sent" });
   writeToPtyChunked(s.proc, agentPath, answer === "approve" ? "\r" : "\x1b");
   approvalPending.delete(agentPath);        // the next prompt (if any) must be seen and read again, never approved by a second click on this card
   approvalBlockedSince.delete(agentPath);
   return { ok: true };
+}
+// the owner's click only. Enter takes the prompt's default "Yes"; Escape declines.
+ipcMain.handle("approval-answer", (event, { agentPath, answer, since }) => {
+  // v1.71.1 (Testing agent review): the click must answer EXACTLY the prompt the banner showed.
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { ok: false, reason: "not from the main window" };
+  if (answer !== "approve" && answer !== "deny") return { ok: false, reason: "bad answer" };
+  const r = answerApproval(agentPath, answer, since, "banner", null);
+  if (r.ok) notifyApprovalsChanged();
+  return r;
+});
+
+// ===== v1.153.0 APPROVALS POP-UP (src/approvalsPopup.js has the rules) =====
+const approvalsPopup = require("./approvalsPopup");
+let approvalsLogObj = null;
+function approvalsLog(rec) {
+  try {
+    if (!approvalsLogObj) {
+      approvalsLogObj = approvalsPopup.createLog({
+        file: path.join(require("./sealedAnswers").stateDir(), "approvals.jsonl"),
+        sign: (r) => { if (testMode.TEST_MODE && !process.env.AGENT_DESKTOP_SEALED_DIR) return null; return getSealer().signReceipt(r); },
+      });
+    }
+    approvalsLogObj.add(rec);
+  } catch (e) { logStuckWatchdog(`approvals log failed: ${e.message}`); }
+}
+function approvalItems() {
+  const attached = (ap) => !!(ptySessions.get(ap) && ptySessions.get(ap).proc);
+  return approvalsPopup.buildItems(approvalPending, (ap, needs) => { try { return attached(ap) && promptLikelyOpen(ap) && approvalScreen.openPromptFor(dialogLongTails.get(ap), needs); } catch (e) { return false; } }, (ap) => path.basename(ap), Date.now());
+}
+function notifyApprovalsChanged(force) {
+  try {
+    const items = approvalItems(), key = approvalsPopup.listKey(items);
+    if (key === approvalsLastKey && !force) return;
+    const before = approvalsLastKey ? approvalsLastKey.split("\n").length : 0;
+    approvalsLastKey = key;
+    for (const w of [mainWindow, approvalsWin]) { if (w && !w.isDestroyed()) w.webContents.send("approvals-changed"); }
+    if (items.length > before && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused() && !(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isVisible())) mainWindow.flashFrame(true);
+  } catch (e) { /* never break the scan */ }
+}
+// ===== v1.153.0 THYRA DOCK WINDOW: the Approvals list as a small movable always-on-top window (src/approvalsWindow.js) =====
+// Same owner-click-only IPC as the pop-up. Opened from the tray icon, Ctrl+Alt+A, or the "Approvals" chip in the main window; remembers its
+// position, size, always-on-top choice and whether it was open (reopens after a restart). A saved position on a monitor that is gone is moved back on screen.
+const approvalsWindowLib = require("./approvalsWindow");
+const dockAsks = require("./dockAsks");   // v1.154.0 "Questions for you"
+let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
+// THYRA's own amber bell icons (build/make-thyra-icon.py): plain, and with a red dot while something waits. Not the Agent Desktop logo.
+function thyraIcon(badge) { return path.join(__dirname, "..", "build", badge ? "icon-thyra-badge.ico" : "icon-thyra.ico"); }
+function approvalsStateFile() { return path.join(app.getPath("userData"), "approvals-window.json"); }
+// every display's visible area (taskbar excluded), the PRIMARY first: it is the fallback when the saved screen is gone
+function approvalsWorkAreas() {
+  const prim = screen.getPrimaryDisplay();
+  return [prim.workArea].concat(screen.getAllDisplays().filter((d) => d.id !== prim.id).map((d) => d.workArea));
+}
+function isApprovalsSender(event) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) return true;
+    return !!(approvalsWin && !approvalsWin.isDestroyed() && event.sender === approvalsWin.webContents);
+  } catch (e) { return false; }
+}
+function saveApprovalsState(open) {
+  const cur = approvalsWindowLib.readState(approvalsStateFile());
+  let bounds = cur.bounds, full = cur.full, collapsed = cur.collapsed;
+  if (approvalsWin && !approvalsWin.isDestroyed()) { collapsed = !!approvalsWin.__thyraCollapsed; try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } if (!collapsed) full = null; else if (approvalsWin.__thyraFull) full = approvalsWin.__thyraFull; }
+  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, collapsed, bounds, full });
+}
+// v1.154.1 Always-on-top that holds: the highest topmost band ("screen-saver"), re-asserted on every blur/focus change of any window, on hide/show and every 3 s
+// while Top is on (another app's window or a focus change can push a topmost window down the z-order). moveTop() does not take focus; the window has no
+// parent/owner and nothing hides it on blur.
+function assertApprovalsOnTop(w) {
+  try {
+    if (!w || w.isDestroyed() || !w.isAlwaysOnTop() && !w.__thyraWantTop) return;
+    w.__thyraWantTop = true;
+    w.setAlwaysOnTop(true, "screen-saver");
+    if (w.isVisible() && !w.isMinimized()) w.moveTop();
+  } catch (e) { /* cosmetic */ }
+}
+function openApprovalsWindow() {
+  if (approvalsWin && !approvalsWin.isDestroyed()) { if (approvalsWin.isMinimized()) approvalsWin.restore(); approvalsWin.show(); return; }
+  const st = approvalsWindowLib.readState(approvalsStateFile());
+  const was = st.collapsed ? approvalsWindowLib.TAB : approvalsWindowLib.MIN;   // a collapsed window is a small tab
+  const b = approvalsWindowLib.clampBounds(st.bounds, approvalsWorkAreas(), was);
+  approvalsWin = new BrowserWindow({
+    ...b, minWidth: Math.min(was.width, 120), minHeight: Math.min(was.height, 28), show: false, autoHideMenuBar: true,
+    title: "THYRA - Approvals", backgroundColor: "#fff8f4", skipTaskbar: true,   // one taskbar button only (Agent Desktop's); the dock is reached by its tray icon, Ctrl+Alt+A or the chip
+    icon: thyraIcon(false),
+    webPreferences: { preload: path.join(__dirname, "approvals-window-preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  const w = approvalsWin;
+  w.__thyraCollapsed = !!st.collapsed; w.__thyraFull = st.full || null;
+  w.setMenuBarVisibility(false);
+  w.__thyraWantTop = !!st.onTop;
+  if (st.onTop) assertApprovalsOnTop(w);
+  w.webContents.on("will-navigate", (e) => e.preventDefault());
+  w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  w.__thyraWantTop = !!st.onTop;
+  const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w); };
+  w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
+  const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 3000); topTimer.unref();
+  const appEv = () => setTimeout(reassert, 50); app.on("browser-window-blur", appEv); app.on("browser-window-focus", appEv);
+  w.once("closed", () => { clearInterval(topTimer); app.removeListener("browser-window-blur", appEv); app.removeListener("browser-window-focus", appEv); });
+  w.once("ready-to-show", () => { if (!w.isDestroyed()) w.showInactive(); notifyApprovalsChanged(true); });   // never steals focus from what the owner is typing
+  const later = () => { clearTimeout(approvalsSaveTimer); approvalsSaveTimer = setTimeout(() => { if (!w.isDestroyed()) saveApprovalsState(true); }, 400); };
+  w.on("move", later); w.on("resize", later);
+  w.on("closed", () => { clearTimeout(approvalsSaveTimer); approvalsWin = null; if (!approvalsQuitting) approvalsWindowLib.writeState(approvalsStateFile(), Object.assign(approvalsWindowLib.readState(approvalsStateFile()), { open: false })); notifyApprovalsChanged(true); refreshApprovalsTray(); });
+  w.loadFile(path.join(__dirname, "renderer", "approvals-window.html"));
+  saveApprovalsState(true);
+  refreshApprovalsTray();
+}
+// Collapse to a small tab (when it blocks the work) and back; the full size is remembered and restored in the same place.
+function toggleApprovalsCollapse() {
+  const w = approvalsWin; if (!w || w.isDestroyed()) return false;
+  const T = approvalsWindowLib.TAB, wa = () => approvalsWorkAreas();
+  if (!w.__thyraCollapsed) {
+    const nb = w.getNormalBounds(); w.__thyraFull = nb; w.__thyraCollapsed = true;
+    w.setMinimumSize(Math.min(T.width, 120), Math.min(T.height, 28));
+    w.setBounds(approvalsWindowLib.clampBounds({ x: nb.x, y: nb.y, width: T.width, height: T.height }, wa(), T));
+  } else {
+    const cur = w.getNormalBounds(), f = w.__thyraFull || approvalsWindowLib.DEFAULT; w.__thyraCollapsed = false;
+    w.setMinimumSize(approvalsWindowLib.MIN.width, approvalsWindowLib.MIN.height);
+    w.setBounds(approvalsWindowLib.clampBounds({ x: cur.x, y: cur.y, width: f.width, height: f.height }, wa()));
+    w.__thyraFull = null;
+  }
+  saveApprovalsState(true);
+  return !!w.__thyraCollapsed;
+}
+function closeApprovalsWindow() { if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.close(); }
+function toggleApprovalsWindow() {
+  if (approvalsWin && !approvalsWin.isDestroyed()) { if (approvalsWin.isMinimized()) { approvalsWin.restore(); approvalsWin.showInactive(); } else closeApprovalsWindow(); }   // minimized: one click / the shortcut brings it back
+  else openApprovalsWindow();
+}
+function refreshApprovalsTray() {
+  if (!approvalsTray) return;
+  const open = !!(approvalsWin && !approvalsWin.isDestroyed());
+  approvalsTray.setContextMenu(Menu.buildFromTemplate([
+    { label: open ? "Close the approvals window" : "Open the approvals window", click: () => toggleApprovalsWindow() },
+    { label: "Show Agent Desktop", click: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } } },
+  ]));
+}
+function initApprovalsDock() {
+  mainWindow.on("closed", () => { approvalsQuitting = true; closeApprovalsWindow(); });
+  // v1.154.0 one count for everything that waits on the owner: permission prompts + asks from the last 3 days (tray tooltip, dock window title; the chip counts the same in the renderer)
+  let lastAskKey = null, approvalsTrayBadge = false;
+  const badge = () => {
+    try {
+      const rows = dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()), n = approvalItems().length + dockAsks.recentCount(rows);
+      if (approvalsTray) { if (!!n !== approvalsTrayBadge) { approvalsTrayBadge = !!n; try { approvalsTray.setImage(thyraIcon(approvalsTrayBadge)); } catch (e) { /* icon only */ } } }
+      if (approvalsTray) approvalsTray.setToolTip(n ? "Agent Desktop - " + n + " waiting for you" : "Agent Desktop - nothing waiting");
+      if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.setTitle(n ? "THYRA - " + n + " waiting" : "THYRA - Approvals");
+      const k = dockAsks.listKey(rows);
+      if (lastAskKey !== null && k !== lastAskKey) { for (const w of [mainWindow, approvalsWin]) { if (w && !w.isDestroyed()) w.webContents.send("approvals-changed"); } }
+      lastAskKey = k;
+    } catch (e) { /* the badge is cosmetic */ }
+  };
+  setInterval(badge, 5000).unref(); setTimeout(badge, 2000);
+  app.on("before-quit", () => { approvalsQuitting = true; try { saveApprovalsState(undefined); } catch (e) { /* quitting */ } });
+  if (!testMode.TEST_MODE) {   // a sandbox instance must never take the real tray slot or the owner's shortcut
+    try {
+      approvalsTray = new Tray(thyraIcon(false));
+      approvalsTray.setToolTip("Agent Desktop - approvals");
+      approvalsTray.on("click", () => toggleApprovalsWindow());
+      refreshApprovalsTray();
+    } catch (e) { logStuckWatchdog(`approvals tray failed: ${e.message}`); }
+    try { if (!globalShortcut.register("CommandOrControl+Alt+A", () => toggleApprovalsWindow())) logStuckWatchdog("approvals shortcut Ctrl+Alt+A is taken by another program"); } catch (e) { /* no shortcut */ }
+    app.on("will-quit", () => { try { globalShortcut.unregisterAll(); } catch (e) { /* quitting */ } });
+  }
+  if (approvalsWindowLib.readState(approvalsStateFile()).open) setTimeout(() => { try { openApprovalsWindow(); } catch (e) { logStuckWatchdog(`approvals window reopen failed: ${e.message}`); } }, 1500);
+}
+ipcMain.handle("approvals-window", (event, { action }) => {
+  if (!isApprovalsSender(event)) return null;
+  const fromDock = !!(approvalsWin && !approvalsWin.isDestroyed() && event.sender === approvalsWin.webContents);
+  if (action === "open" && !fromDock) { openApprovalsWindow(); return { ok: true }; }
+  if (action === "toggle" && !fromDock) { toggleApprovalsWindow(); return { ok: true }; }
+  if (action === "close" && fromDock) { closeApprovalsWindow(); return { ok: true }; }
+  if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.__thyraWantTop = on; if (on) assertApprovalsOnTop(approvalsWin); else approvalsWin.setAlwaysOnTop(false); saveApprovalsState(true); return { ok: true, onTop: on }; }
+  if (action === "minimize" && fromDock) { approvalsWin.minimize(); return { ok: true }; }
+  if (action === "collapse-toggle" && fromDock) { return { ok: true, collapsed: toggleApprovalsCollapse() }; }
+  if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true, collapsed: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.__thyraCollapsed), minimized: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isMinimized()) };
+  return { ok: false };
+});
+// sandbox only: fake waiting agents (see src/approvalsTestHook.js); does nothing unless the test mode and AGENT_DESKTOP_FAKE_APPROVALS are both set
+require("./approvalsTestHook").install({ testMode, ptySessions, dialogTails, dialogLongTails, trackDialog });
+ipcMain.handle("approvals-list", (event) => {
+  if (!isApprovalsSender(event)) return { ok: false, items: [] };
+  return { ok: true, items: approvalItems(), docked: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isVisible()) };
+});
+// decisions: [{agentPath, since, needs, answer}] exactly as drawn. Sequential, 250 ms apart, each re-checked by answerApproval.
+ipcMain.handle("approvals-decide", async (event, { decisions, via }) => {
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window", results: [] };
+  const shown = Array.isArray(decisions) ? decisions.map((d) => (d && typeof d.needs === "string") ? d.needs : null) : [];
+  const c = approvalsPopup.checkBatch(decisions);
+  if (!c.ok) return { ok: false, error: c.error, results: [] };
+  const how = via === "all" ? "popup-all" : "popup-item";
+  const results = [];
+  for (let i = 0; i < c.decisions.length; i++) {
+    const d = c.decisions[i];
+    const r = shown[i] == null ? { ok: false, reason: "no displayed request to check against" } : answerApproval(d.agentPath, d.answer, d.since, how, shown[i]);
+    if (!r.ok) approvalsLog({ agent: d.agentPath, answer: d.answer, via: how, since: d.since, needs: shown[i] || "", result: "refused", reason: String(r.reason).slice(0, 200) });
+    results.push({ agentPath: d.agentPath, ok: !!r.ok, reason: r.reason || "" });
+    if (i < c.decisions.length - 1) await new Promise((res) => setTimeout(res, 250));
+  }
+  notifyApprovalsChanged();
+  return { ok: true, results };
 });
 function typeIntoPty(agentPath, text) {
   const s = ptySessions.get(agentPath);
@@ -3851,7 +4066,7 @@ const stuckEscalation = require("./stuckEscalation");
 const stuckQuestions = stuckEscalation.openQuestionsStore(path.join(AGENTS_ROOT, "shared_state", "open_questions"));
 const stuckEsc = stuckEscalation.create({
   log: (line) => logStuckWatchdog(line),
-  progressMs: (agentPath) => getLastRealProgressMs(sessionCwdFor(agentPath)),
+  progressMs: (agentPath) => { const own = getLastRealProgressMs(sessionCwdFor(agentPath)); const sub = getSubagentActivityMs(sessionCwdFor(agentPath)); return sub != null && (own == null || sub > own) ? sub : own; },
   handoffPath: (agentPath) => { const f = path.join(agentPath, "handoff_latest.md"); return fs.existsSync(f) ? f : null; },
   emit: (agentPath, snap) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("stuck-state", snap); },
   notify: (title, body) => {
@@ -4058,7 +4273,8 @@ async function checkForStuckTurns() {
       continue;
     }
 
-    const mtimeMs = getLatestTranscriptMtimeMs(session.sessionCwd);
+    // v1.150.1: sub-agent transcripts count as activity (a parent waiting on its sub-agents writes nothing itself)
+    const mtimeMs = getLatestActivityMs(session.sessionCwd);
     if (mtimeMs == null) continue;
 
     if (!session.stuckWatch || session.stuckWatch.mtimeMs !== mtimeMs) {
@@ -4883,13 +5099,91 @@ ipcMain.handle("list-open-questions", () => {
     if (!/^[\w.-]+\.json$/.test(f)) continue;
     try { const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8").replace(/^\uFEFF/, "")); if (d && d.id && d.agent && d.question) out.push(d); } catch (e) { /* half-written or bad file: skip */ }
   }
-  return out.slice(0, 100);
+  // 2026-11-05: was slice(0,100), which hid every ask past the 100th file name (163 open): the confirm window and inline cards said
+  // "already answered or withdrawn" for the newest ones. Newest first, generous cap.
+  out.sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  return out.slice(0, 1000);
 });
 ipcMain.handle("resolve-open-question", (event, id) => {
   if (!/^[\w-]+$/.test(String(id || ""))) return false;
   const dir = openQuestionsDir(), src = path.join(dir, id + ".json");
   try { fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(src, path.join(dir, "answered", id + ".json")); return true; } catch (e) { return false; }
 });
+// v1.153.0 SEALED ANSWERS: the renderer asks main to sign the owner's click into the question file (src/sealedAnswers.js has the threat model).
+// Test instances only run it with AGENT_DESKTOP_SEALED_DIR set.
+let sealedSealer = null;
+function getSealer() {
+  if (sealedSealer) return sealedSealer;
+  const { safeStorage } = require("electron");
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Windows encryption (DPAPI) not available");
+  const sa = require("./sealedAnswers");
+  sealedSealer = sa.createSealer({ dir: sa.stateDir(), protect: (b) => safeStorage.encryptString(Buffer.from(b).toString("base64")), unprotect: (b) => Buffer.from(safeStorage.decryptString(b), "base64") });
+  return sealedSealer;
+}
+ipcMain.handle("seal-answer", (event, id, text, via, shown) => {
+  try {
+    if (testMode.TEST_MODE && !process.env.AGENT_DESKTOP_SEALED_DIR) return { ok: false, error: "sealing is off in a test instance" };
+    const r = require("./sealedAnswers").sealIntoFile(getSealer(), openQuestionsDir(), String(id || ""), text, via === "button" ? "button" : "typed", shown);
+    if (!r.ok) console.error("[agent-desktop] seal-answer refused: " + r.error);
+    return r;
+  } catch (e) { console.error("[agent-desktop] seal-answer failed: " + (e && e.message)); return { ok: false, error: String(e && e.message || e).slice(0, 200) }; }
+});
+// v1.154.0 THYRA "Questions for you" (src/dockAsks.js has the rules): the dock window / pop-up lists the open asks and a click delivers through the
+// main window's renderer (answer-once.js: type into the ASKING agent's chat, seal, resolve) -- the same path as the inline cards.
+// Only the main window and the dock window may call these; the answer is re-checked against the ask file here AND again in the renderer.
+ipcMain.handle("dock-asks-list", (event) => {
+  if (!isApprovalsSender(event)) return { ok: false, rows: [] };
+  return { ok: true, rows: dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()) };
+});
+let dockAskSeq = 0;
+ipcMain.handle("dock-ask-answer", async (event, req) => {
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = await dockAsks.answerFromDock({
+    readOne: (id) => dockAsks.readOne(openQuestionsDir(), id),
+    deliver: (d) => new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
+      const reqId = "da" + (++dockAskSeq) + "-" + Date.now();
+      const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 30 s; it may still arrive, check the agent's chat before answering again" }); }, 30000);
+      answerOnceWaiting.set(reqId, { resolve, timer });
+      try { mainWindow.webContents.send("dock-ask-deliver", { reqId, id: d.id, label: d.label, shown: d.shown }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
+    }),
+  }, req && { id: req.id, label: req.label, shown: req.shown });
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* the list refreshes by itself */ } }
+  return r;
+});
+ipcMain.handle("dock-ask-dismiss", (event, req) => {
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = dockAsks.dismissFromDock({
+    readOne: (id) => dockAsks.readOne(openQuestionsDir(), id),
+    resolve: (id) => { const dir = openQuestionsDir(); fs.mkdirSync(path.join(dir, "answered"), { recursive: true }); fs.renameSync(path.join(dir, id + ".json"), path.join(dir, "answered", id + ".json")); return true; },   // no seal, nothing typed
+  }, req && { id: req.id, shown: req.shown });
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* list refreshes by itself */ } }
+  return r;
+});
+// v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
+// has the threat model) and handed to the renderer, which types the answer into the asking agent's chat exactly like a queue button.
+// A test instance only runs it when AGENT_DESKTOP_ANSWER_ONCE_DIR is set (never eats the live inbox).
+const answerOnceWaiting = new Map(); // reqId -> {resolve, timer}
+ipcMain.handle("answer-once-result", (event, r) => {
+  const w = r && answerOnceWaiting.get(r.reqId); if (!w) { if (r && r.ok) console.error("[agent-desktop] answer-once: late delivery confirmed after the 90 s timeout (" + r.reqId + ")"); return false; }
+  clearTimeout(w.timer); answerOnceWaiting.delete(r.reqId); w.resolve({ ok: !!r.ok, error: String(r.error || "").slice(0, 200), retry: !!r.retry }); return true;
+});
+try {
+  if (!testMode.TEST_MODE || process.env.AGENT_DESKTOP_ANSWER_ONCE_DIR) {
+    const answerOnce = require("./answerOnce");
+    let seq = 0;
+    answerOnce.createService({
+      dir: answerOnce.stateDir(), questionsDir: openQuestionsDir(), log: (m) => console.error("[agent-desktop] " + m),
+      deliver: (req) => new Promise((resolve) => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
+        const reqId = "ao" + (++seq) + "-" + Date.now();
+        const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 90 s; it may still arrive, check the agent's chat before answering again" }); }, 90000);
+        answerOnceWaiting.set(reqId, { resolve, timer });
+        try { mainWindow.webContents.send("answer-once-deliver", { reqId, id: req.id, answer: req.answer }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
+      }),
+    }).start(2000);
+  }
+} catch (e) { console.error("[agent-desktop] answer-once not started: " + (e && e.message)); }
 // v1.119.0 FLEET CONVERSATIONS (configurable since v1.121.0): read-only view of the shared mailbox with another person's agents; the only write is a new reply file.
 // src/fleetMain.js registers fleet-settings / fleet-list / fleet-read / fleet-timeline / fleet-reply. Folder: AGENT_DESKTOP_FLEET_DIR (sandbox/tests) or appConfig exchangeDir; IRIS dir: AGENT_DESKTOP_IRIS_DIR.
 // Async fs with 8 in flight; a re-list is two readdirs + a few stats unless the fingerprint changed; the renderer polls every 5 min (60 s while the pane is open), and not at all while the feature is not set up.
@@ -5505,6 +5799,7 @@ try {
     // v1.78.0 Decisions tab: answers reach the agent through the same verified path as Keep going (message channel, pty fallback, transcript check)
     deliverToAgent: (agentPath, text) => deliverToAgentVerified(agentPath, text, "a My Daily decision answer", { ttlSec: 600 }),
     knownAgent: (agentPath) => kgKnownAgent(agentPath),
+    privateCliDir,   // 2026-10-27: Shipments reads order screenshots through the private Claude CLI
   });
 } catch (e) {
   console.error("my daily failed to load:", e);

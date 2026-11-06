@@ -26,6 +26,11 @@ t("tracking key goes through a password input and is cleared after sending", () 
   assert.ok(/inp\.value = ""/.test(src));
   assert.ok(!/console\.(log|error)\([^)]*(key|Key)/.test(src));
 });
+t("the bold name on a card is the SENDER (merchant), not the product; the product has its own line", () => {
+  assert.ok(/const name = s\.merchant \|\| senderFrom/.test(src), "name must prefer the merchant");
+  assert.ok(!/const name = s\.title/.test(src), "title must not be the bold name");
+  assert.ok(/el\("div", "ship-prod", s\.title\)/.test(src), "product line missing");
+});
 t("event text carries dir=auto for Hebrew", () => { assert.ok(/setAttribute\("dir", "auto"\)/.test(src)); });
 t("tab is wired next to Shopping, script loaded before daily.js, preload exposes the channels", () => {
   assert.ok(/\["shopping", "Shopping lists"\], \["shipments", "Shipments"\]/.test(daily));

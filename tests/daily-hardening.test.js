@@ -117,7 +117,9 @@ t("tasks.py arguments: a title, list or id starting with '-' is attached as --ke
 t("the real runner passes args as an array to execFile, never through a shell", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "daily", "main-daily.js"), "utf8");
   assert(/execFile\(r\.python, \[r\.tool\]\.concat\(args\)/.test(src), "execFile with an argument array");
-  assert(!/\bexec\(|shell:\s*true|spawn\(/.test(src), "no shell, no exec()");
+  assert(!/exec\(|shell:\s*true/.test(src), "no shell, no exec()");
+  // spawn() only as an argument-array spawn of the private Claude CLI exe (never shell:true, checked above)
+  for (const m of src.match(/spawn\([^;]*/g) || []) assert(/^spawn\(exe, args,/.test(m), "spawn only with an exe + args array: " + m.slice(0, 60));
 });
 t("task edits only reach tasks.py for a task that exists in the store (agent and id are looked up, not trusted)", async () => {
   const b = boot();

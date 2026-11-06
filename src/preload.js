@@ -53,6 +53,9 @@ contextBridge.exposeInMainWorld("api", {
   clearStaleInput: (agentPath, text) => ipcRenderer.invoke("clear-stale-input", { agentPath, text }),
   listOpenQuestions: () => ipcRenderer.invoke("list-open-questions"),
   resolveOpenQuestion: (id) => ipcRenderer.invoke("resolve-open-question", id),
+  sealAnswer: (id, text, via, shown) => ipcRenderer.invoke("seal-answer", id, text, via, shown),
+  onAnswerOnceDeliver: (callback) => { ipcRenderer.on("answer-once-deliver", (event, payload) => callback(payload)); }, // v1.152.0 answer from the confirm window
+  answerOnceResult: (r) => ipcRenderer.invoke("answer-once-result", r),
   fleet: {
     settings: () => ipcRenderer.invoke("fleet-settings"), // v1.121.0: state + wording (names, label, role); never a path
     list: (lastSeen, force) => ipcRenderer.invoke("fleet-list", { lastSeen, force }),
@@ -67,6 +70,14 @@ contextBridge.exposeInMainWorld("api", {
   agentDialogOpen: (agentPath) => ipcRenderer.invoke("agent-dialog-open", { agentPath }),
   approvalPending: (agentPath) => ipcRenderer.invoke("approval-pending-get", { agentPath }),
   approvalAnswer: (agentPath, answer, since) => ipcRenderer.invoke("approval-answer", { agentPath, answer, since }),
+  approvalsWindow: (action) => ipcRenderer.invoke("approvals-window", { action }),   // v1.153.0 dock window: "open" | "toggle" | "state"
+  approvalsList: () => ipcRenderer.invoke("approvals-list"),   // v1.153.0 Approvals pop-up
+  approvalsDecide: (decisions, via) => ipcRenderer.invoke("approvals-decide", { decisions, via }),
+  dockAsksList: () => ipcRenderer.invoke("dock-asks-list"),   // v1.154.0 "Questions for you" in the THYRA dock / pop-up
+  dockAskAnswer: (req) => ipcRenderer.invoke("dock-ask-answer", req),
+  dockAskDismiss: (req) => ipcRenderer.invoke("dock-ask-dismiss", req),   // v1.154.1 "No longer needed": clears an ask, no answer, no seal
+  onDockAskDeliver: (callback) => { ipcRenderer.on("dock-ask-deliver", (event, payload) => callback(payload)); },   // main -> this window: type the chosen answer into the asking agent's chat
+  onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
   getTranscriptQuietMs: (agentPath) => ipcRenderer.invoke("get-transcript-quiet-ms", { agentPath }),
   getAgentOverview: () => ipcRenderer.invoke("get-agent-overview"),
   registryList: () => ipcRenderer.invoke("registry-list"),
@@ -248,6 +259,9 @@ contextBridge.exposeInMainWorld("api", {
     write: (week, agent, findingId, text) => ipcRenderer.invoke("research-write", { week, agent, findingId, text }),
     recsLoad: (all) => ipcRenderer.invoke("recs-load", { all: !!all }),
     recsWrite: (week, agent, itemId, text) => ipcRenderer.invoke("recs-write", { week, agent, itemId, text }),
+    improveLoad: () => ipcRenderer.invoke("improve-load"),   // How to improve tab: cards (read-only) + decisions + a message to the owner
+    improveDecide: (id, status, answer) => ipcRenderer.invoke("improve-decide", { id, status, answer }),
+    improveWrite: (id, agent, text) => ipcRenderer.invoke("improve-write", { id, agent, text }),
     skillsLoad: (week) => ipcRenderer.invoke("skills-load", { week: week || "" }),   // v1.139.0 Skills & Plugins tab (read-only)
     skillsSetRotation: (agents, expected) => ipcRenderer.invoke("skills-rotation-set", { agents, expected }),   // v1.141.0 who looks this week
     // v1.91.0 magazine view: a finding's cached lead image (main fetches it once, safely; never a remote URL) and the owner's sent thread
@@ -303,6 +317,9 @@ contextBridge.exposeInMainWorld("api", {
     agents: (sealed) => ipcRenderer.invoke("intake-agents", { sealed: !!sealed }),
     decide: (id, action, agent, hash) => ipcRenderer.invoke("intake-decide", { id, action, agent, hash }),
     audit: () => ipcRenderer.invoke("intake-audit"),
+    messages: () => ipcRenderer.invoke("intake-messages"),
+    messageThumbs: (id) => ipcRenderer.invoke("intake-message-thumbs", { id }),
+    decideMessages: (ids, action, notes, edits) => ipcRenderer.invoke("intake-message-decide", { ids, action, notes, edits }),
   },
   finance: {
     load: () => ipcRenderer.invoke("finance-load"),

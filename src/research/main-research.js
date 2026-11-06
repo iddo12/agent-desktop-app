@@ -203,7 +203,7 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
   let writer = null;
   const getWriter = () => (writer || (writer = require("./write").createWriter({
     researchDir: researchDir(), root: workspaceRoot, owner: () => cfg.get("ownerName"), log: say, now,
-    findRef: (week, agent, fid) => (typeof fid === "string" && fid.startsWith("rec:") ? recsSvc().findRef(week, agent, fid) : service().findRef(week, agent, fid)),   // v1.133.0: one writer (one rate limit + duplicate check) for findings and recommendations
+    findRef: (week, agent, fid) => (typeof fid === "string" && fid.startsWith("imp:") ? improveSvc().findRef(agent, fid) : typeof fid === "string" && fid.startsWith("rec:") ? recsSvc().findRef(week, agent, fid) : service().findRef(week, agent, fid)),   // how-to-improve cards: "imp:" ids   // v1.133.0: one writer (one rate limit + duplicate check) for findings and recommendations
     resolveAgent, isRunning: isAgentRunning,
     // v1.141.0: hiddenAgents setting (src/hiddenAgents.js); a hidden agent never gets a live delivery from here, only its pending notes
     // (SE review) folder AND display name are checked; the setting is read by the same function the list marking uses
@@ -231,6 +231,25 @@ function init({ ipcMain: raw, getMainWindow, workspaceRoot, userData, testMode, 
   handle("recs-write", (a) => {
     const x = a && typeof a === "object" ? a : {};
     return getWriter().write({ week: x.week, agent: x.agent, findingId: typeof x.itemId === "string" ? "rec:" + x.itemId.slice(0, 116) : "", text: x.text });
+  }, MAX_WRITE_ARG_CHARS);
+  // HOW TO IMPROVE (inside My Research): read-only load of shared_reports\improve\cards.json; Yes/No write ONLY the sibling decisions.json;
+  // "Talk to <owner>" goes through the one shared writer (id "imp:<card>"). The renderer sends a card id, a decision and text, never a path.
+  let improve = null;
+  const improveSvc = () => (improve || (improve = require("../improve/service").createService({ dir: path.join(reportsDir(), "improve"), now })));
+  handle("improve-load", async () => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    return improveSvc().load();
+  });
+  handle("improve-decide", async (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    const x = a && typeof a === "object" ? a : {};
+    if (x.status === "applied") return { ok: false, reason: "Marking a change as applied is done by the agent that applies it, not from this tab." };
+    return improveSvc().decide(x.id, x.status, x.answer);
+  }, MAX_WRITE_ARG_CHARS);
+  handle("improve-write", (a) => {
+    if (needsSetup()) return { ok: false, reason: "needs-setup", needsSetup: true };
+    const x = a && typeof a === "object" ? a : {};
+    return getWriter().write({ week: improveSvc().weekName(), agent: x.agent, findingId: typeof x.id === "string" ? "imp:" + x.id.slice(0, 100) : "", text: x.text });
   }, MAX_WRITE_ARG_CHARS);
   // v1.139.0 SKILLS & PLUGINS (inside My Research): read-only async load of the weekly skills watch (rotation, findings, places, pinned copies).
   // Verdicts are only READ here (recommendations\<week>\<agent>.json, written by ARGUS's buttons); this tab writes nothing.

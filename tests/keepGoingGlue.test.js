@@ -405,6 +405,52 @@ const tick = async (w, advance) => { w.t += advance == null ? 0 : advance; w.g.t
     t("relentless resume text ignores a BLOCKED handoff", () => { assert.strictEqual(r.mission, true); assert.ok(/keep-working-regardless/.test(r.text)); assert.ok(r.text.startsWith("[[HANDOFF-RESUME]] P")); });
   }
 
+  // v1.149.1: API-safeguard error -> retry nudge, then stopped after 2 nudges (also with the same error text every time)
+  const SG = "API Error: Sonnet 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup). Send your message again.";
+  const apiErr = (ts, text) => JSON.stringify({ type: "assistant", isApiErrorMessage: true, timestamp: iso(ts), message: { content: [{ type: "text", text }] } });
+  for (const relentless of [false, true]) {
+    const w = world(relentless ? { saved: { relentless: { fleet: false, agents: { A: true } } } } : {});
+    const mode = relentless ? " (relentless)" : "";
+    let ts = w.t - 600000;
+    w.set([usr(ts, "go"), apiErr(ts + 1000, SG)]);
+    w.t = ts + 60000; await tick(w);
+    t("safeguard error is nudged once" + mode, () => { assert.strictEqual(w.sent.length, 1); assert.ok(w.sent[0].text.startsWith("[[KEEPGOING]] [retry-safeguard]")); assert.ok(/smaller steps/.test(w.sent[0].text)); });
+    t("safeguard nudge is logged" + mode, () => assert.ok(w.logs.some((l) => /NUDGE #1 to A - API safeguard error cut the last turn/.test(l))));
+    // the nudge did not help: the very same error text again (same hash) must still be counted, not silently ignored
+    w.set([usr(ts, "go"), apiErr(ts + 1000, SG), usr(w.t, w.sent[0].text), apiErr(w.t + 2000, SG)]);
+    await tick(w, 200000);
+    t("second identical error gets the second nudge" + mode, () => assert.strictEqual(w.sent.length, 2));
+    w.set([usr(ts, "go"), apiErr(ts + 1000, SG), usr(w.t - 200000, w.sent[0].text), apiErr(w.t - 198000, SG), usr(w.t, w.sent[1].text), apiErr(w.t + 2000, SG)]);
+    await tick(w, 200000);
+    t("third time: stopped, no third nudge" + mode, () => {
+      assert.strictEqual(w.sent.length, 2);
+      const st = w.g.getSettings().stopped;
+      assert.strictEqual(st.length, 1);
+      assert.ok(/^API safeguard error keeps recurring: this session needs a fresh start \(\/clear\) from the owner$/.test(st[0].reason));
+      assert.strictEqual(st[0].state, "stopped");
+    });
+    t("stopped reason is persisted" + mode, () => assert.ok(/fresh start/.test(w.saved.counters.A.stoppedReason)));
+    w.set(w.lines.concat([usr(w.t + 5000, "I cleared it, carry on")])); await tick(w, 10000);
+    t("a new message from the person lifts the stopped mark" + mode, () => assert.strictEqual(w.g.getSettings().stopped.length, 0));
+  }
+  {
+    // other API errors: no nudge at all, no stop
+    const w = world();
+    let ts = w.t - 600000;
+    w.set([usr(ts, "go"), apiErr(ts + 1000, "API Error: 500 Internal server error")]);
+    w.t = ts + 60000; await tick(w);
+    t("500 API error is not nudged", () => { assert.strictEqual(w.sent.length, 0); assert.strictEqual(w.g.getSettings().stopped.length, 0); });
+  }
+  {
+    // progress (work tool calls after the nudge) resets the streak: a later safeguard error is nudged again, no stop
+    const w = world();
+    let ts = w.t - 600000;
+    w.set([usr(ts, "go"), apiErr(ts + 1000, SG)]); w.t = ts + 60000; await tick(w);
+    w.set([usr(ts, "go"), apiErr(ts + 1000, SG), usr(w.t, w.sent[0].text), asst(w.t + 1000, "", true), res(w.t + 2000), apiErr(w.t + 3000, SG)]);
+    await tick(w, 200000);
+    t("progress after a safeguard nudge resets the streak (nudged again, not stopped)", () => { assert.strictEqual(w.sent.length, 2); assert.strictEqual(w.g.getSettings().stopped.length, 0); });
+  }
+
   console.log((n - fails) + "/" + n + " keepGoingGlue tests passed");
   process.exit(fails ? 1 : 0);
 })();

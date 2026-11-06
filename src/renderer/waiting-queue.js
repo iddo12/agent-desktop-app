@@ -94,10 +94,13 @@
   function loadRegistered() {
     if (!window.api || !window.api.listOpenQuestions) return Promise.resolve();
     return Promise.resolve(window.api.listOpenQuestions()).then(function (qs) {
-      var a = JSON.stringify((qs || []).map(function (q) { return q.id; })), b = JSON.stringify(registered.map(function (q) { return q.id; }));
+      var sig = function (l) { return JSON.stringify((l || []).map(function (q) { return [q.id, q.question, q.agent, q.quick, q.context, q.merav, q.created]; })); };   // v1.153.0: repaint when the CONTENT changes, not only the id list
+      var a = sig(qs), b = sig(registered);
       registered = Array.isArray(qs) ? qs : []; if (a !== b) refresh();
     }).catch(function () { /* next tick */ });
   }
+  // v1.152.0 answer once: a question answered from an inline chat card or the confirm window leaves this list at once
+  window.addEventListener("answer-once-resolved", function (e) { var id = e && e.detail && e.detail.id; registered = registered.filter(function (q) { return q.id !== id; }); refresh(); });
   // v1.117.3 (the owner): the Testing agent (and any name in localStorage "agentDesktop.waitingQueue.ignore", comma separated) never shows in the queue
   function ignored(row) {
     if (row.classList.contains("agent-hidden")) return true;   // v1.140.0: a hidden agent (hiddenAgents setting) is not listed here either
@@ -117,7 +120,7 @@
       var nm = row.querySelector(".agent-item-name"), img = row.querySelector(".avatar-wrap img"), b = row.querySelector(".xp-needs-badge");
       var name = nm ? nm.textContent.trim() : (row.dataset.folderName || "agent");
       var why = ask ? ask.why : ((b && b.title) || "Waiting for you");
-      out.push({ key: "row:" + (row.dataset.folderName || name), name: name, kind: kind, why: why, status: why, age: ask && ask.reg ? ageOf(ask.reg.created) : "", img: img && img.src, row: row, path: row.dataset.agentPath || "", qid: ask && ask.reg ? ask.reg.id : "", ctx: ask && ask.reg ? ask.reg.context : "", quick: ask && ask.reg && ask.reg.quick && ask.reg.quick.length ? ask.reg.quick : null, partner: !!(ask && ask.reg && ask.reg.partner) });
+      out.push({ key: "row:" + (row.dataset.folderName || name), name: name, kind: kind, why: why, status: why, age: ask && ask.reg ? ageOf(ask.reg.created) : "", img: img && img.src, row: row, path: row.dataset.agentPath || "", qid: ask && ask.reg ? ask.reg.id : "", shown: ask && ask.reg ? { question: ask.reg.question, agent: ask.reg.agent, quick: ask.reg.quick || [], context: ask.reg.context || "", merav: !!ask.reg.merav, created: ask.reg.created || "" } : null, ctx: ask && ask.reg ? ask.reg.context : "", quick: ask && ask.reg && ask.reg.quick && ask.reg.quick.length ? ask.reg.quick : null, partner: !!(ask && ask.reg && ask.reg.partner) });
     });
     return out;
   }
@@ -286,11 +289,19 @@
     b.addEventListener("click", function () { ta.value = p.text; ta.focus(); b.remove(); }); return b;
   }
   var failedText = {};   // key -> text of a Send & done that failed, put back into the answer box when the card returns
-  function doneQ(it) {   // the registered question is answered: move its file to answered\ and drop it from the list now
+  function doneQ(it, text) {   // the registered question is answered: move its file to answered\ and drop it from the list now
     if (!it.qid) return;
+    var shownQ = it.shown;   // snapshot taken when this card was built (v1.153.0): the seal binds to what was painted, never to a later poll of the list
     registered = registered.filter(function (q) { return q.id !== it.qid; });
+    if (window.AnswerOnce) window.AnswerOnce.markClosed(it.qid);   // v1.152.0 inline cards for this question turn into "no longer open"
     // v1.134.x: the result used to be ignored, so a rename that failed left the question to reappear with no explanation
-    Promise.resolve().then(function () { return window.api.resolveOpenQuestion(it.qid); }).then(function (ok) {
+    // v1.153.0 SEALED ANSWER: the owner's click is signed by main (src/sealedAnswers.js) before the file moves, so any agent can verify it with ask_iddo.py verify.
+    // A failed seal never blocks the answer (it was already delivered); the question then simply stays "unsealed".
+    var via = it.quick && it.quick.indexOf(String(text || "").trim()) >= 0 ? "button" : "typed";
+    Promise.resolve().then(function () { return window.api.sealAnswer ? window.api.sealAnswer(it.qid, text, via, shownQ || null) : null; }).catch(function () { return null; }).then(function (s) {
+      if (s && s.ok === false) toast("Answer sent, but not sealed (" + s.error + "); other agents will see it as unsealed.");
+      return window.api.resolveOpenQuestion(it.qid);
+    }).then(function (ok) {
       if (ok === false) toast("Sent, but could not mark the question answered (it may come back): " + it.qid);
     }).catch(function () { toast("Sent, but could not mark the question answered (it may come back): " + it.qid); });
   }
@@ -301,7 +312,7 @@
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });
       document.querySelectorAll(".wq-ta").forEach(function (t) { if (t.dataset.key === it.key) t.value = ""; });   // sent: do not restore it as a draft
       if (keep) { watch(it); toast("Sent to " + firstName(it.name) + ". Its reply will appear here."); refresh(); }
-      else { dismissed[it.key] = it.status; doneQ(it); toast("Sent. " + firstName(it.name) + " leaves the queue."); refresh(); }   // the card already closed in send()
+      else { dismissed[it.key] = it.status; doneQ(it, text); toast("Sent. " + firstName(it.name) + " leaves the queue."); refresh(); }   // the card already closed in send()
     };
     if (demoMode || !it.path || !window.queueSendToAgent) {            // sandbox / sample items: nothing is delivered
       (threads[it.key] = threads[it.key] || []).push({ who: "you", text: text });

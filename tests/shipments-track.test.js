@@ -122,11 +122,11 @@ t("DHL parcels are polled at most every 6 h (force overrides)", async () => {
 });
 t("DHL client parses a response and sends the key only as a header", async () => {
   const seen = [];
-  const request = async (m, url, o) => { seen.push({ url, h: o.headers }); return { status: 200, json: { shipments: [{ status: { statusCode: "delivered" }, events: [{ timestamp: "2026-10-05T10:00:00Z", description: "Delivered", location: { address: { addressLocality: "Haifa" } } }] }] } }; };
+  const request = async (m, url, o) => { seen.push({ url, h: o.headers }); return { status: 200, json: { shipments: [{ status: { statusCode: "delivered" }, events: [{ timestamp: "2026-10-05T10:00:00Z", description: "Delivered", location: { address: { addressLocality: "Testville" } } }] }] } }; };
   const p = T.createDhl({ getKey: () => "DHLKEY-1234567890", request, sleep: noSleep });
   const r = await p.track([{ number: "1234567890", carrier: "dhl" }]);
   assert.strictEqual(r.results["1234567890"].state, "delivered");
-  assert.strictEqual(r.results["1234567890"].events[0].place, "Haifa");
+  assert.strictEqual(r.results["1234567890"].events[0].place, "Testville");
   assert.ok(!seen[0].url.includes("DHLKEY") && seen[0].h["DHL-API-Key"] === "DHLKEY-1234567890");
 });
 t("UPS and FedEx stubs are wired but disabled; fake provider records calls", async () => {
@@ -213,13 +213,13 @@ t("service: mail scan merges parcels from mail objects, a poll timer exists only
   const dir = tmp();
   const file = path.join(dir, "shipments.json");
   const tr = T.createTracker({ dataDir: tmp(), safeStorage: fakeSafe, sleep: noSleep });
-  const mails = [{ from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 878247853307", date: "2026-10-05T07:12:00Z", messageId: "<x1>", body: "From: Cartoni SPA, Rome, IT" }];
+  const mails = [{ from: "FedEx <TrackingUpdates@fedex.com>", subject: "You're getting a shipment 870000000004", date: "2026-10-05T07:12:00Z", messageId: "<x1>", body: "From: Acme SPA, Rome, IT" }];
   const svc = S.createService({ file, readStore: D.readStore, writeJsonAtomic: D.writeJsonAtomic, tracker: tr, getMails: async () => mails, now: () => NOW, notices: [], say: () => {} });
   svc.syncTimer();
   assert.strictEqual(svc.hasTimer(), false);
   let v = await svc.load({ force: true });
   assert.strictEqual(v.items.length, 1);
-  assert.strictEqual(v.items[0].merchant, "Cartoni SPA");
+  assert.strictEqual(v.items[0].merchant, "Acme SPA");
   v = await svc.load({ force: true });
   assert.strictEqual(v.items.length, 1);   // same mail again: still one
   tr.keys.set("17track", SECRET);
@@ -244,7 +244,7 @@ t("service: provider failure never throws and is reported", async () => {
   const boom = { id: "fake", label: "x", needsKey: false, enabled: () => true, async track() { throw new Error("network down"); } };
   const tr = T.createTracker({ dataDir: tmp(), safeStorage: fakeSafe, fakeProvider: boom });
   const svc = S.createService({ file: path.join(dir, "s.json"), readStore: D.readStore, writeJsonAtomic: D.writeJsonAtomic, tracker: tr, getMails: async () => [], now: () => NOW, notices: [], say: () => {} });
-  svc.op({ op: "add", text: "RR123456789IL" });
+  await svc.op({ op: "add", text: "RR123456789IL" });
   const v = await svc.refreshNow();
   assert.strictEqual(v.ok, true);
   assert.strictEqual(v.refresh.errors, 1);

@@ -25,6 +25,7 @@
 
   window.keepGoingStopped = function (agentPath) {
     const s = st(agentPath);
+    if (s && s.state === "stopped" && /^API safeguard/.test(s.reason || "")) return "Stopped - " + s.reason + ". Open its chat."; // v1.149.1
     return s && s.state === "stopped" ? "Stopped - nobody blocked it: the agent ended its turn announcing a next step and " + (s.consecutive || "several") + " nudges did not get it moving. Open its chat." : null;
   };
 
@@ -143,7 +144,8 @@
         el.className = "";
         el.textContent = "";
         const msg = document.createElement("span");
-        msg.textContent = "Stopped - nobody blocked it. This agent ended its turn announcing a next step and " + (s.consecutive || "several") + " nudges did not get it moving.";
+        if (/^API safeguard/.test(s.reason || "")) msg.textContent = "Stopped - " + s.reason + "."; // v1.149.1
+        else msg.textContent = "Stopped - nobody blocked it. This agent ended its turn announcing a next step and " + (s.consecutive || "several") + " nudges did not get it moving.";
         const go = document.createElement("button");
         go.textContent = "Tell it to continue";
         go.addEventListener("click", () => {
