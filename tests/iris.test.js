@@ -146,7 +146,7 @@ test("pair, exchange messages both ways, and every rejection path", async () => 
 
     // --- keys persist across restart; secret keys go through protect()
     const idFile = JSON.parse(fs.readFileSync(path.join(A.dir, "identity.json"), "utf8"));
-    assert.ok(idFile.secret && !JSON.stringify(idFile.public).includes("Sk"));
+    assert.ok(idFile.secret && !("secret" in idFile.public) && !JSON.stringify(idFile.public).includes(JSON.stringify(idFile.secret)));
     const A2 = new IrisService({ dir: A.dir, port: 47394, bindHost: "127.0.0.1" });
     assert.equal(A2.me.id, A.me.id);
 

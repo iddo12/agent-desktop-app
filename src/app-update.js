@@ -270,8 +270,15 @@ async function unpackagedStatus({ fetch }) {
         st.remoteVersion = JSON.parse(rp.out.replace(/^\uFEFF/, "")).version || null;
       } catch (e) {}
     }
-    const log = await git(["log", "--format=%s", "-n", "15", `HEAD..origin/${ch}`]);
-    if (log.code === 0) st.commits = log.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    // 2026-11-03: a dev checkout ahead of a stale public main (running 1.152.0, GitHub at 1.144.3) counts as
+    // "behind" by a few commits, but applying them would be a downgrade. Nothing to offer then.
+    if (st.remoteVersion && !deps.isVersionNewer(st.remoteVersion, onDisk || running)) {
+      st.behind = 0;
+      st.remoteOlder = true;
+    } else {
+      const log = await git(["log", "--format=%s", "-n", "15", `HEAD..origin/${ch}`]);
+      if (log.code === 0) st.commits = log.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    }
   }
 
   const status = await git(["status", "--porcelain", "--untracked-files=no"]);

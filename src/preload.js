@@ -336,6 +336,7 @@ contextBridge.exposeInMainWorld("api", {
   // v1.125.0 My Designs (read only). The renderer sends only a design id.
   designs: {
     load: () => ipcRenderer.invoke("designs-load"),
+    sync: () => ipcRenderer.invoke("designs-sync"),   // no argument: main runs the fixed "sync" command of the shared tool
     openSource: (id) => ipcRenderer.invoke("designs-open-source", { id }),
     openReference: (id) => ipcRenderer.invoke("designs-open-reference", { id }),
   },
@@ -405,6 +406,7 @@ contextBridge.exposeInMainWorld("api", {
     pending: () => ipcRenderer.invoke("iris-pending"),
     prepareDelivery: (id, agentPath) => ipcRenderer.invoke("iris-prepare-delivery", { id, agentPath }),
     delivered: (id, to) => ipcRenderer.invoke("iris-delivered", { id, to }),
+    dismissPending: () => ipcRenderer.invoke("iris-dismiss-pending"),
     // v1.126.0 Chats page (renderer/iris-chats.js): direct agent messaging
     chats: () => ipcRenderer.invoke("iris-chats"),
     chatSend: (peerId, toAgent, text, thread) => ipcRenderer.invoke("iris-chat-send", { peerId, toAgent, text, thread }),

@@ -116,6 +116,17 @@ process.stdin.on("end", () => {
         } catch (e) {
           try { fs.unlinkSync(tmp); } catch (e2) {}
         }
+        // 2026-10-26 (Security): a session killed between writeFileSync and renameSync leaves its
+        // .tmp behind (about one a day). Sweep sibling tmp files older than 10 min; runs at most
+        // once per 5 min per session because it sits inside the throttled write.
+        try {
+          const dir2 = path.dirname(p), base = path.basename(p) + ".";
+          for (const f of fs.readdirSync(dir2)) {
+            if (!f.startsWith(base) || !f.endsWith(".tmp")) continue;
+            const fp = path.join(dir2, f);
+            try { if (Date.now() - fs.statSync(fp).mtimeMs > 600000) fs.unlinkSync(fp); } catch (e3) {}
+          }
+        } catch (e4) {}
       }
     }
   } catch (e) {}

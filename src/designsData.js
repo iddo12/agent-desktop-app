@@ -10,6 +10,9 @@ const MAX_FILE = 8 * 1024 * 1024;     // styles.json larger than this is refused
 const MAX_ITEMS = 5000;
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const VIDEO_EXTS = new Set([".mp4", ".webm"]);
+const PARTNER_KEY = "partner";           // folder + origin tag the sync tool uses for the other side's designs (<library>/<PARTNER_KEY>/styles.json)
+const PARTNER_ID_BASE = 100000;       // partner design "M-N" gets the internal integer id 100000+N so every IPC keeps taking an integer
+const PARTNER_ID = /^M-(\d{1,5})$/;
 const HEX = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
 const clip = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, n);
 
@@ -35,13 +38,17 @@ function inferType(s, kind) {
   return kind === "video" || ext === ".gif" ? "motion" : "still";
 }
 
-function cleanEntry(s, dir, realDir) {
-  if (!s || typeof s !== "object" || !Number.isInteger(s.id) || s.id < 1) return null;
+// opt = { id, label, origin } overrides the id for the partner list (already validated by the caller)
+function cleanEntry(s, dir, realDir, opt) {
+  if (!s || typeof s !== "object") return null;
+  if (!opt && (!Number.isInteger(s.id) || s.id < 1)) return null;
+  const id = opt ? opt.id : s.id;
   const pv = resolvePreview(dir, s.preview, realDir);
   const palette = (Array.isArray(s.palette) ? s.palette : []).map((c) => String(c).trim()).filter((c) => HEX.test(c)).slice(0, 12);
   const ref = clip(s.reference, 500).trim();
   return {
-    id: s.id, name: clip(s.name, 200) || ("Design " + s.id), group: clip(s.group, 120),
+    id, label: opt ? opt.label : "#" + id, origin: opt ? opt.origin : "",
+    name: clip(s.name, 200) || ("Design " + (opt ? opt.label : id)), group: clip(s.group, 120),
     type: inferType(s, pv && pv.kind), kind: clip(s.kind, 40),
     tags: (Array.isArray(s.tags) ? s.tags : []).map((t) => clip(t, 40).trim()).filter(Boolean).slice(0, 30),
     status: s.status === "approved" ? "approved" : "draft",
@@ -50,6 +57,26 @@ function cleanEntry(s, dir, realDir) {
     palette, notes: clip(s.notes, 1000), addedBy: clip(s.added_by, 80), added: clip(s.added, 40),
     durationS: Number.isFinite(s.duration_s) && s.duration_s > 0 ? s.duration_s : 0,
   };
+}
+
+// The other side's synced designs: <dir>/<PARTNER_KEY>/styles.json. Any problem = an empty list (the main list never fails because of it).
+function loadPartner(dir, realDir) {
+  try {
+    const file = path.join(dir, PARTNER_KEY, "styles.json");
+    if (fs.statSync(file).size > MAX_FILE) return [];
+    const doc = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
+    const list = doc && Array.isArray(doc.styles) ? doc.styles : [];
+    const out = [], seen = new Set();
+    for (const s of list.slice(0, MAX_ITEMS)) {
+      const m = s && typeof s === "object" && typeof s.id === "string" ? PARTNER_ID.exec(s.id) : null;
+      if (!m || Number(m[1]) < 1) continue;
+      const id = PARTNER_ID_BASE + Number(m[1]);
+      if (seen.has(id)) continue;
+      const e = cleanEntry(s, dir, realDir, { id, label: "M-" + Number(m[1]), origin: PARTNER_KEY });
+      if (e) { seen.add(id); out.push(e); }
+    }
+    return out.sort((a, b) => a.id - b.id);
+  } catch (e) { return []; }
 }
 
 // load(dir) -> { ok:true, items:[...sorted by id], dir } | { ok:false, reason:"needs-setup"|"missing"|"unreadable"|"too-big" }
@@ -73,11 +100,12 @@ function load(dir) {
     if (e && !seen.has(e.id)) { seen.add(e.id); items.push(e); }
   }
   items.sort((a, b) => a.id - b.id);
+  for (const e of loadPartner(dir, realDir)) if (!seen.has(e.id)) { seen.add(e.id); items.push(e); }   // after the own list, by number
   return { ok: true, items, dir };
 }
 
 // What the renderer gets: no filesystem facts beyond the preview path; the source path is shown as text only.
-const publicItem = (e) => ({ id: e.id, name: e.name, group: e.group, type: e.type, kind: e.kind, tags: e.tags, status: e.status, preview: e.previewFile, previewKind: e.previewKind, source: e.source, reference: e.reference, referenceIsUrl: e.referenceIsUrl, palette: e.palette, notes: e.notes, addedBy: e.addedBy, added: e.added, durationS: e.durationS });
+const publicItem = (e) => ({ id: e.id, label: e.label, origin: e.origin, name: e.name, group: e.group, type: e.type, kind: e.kind, tags: e.tags, status: e.status, preview: e.previewFile, previewKind: e.previewKind, source: e.source, reference: e.reference, referenceIsUrl: e.referenceIsUrl, palette: e.palette, notes: e.notes, addedBy: e.addedBy, added: e.added, durationS: e.durationS });
 
 function findById(dir, id) { const r = load(dir); if (!r.ok) return null; return r.items.find((e) => e.id === id) || null; }
 

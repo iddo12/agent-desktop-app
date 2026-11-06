@@ -13,6 +13,7 @@
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function btn(label, cls, onClick) { const b = el("button", cls || "dg-btn", label); b.type = "button"; b.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); onClick(ev); }); return b; }
   const fileUrl = (p) => { const q = String(p).replace(/\\/g, "/"); const enc = (x) => x.split("/").map(encodeURIComponent).join("/").replace(/^([A-Za-z])%3A/, "$1:"); return q.startsWith("//") ? "file://" + enc(q.slice(2)) : "file:///" + enc(q); };   // UNC host/share/x -> file://host/share/x
+  const labelOf = (e) => e.label || "#" + e.id;
   const typeLabel = (t) => (t === "still" ? "Still" : "Motion");
 
   // ================================================================ lazy loading (no polling: one observer, created on first need)
@@ -58,12 +59,13 @@
 
   function renderCard(e, S) {
     const c = el("button", "dg-card" + (S.openId === e.id ? " dg-sel" : "")); c.type = "button"; c.dataset.id = String(e.id);
-    c.setAttribute("aria-label", "Design " + e.id + ", " + e.name);
+    c.setAttribute("aria-label", "Design " + labelOf(e) + ", " + e.name);
     const top = el("div", "dg-card-top");
-    top.append(renderPreview(e, false), el("span", "dg-num", "#" + e.id), el("span", "dg-type dg-type-" + e.type, typeLabel(e.type)));
+    top.append(renderPreview(e, false), el("span", "dg-num", labelOf(e)), el("span", "dg-type dg-type-" + e.type, typeLabel(e.type)));
     const body = el("div", "dg-card-body");
     const line = el("div", "dg-card-line");
     line.append(el("b", "dg-name", e.name), el("span", "dg-chip dg-chip-" + e.status, e.status));
+    if (e.origin) line.appendChild(el("span", "dg-chip dg-chip-partner", S.partner || "partner"));
     body.append(line, el("div", "dg-group", e.group || "(no group)"));
     if (e.tags.length) { const t = el("div", "dg-tags"); e.tags.slice(0, 6).forEach((x) => t.appendChild(el("span", "dg-tag", x))); body.appendChild(t); }
     if (e.palette.length) body.appendChild(renderSwatches(e.palette, false));
@@ -80,12 +82,12 @@
   }
 
   function renderPanel(e, S) {
-    const p = el("aside", "dg-panel"); p.setAttribute("aria-label", "Design " + e.id + " details");
+    const p = el("aside", "dg-panel"); p.setAttribute("aria-label", "Design " + labelOf(e) + " details");
     const head = el("div", "dg-panel-head");
-    head.append(el("span", "dg-num dg-num-inline", "#" + e.id), el("b", "dg-panel-name", e.name), el("span", "dg-sp"), btn("Close", "dg-btn", S.onClosePanel));
+    head.append(el("span", "dg-num dg-num-inline", labelOf(e)), el("b", "dg-panel-name", e.name), el("span", "dg-sp"), btn("Close", "dg-btn", S.onClosePanel));
     const row = (label, node) => { const r = el("div", "dg-kv"); r.append(el("span", "dg-k", label), node); return r; };
     const val = (t) => el("span", "dg-v", t);
-    const use = btn("Copy \"" + F.useText(e.id) + "\"", "dg-btn dg-pri", () => S.onCopy(F.useText(e.id)));
+    const use = btn("Copy \"" + F.useText(e, S.partner) + "\"", "dg-btn dg-pri", () => S.onCopy(F.useText(e, S.partner)));
     use.title = "Copies the sentence to the clipboard so you can paste it to an agent.";
     const actions = el("div", "dg-actions"); actions.appendChild(use);
     const src = el("div", "dg-src");
@@ -122,6 +124,12 @@
     const n = S.items ? S.items.length : 0, shown = S.shown ? S.shown.length : 0;
     head.append(el("b", "dg-title", "My Designs"), el("span", "dg-sub", S.items ? (shown === n ? n + " designs" : shown + " of " + n + " designs") : ""), el("span", "dg-sp"));
     const rb = btn(S.loading ? "Refreshing..." : "Refresh", "dg-btn dg-pri", S.onRefresh); rb.disabled = !!S.loading;
+    if (S.canSync) {   // hidden when main says the sync tool is not on this computer
+      const sb = btn(S.syncing ? "Syncing..." : "Sync with " + (S.partner || "partner"), "dg-btn", S.onSync); sb.disabled = !!S.syncing || !!S.loading;
+      sb.title = "Exchanges My Designs with the other side now (also runs by itself on a schedule).";
+      if (S.syncMsg) { const m = el("span", "dg-syncmsg " + (S.syncOk ? "dg-sync-ok" : "dg-sync-bad"), (S.syncOk ? "✓ " : "! ") + S.syncMsg); m.setAttribute("role", "status"); head.appendChild(m); }
+      head.appendChild(sb);
+    }
     head.appendChild(rb);
     return head;
   }
@@ -133,7 +141,7 @@
       const on = (S.f.type || "all") === k;
       const b = btn(l, "dg-seg-b" + (on ? " dg-on" : ""), () => { S.f.type = k; S.onFilter(false); }); b.setAttribute("aria-pressed", on ? "true" : "false"); seg.appendChild(b);
     });
-    const q = el("input", "dg-search"); q.type = "search"; q.placeholder = "Search name, tag, #number..."; q.value = S.f.q || ""; q.setAttribute("aria-label", "Search designs");
+    const q = el("input", "dg-search"); q.type = "search"; q.placeholder = "Search name, tag, #number, M-number..."; q.value = S.f.q || ""; q.setAttribute("aria-label", "Search designs");
     q.addEventListener("input", () => { S.f.q = q.value; S.onFilter(true); });
     bar.append(seg, selectOf("Group", "group", F.facets(S.items, "group"), S, "All groups"), selectOf("Tag", "tag", F.facets(S.items, "tags"), S, "All tags"),
       selectOf("Status", "status", F.facets(S.items, "status"), S, "Any status"), q);
@@ -168,7 +176,7 @@
   view.append(headHost, split, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { items: null, shown: null, reason: "", loading: false, openId: null, f: { type: "all", group: "", tag: "", status: "", q: "" } };
+  const S = { items: null, shown: null, reason: "", loading: false, canSync: false, partner: "", syncing: false, syncMsg: "", syncOk: false, openId: null, f: { type: "all", group: "", tag: "", status: "", q: "" } };
   let open = false, navEl = null, toastTimer = null, qTimer = null;
 
   function say(msg) { toast.textContent = msg; toast.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), 2600); }
@@ -216,10 +224,18 @@
     if (S.loading) return Promise.resolve();
     S.loading = true; paintHead();
     return api.load().then((r) => {
-      if (r && r.ok) { S.items = r.items; S.reason = ""; S.f = F.sanitize(S.items, S.f); } else { S.items = []; S.reason = (r && r.reason) || "unreadable"; }
+      if (r && r.ok) { S.items = r.items; S.reason = ""; S.canSync = !!r.canSync; S.partner = r.partner || ""; S.f = F.sanitize(S.items, S.f); } else { S.items = []; S.reason = (r && r.reason) || "unreadable"; }
     }).catch(() => { S.items = []; S.reason = "unreadable"; }).then(() => { S.loading = false; if (open) render(); });
   }
   S.onRefresh = () => refresh();
+  S.onSync = () => {
+    if (S.syncing || !api.sync) return;
+    S.syncing = true; S.syncMsg = ""; S.syncOk = false; paintHead();
+    api.sync().then((r) => {
+      if (r && r.ok) { const d = new Date(); S.syncOk = true; S.syncMsg = (r.summary || "Synced.") + " at " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); return refresh(); }
+      if (r && r.reason === "not-available") { S.canSync = false; S.syncMsg = ""; } else { S.syncOk = false; S.syncMsg = (r && r.reason) || "Sync failed."; }
+    }).catch(() => { S.syncOk = false; S.syncMsg = "Sync failed."; }).then(() => { S.syncing = false; if (open) paintHead(); });
+  };
 
   const onDocKey = (e) => { if (e.key === "Escape") { if (S.openId != null) S.onClosePanel(); else close(); } };
   function openView() {
@@ -239,7 +255,7 @@
     view.classList.add("hidden");
     if (navEl) navEl.classList.remove("active");
     if (io) { io.disconnect(); io = null; }
-    S.items = null; S.shown = null; S.openId = null; S.reason = "";    // nothing from the library stays in the page
+    S.items = null; S.shown = null; S.openId = null; S.reason = ""; S.syncMsg = "";    // nothing from the library stays in the page
     headHost.textContent = ""; filterHost.textContent = ""; bodyHost.textContent = ""; panelHost.textContent = ""; toast.textContent = ""; toast.classList.add("hidden");
   }
   window.designsView = { toggle(nav) { if (nav) navEl = nav; open ? close() : openView(); }, close };

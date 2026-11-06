@@ -2,7 +2,7 @@
 (function (root) {
   "use strict";
   const words = (q) => String(q || "").toLowerCase().split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);
-  const hay = (e) => [e.name, e.group, e.kind, e.type, e.status, (e.tags || []).join(" "), e.notes, e.reference, e.addedBy].filter((x) => x !== undefined && x !== null && x !== "").join(" \u0001 ").toLowerCase();
+  const hay = (e) => [e.label, e.origin, e.name, e.group, e.kind, e.type, e.status, (e.tags || []).join(" "), e.notes, e.reference, e.addedBy].filter((x) => x !== undefined && x !== null && x !== "").join(" \u0001 ").toLowerCase();
   const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base", numeric: true });
 
   // f = { type:"all|motion|still", group:"" , tag:"", status:"all|draft|approved", q:"" }. Search words are ANDed; "#58" or "58" also matches id 58.
@@ -16,7 +16,7 @@
       if (f.status && f.status !== "all" && e.status !== f.status) return false;
       if (!ws.length) return true;
       const h = hay(e);
-      return ws.every((w) => { const m = /^#?(\d+)$/.exec(w); return h.includes(w) || (!!m && e.id === Number(m[1])); });   // a number matches the id exactly (not 158 / 580) and still matches text
+      return ws.every((w) => { const m = /^#?(\d+)$/.exec(w); const pm = /^m-?(\d+)$/.exec(w); return h.includes(w) || (!!m && !e.origin && e.id === Number(m[1])) || (!!pm && !!e.origin && String(e.label || "").toLowerCase() === "m-" + Number(pm[1])); });   // a number matches the id exactly (not 158 / 580) and still matches text
     });
     return out.sort((a, b) => a.id - b.id);
   }
@@ -38,7 +38,8 @@
     return out;
   }
 
-  const useText = (id) => "use my design #" + id;
+  // own design: "use my design #58"; partner's design (item with origin): "use <partner>'s design M-3" (partner name comes from the configuration)
+const useText = (x, partner) => (x && typeof x === "object" && x.origin ? "use " + (partner || "partner") + "'s design " + (x.label || "") : "use my design #" + (x && typeof x === "object" ? x.id : x));
 
   const api = { apply, facets, words, useText, sanitize };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.DesignsFilter = api;

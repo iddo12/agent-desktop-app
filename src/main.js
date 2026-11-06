@@ -1231,9 +1231,28 @@ function createWindow() {
     return { action: "deny" };
   });
 
+  // v1.152.5: spellcheck English + Hebrew (only languages this Electron has a dictionary for).
+  try {
+    const ses = mainWindow.webContents.session;
+    const have = new Set(ses.availableSpellCheckerLanguages);
+    const langs = ["en-US", "he"].filter((l) => have.has(l));
+    if (langs.length) ses.setSpellCheckerLanguages(langs);
+  } catch (e) { /* spellcheck language setup must never stop the window */ }
+
   mainWindow.webContents.on("context-menu", (event, params) => {
     const template = [];
     if (params.isEditable) {
+      // v1.152.5: right-click a red-underlined word -> its suggestions (replace in place) and "Add to dictionary".
+      if (params.misspelledWord) {
+        const sugg = (params.dictionarySuggestions || []).slice(0, 6);
+        for (const s of sugg) template.push({ label: s, click: () => mainWindow.webContents.replaceMisspelling(s) });
+        if (!sugg.length) template.push({ label: "No suggestions", enabled: false });
+        template.push({
+          label: `Add "${params.misspelledWord}" to dictionary`,
+          click: () => { try { mainWindow.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord); } catch (e) { /* ignore */ } },
+        });
+        template.push({ type: "separator" });
+      }
       template.push(
         { label: "Cut", role: "cut", enabled: params.editFlags.canCut },
         { label: "Copy", role: "copy", enabled: params.editFlags.canCopy },

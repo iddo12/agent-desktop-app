@@ -243,6 +243,9 @@
       // --- waiting for the lead agent
       if (pend.length) {
         const w = section("Waiting for your " + leadName(), "These arrived while your " + leadAgent() + "'s chat wasn't open. They are handed over automatically as soon as it is." + (lead.match ? "" : " No agent role is set yet: choose one in Setup (IRIS) so they can be handed over."));
+        const dismissBtn = el("button", "", "Mark all read (dismiss)");
+        dismissBtn.addEventListener("click", async () => { dismissBtn.disabled = true; try { await iris.dismissPending(); } catch (e) { console.error("iris dismiss", e); } deliverPending(); render(); });
+        w.append(dismissBtn);
         for (const m of pend) {
           const card = el("div", "iris-pending");
           card.append(el("div", "iris-meta", `${m.type} from ${m.peer} · ${ago(m.at)}`));

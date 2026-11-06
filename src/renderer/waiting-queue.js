@@ -21,7 +21,7 @@
   var threads = {};              // key -> [{who, text}]
   var ctxCache = {};             // key -> {at, why, ctx, lastAt}
   var watchers = {};             // key -> {sentAt, seen:{}, timer, lastActive}
-  var cur = 0, open = false, bar = null, panel = null, ctl = null, guide = null, toastEl = null, timer = null;
+  var snoozed = {}, cur = 0, open = false, bar = null, panel = null, ctl = null, guide = null, toastEl = null, timer = null;
 
   var el = function (tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; if (/(^| )wq-(q|ctx|msg|ta|sugg)( |$)/.test(cls)) e.dir = "auto"; } if (text != null) e.textContent = text; return e; };
   var KINDS = { asking: { glyph: "?", cls: "wq-orange" }, blocked: { glyph: "!", cls: "wq-red" }, pending: { glyph: "?", cls: "wq-orange" }, stopped: { glyph: "?", cls: "wq-orange" } };
@@ -256,7 +256,7 @@
     if (failedText[it.key]) { ta.value = failedText[it.key]; delete failedText[it.key]; var sg0 = box.querySelector(".wq-sugg"); if (sg0) sg0.remove(); }
     box.appendChild(ta);
     var row = el("div", "wq-actions");
-    var skip = el("button", "wq-btn", "Skip"); skip.type = "button"; skip.addEventListener("click", function () { cur = (cur + 1) % Math.max(1, list.length); refresh(); });
+    var skip = el("button", "wq-btn", "Skip"); skip.type = "button"; skip.addEventListener("click", function () { if (style === "D") { snoozed[it.key] = it.status; refresh(); return; } cur = (cur + 1) % Math.max(1, list.length); refresh(); });   // v1.144.x: style D shows every card at once, so Skip hides this card (until Show skipped / its question changes) instead of moving a cursor nobody sees
     var chat = el("button", "wq-btn", "Open chat"); chat.type = "button"; chat.addEventListener("click", function () { if (it.row) it.row.click(); close(); });
     var stay = el("button", "wq-btn", "Reply, keep talking"); stay.type = "button"; stay.title = "Sends your message and keeps this question open for the agent's answer"; stay.addEventListener("click", function () { send(it, ta.value, true); });
     var snd = el("button", "wq-btn wq-primary", "Send & done"); snd.type = "button"; snd.addEventListener("click", function () { send(it, ta.value, false); });
@@ -358,12 +358,13 @@
     list.forEach(function (x) { loadContext(x); });
     if (style === "D") {
       document.body.classList.add("wq-filter");
-      var extras = [];
+      var extras = [], skippedN = 0;
       list.forEach(function (x) {
+        if (snoozed[x.key] === x.status) { skippedN++; return; }
         if (x.row) x.row.classList.add("wq-waiting");   // v1.115.1: the answer boxes live in the CENTER pane (as in the mockup), never inline in the left list
         extras.push(x);
       });
-      if (extras.length) { panel = el("div", "wq-panel wq-d-extra"); if (demoMode) panel.appendChild(el("b", "", "Sample items (demo)")); extras.forEach(function (x) { var r = el("div", "wq-dx"); r.appendChild(answerBox(x, list)); panel.appendChild(r); }); document.body.appendChild(panel); place(panel); }
+      if (extras.length || skippedN) { panel = el("div", "wq-panel wq-d-extra"); if (demoMode) panel.appendChild(el("b", "", "Sample items (demo)")); extras.forEach(function (x) { var r = el("div", "wq-dx"); r.appendChild(answerBox(x, list)); panel.appendChild(r); }); if (skippedN) { var sk = el("div", "wq-dx"); var back = el("button", "wq-btn", "Show " + skippedN + " skipped"); back.type = "button"; back.addEventListener("click", function () { snoozed = {}; refresh(); }); sk.appendChild(back); panel.appendChild(sk); } document.body.appendChild(panel); place(panel); }
     } else {
       panel = el("div", "wq-panel wq-p" + style); panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", "Waiting for you");
       if (style === "B") {

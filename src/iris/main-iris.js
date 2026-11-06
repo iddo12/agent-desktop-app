@@ -269,6 +269,15 @@ function init({ ipcMain, app, safeStorage, Notification, getMainWindow, log, tes
     fs.writeFileSync(out, fs.readFileSync(item.inboxFile, "utf8"), "utf8");
     return { ok: true, file: out };
   });
+  // "Mark all read": drops every waiting delivery without handing it to an agent (the inbox files stay on disk).
+  guard("iris-dismiss-pending", () => {
+    const n = pending.length;
+    for (const item of pending) svc._audit({ event: "dismissed", id: item.id, peer: item.peerId });
+    pending = [];
+    savePending();
+    push("iris-incoming", { count: 0 });
+    return { ok: true, count: n };
+  });
   h("iris-delivered", ({ id, to }) => {
     const item = pending.find((p) => p.id === id);
     pending = pending.filter((p) => p.id !== id);
