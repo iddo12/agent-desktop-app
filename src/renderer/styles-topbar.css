@@ -145,13 +145,15 @@ body.xp-header #chat-header-text { flex: 1 1 0; min-width: 0; }
 .xp-meter .xp-m-rt .xp-m-ic { font-size: 11px; opacity: 0.8; }
 .xp-meter .xp-m-rt.warn { color: var(--health-warning); font-weight: 600; }
 .xp-meter .xp-m-rt.unknown { font-style: italic; }
-.xp-meter .xp-m-rt .xp-m-pace { margin-inline-start: 6px; padding: 0 5px; border-radius: 8px; font-weight: 600; background: #eceef2; color: #3a3f4a; }
+.xp-meter .xp-m-l .xp-m-pace { margin-inline-start: 6px; padding: 0 6px; border-radius: 8px; font-weight: 700; font-size: 11px; line-height: 14px; display: inline-block; vertical-align: baseline; font-variant-numeric: tabular-nums; background: #eceef2; color: #3a3f4a; }
 .xp-meter .xp-m-pace[hidden] { display: none; }
 .xp-meter .xp-m-pace.over { background: #fbf1d6; color: #B26A00; }
 .xp-meter .xp-m-pace.under { background: #e4f3ee; color: #1a7a62; }
 body.dark .xp-meter .xp-m-pace { background: #2d3037; color: #b9bdc8; }
 body.dark .xp-meter .xp-m-pace.over { background: #3a2f12; color: #F0B34A; }
 body.dark .xp-meter .xp-m-pace.under { background: #10332a; color: #5ad0a8; }
+#five-hour-usage.xp-meter, #weekly-usage.xp-meter, #context-usage.xp-meter { align-self: flex-start; }
+.xp-meter .xp-m-l, .xp-meter .xp-m-n { line-height: 16px; white-space: nowrap; }
 #xp-reset-tip .xp-pc-row { display: grid; grid-template-columns: 62px 1fr 34px; align-items: center; gap: 6px; margin-top: 4px; }
 #xp-reset-tip .xp-pc-l { color: var(--text-muted); font-size: 0.68rem; }
 #xp-reset-tip .xp-pc-n { text-align: end; font-variant-numeric: tabular-nums; }

@@ -30,10 +30,10 @@ t("elapsed fraction: start, middle, end, clamped, unusable", () => {
 t("pace: over, under, on pace, clamped, unknown reset", () => {
   const d = UR.describe({ resetKnown: true, resetsAt: iso(NOW + 3.5 * D), lastReadingAt: iso(NOW) }, "7d", NOW); // 50% elapsed
   const over = UR.pace(d, 62);
-  assert.strictEqual(over.state, "over"); assert.strictEqual(over.delta, 12); assert.strictEqual(over.text, "▲ +12 pts over pace");
+  assert.strictEqual(over.state, "over"); assert.strictEqual(over.delta, 12); assert.strictEqual(over.text, "+12%"); assert.strictEqual(over.hours, 20.2);
   const under = UR.pace(d, 38);
-  assert.strictEqual(under.state, "under"); assert.strictEqual(under.text, "▼ 12 pts under pace");
-  assert.strictEqual(UR.pace(d, 50.4).state, "on"); assert.strictEqual(UR.pace(d, 50.4).text, "on pace");
+  assert.strictEqual(under.state, "under"); assert.strictEqual(under.text, "\u221212%");
+  assert.strictEqual(UR.pace(d, 50.4).state, "on"); assert.strictEqual(UR.pace(d, 50.4).text, "0%");
   assert.strictEqual(UR.pace(d, 140).used, 100); assert.strictEqual(UR.pace(d, -5).used, 0);
   const unk = UR.describe({ resetKnown: false }, "7d", NOW);
   assert.strictEqual(UR.pace(unk, 40), null);

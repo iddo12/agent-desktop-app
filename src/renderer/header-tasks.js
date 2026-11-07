@@ -150,6 +150,9 @@
       const head = document.createElement("div"); head.className = "xp-tip-main";
       head.textContent = "7d usage: " + u + "% used / expected " + e + "% by now";
       frag.appendChild(head);
+      const gap = document.createElement("div"); gap.className = "xp-tip-more";
+      gap.textContent = st === "on" ? "On pace: use and time elapsed match." : el.dataset.xpPaceD.replace("\u2212", "-") + " points " + (st === "over" ? "ahead of" : "under") + " an even week (about " + el.dataset.xpPaceH + " h of use). An even week is about 14.3% per day, 0.6% per hour.";
+      frag.appendChild(gap);
       [["should be", e, "xp-pc-exp"], ["used", u, "xp-pc-use " + st]].forEach(([lab, v, cls]) => {
         const row = document.createElement("div"); row.className = "xp-pc-row";
         const l = document.createElement("span"); l.className = "xp-pc-l"; l.textContent = lab;
@@ -210,21 +213,22 @@
     // a reading older than the window itself says nothing about it: "?" instead of a percentage
     const aged = d.readingTooOld;
     // pace chip (7d only): used % against the share of the window already gone; hidden when the reset or the reading is unusable
-    let chip = rt.querySelector(".xp-m-pace");
+    const lab7 = el.querySelector(":scope > .xp-m-l");
+    let chip = lab7 && lab7.querySelector(".xp-m-pace");
     const pc = kind === "7d" && !aged && UR.pace ? UR.pace(d, parseFloat(el.dataset.xpPct)) : null;
     if (pc) {
-      if (!chip) { chip = document.createElement("span"); chip.className = "xp-m-pace"; rt.appendChild(chip); }
+      if (!chip) { chip = document.createElement("span"); chip.className = "xp-m-pace"; lab7.appendChild(chip); }
       chip.hidden = false; chip.className = "xp-m-pace " + pc.state;
       setText(chip, pc.text);
-      el.dataset.xpPaceU = String(Math.round(pc.used)); el.dataset.xpPaceE = String(Math.round(pc.expected)); el.dataset.xpPaceS = pc.state;
+      el.dataset.xpPaceU = String(Math.round(pc.used)); el.dataset.xpPaceE = String(Math.round(pc.expected)); el.dataset.xpPaceS = pc.state; el.dataset.xpPaceD = pc.text; el.dataset.xpPaceH = String(pc.hours);
     } else {
       if (chip) chip.hidden = true;
-      delete el.dataset.xpPaceU; delete el.dataset.xpPaceE; delete el.dataset.xpPaceS;
+      delete el.dataset.xpPaceU; delete el.dataset.xpPaceE; delete el.dataset.xpPaceS; delete el.dataset.xpPaceD; delete el.dataset.xpPaceH;
     }
     setText(n, aged ? "?" : (el.dataset.xpPct || "") + "%");
     el.dataset.xpAged = aged ? "1" : "";
     const name = (METERS.find((m) => m[0] === el.id) || [])[2] || kind;
-    el.setAttribute("aria-label", name + (aged ? " unknown. " : " " + el.dataset.xpPct + " percent. ") + (pc ? pc.text.replace(/^\S+\s/, "") + ". " : "") + sentence);
+    el.setAttribute("aria-label", name + (aged ? " unknown. " : " " + el.dataset.xpPct + " percent. ") + (pc ? (pc.state === "on" ? "on pace. " : Math.abs(pc.delta) + " percentage points " + (pc.state === "over" ? "over" : "under") + " the pace for this point in the week. ") : "") + sentence);
     if (aged) el.removeAttribute("aria-valuenow"); else el.setAttribute("aria-valuenow", el.dataset.xpPct || "0");
     el.dataset.xpSentence = sentence;
     el.setAttribute("tabindex", "0");

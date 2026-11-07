@@ -120,9 +120,10 @@
     const used = Math.min(100, Math.max(0, pct));
     const expected = Math.min(100, Math.max(0, d.fraction * 100));
     const delta = Math.round(used - expected);
-    if (Math.abs(used - expected) < 1) return { expected, used, delta: 0, state: "on", text: "on pace" };
-    if (delta >= 0) return { expected, used, delta, state: "over", text: "▲ +" + delta + " pts over pace" };
-    return { expected, used, delta, state: "under", text: "▼ " + Math.abs(delta) + " pts under pace" };
+    const hours = Math.round(Math.abs(used - expected) / 100 * 168 * 10) / 10;   // the gap in hours of a 168 h week
+    if (Math.abs(used - expected) < 1) return { expected, used, delta: 0, hours, state: "on", text: "0%" };
+    if (delta >= 0) return { expected, used, delta, hours, state: "over", text: "+" + delta + "%" };
+    return { expected, used, delta, hours, state: "under", text: "\u2212" + "" + Math.abs(delta) + "%" };
   }
 
   return { WINDOW_MS, STALE_5H_AGE_MIN, WARN_UNDER_MS, parseMs, readingAgeMin, describe, elapsedFraction, formatSpan, formatSpanLong, formatAgo, label, sentence, sameLocalDay, pace };
