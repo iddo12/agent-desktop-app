@@ -44,3 +44,11 @@ html, body { min-width: 0; }
 @media (max-width: 280px) { #approvals-popup .ap-wait, #approvals-popup .ap-tool { display: none; } }
 body[data-collapsed="1"] #approvals-popup { border-left-width: 3px; }
 body[data-collapsed="1"] .ap-head { border-bottom: 0; padding: 3px 6px; flex-wrap: nowrap; height: 100%; box-sizing: border-box; }
+
+#approvals-popup .ap-reply { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-width: 0; }
+#approvals-popup .ap-reply-in { flex: 1 1 140px; min-width: 0; border: 1px solid #d9b8a8; border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-send, #approvals-popup .ap-keep { font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-send { background: #c96442; color: #fff; }
+#approvals-popup .ap-stale { font-size: 11px; color: #a4551f; font-weight: 600; }
+#approvals-popup .ap-keepwait { font-size: 11px; padding: 1px 8px; border-radius: 6px; cursor: pointer; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-cleared { opacity: .85; }

@@ -1103,14 +1103,19 @@ ipcMain.on("startup-dismiss", () => {
   startupState.dismissed = true;
 });
 
+// v1.155.1: the main window remembers its size, place and maximized state (userData\main-window.json); the first 2 s after creation are never saved (mixed-DPI screens distort them).
+function mainWindowStateFile() { return path.join(app.getPath("userData"), "main-window.json"); }
 function createWindow() {
+  const mwSaved = testMode.TEST_MODE ? { bounds: null, maximized: false } : approvalsWindowLib.readMain(mainWindowStateFile());
+  const mwBounds = mwSaved.bounds ? approvalsWindowLib.clampBounds(mwSaved.bounds, approvalsWorkAreas(), { width: 900, height: 600 }) : null;
   mainWindow = new BrowserWindow({
+    ...(mwBounds ? { x: mwBounds.x, y: mwBounds.y } : {}),
     // v1.63.8 (test mode only): the sandbox window must never take focus from the program the owner is using.
     // Created hidden and shown with showInactive() on ready-to-show. The live window is unchanged.
     ...(testMode.TEST_MODE ? { show: false } : {}),
     ...(demo.ON ? demo.windowOptions() : {}), // v1.86.0: demo test launches can sit far off-screen (AGENT_DESKTOP_DEMO_OFFSCREEN=1)
-    width: 1280,
-    height: 820,
+    width: mwBounds ? mwBounds.width : 1280,
+    height: mwBounds ? mwBounds.height : 820,
     minWidth: 900,
     minHeight: 600,
     title: testMode.TEST_MODE && !demo.ON ? SANDBOX_WINDOW_TITLE : "Agent Desktop", // demo mode shows no sandbox label
@@ -1140,6 +1145,15 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  if (!testMode.TEST_MODE) {
+    const mw = mainWindow; let mwSettled = false, mwTimer = null;
+    const mwSave = () => { if (!mwSettled || mw.isDestroyed()) return; try { const prev = approvalsWindowLib.readMain(mainWindowStateFile()), max = mw.isMaximized(); approvalsWindowLib.writeMain(mainWindowStateFile(), { bounds: max || mw.isMinimized() || mw.isFullScreen() ? prev.bounds : mw.getNormalBounds(), maximized: max }); } catch (e) { /* cosmetic */ } };
+    const mwLater = () => { clearTimeout(mwTimer); mwTimer = setTimeout(mwSave, 500); };
+    mw.on("move", mwLater); mw.on("resize", mwLater); mw.on("maximize", mwLater); mw.on("unmaximize", mwLater); mw.on("close", () => { clearTimeout(mwTimer); mwSave(); });
+    const mwReapply = () => { try { if (mwBounds && !mw.isDestroyed() && !mw.isMaximized()) mw.setBounds(mwBounds); } catch (e) { /* cosmetic */ } };
+    mw.once("ready-to-show", () => { mwReapply(); setTimeout(mwReapply, 300); if (mwSaved.maximized) { try { mw.maximize(); } catch (e) { /* cosmetic */ } } });
+    setTimeout(() => { mwSettled = true; mwSave(); }, 2500);
+  }
   // v1.76.0: AGENT_DESKTOP_HIDDEN=1 (sandbox only) keeps the window unshown so a measurement run never
   // touches the screen; backgroundThrottling is already off, so timers run as if visible.
   if (testMode.TEST_MODE && process.env.AGENT_DESKTOP_HIDDEN !== "1") mainWindow.once("ready-to-show", () => { try { mainWindow.showInactive(); } catch (e) {} });
@@ -3498,6 +3512,13 @@ function notifyApprovalsChanged(force) {
 // position, size, always-on-top choice and whether it was open (reopens after a restart). A saved position on a monitor that is gone is moved back on screen.
 const approvalsWindowLib = require("./approvalsWindow");
 const dockAsks = require("./dockAsks");   // v1.154.0 "Questions for you"
+// v1.155.0 the dock's rows: asks + what the owner did in the chats (owner_activity.json) -> "maybe already answered" flags
+const ownerActivity = require("./ownerActivity");
+function ownerActivityDir() { return path.dirname(openQuestionsDir()); }
+function dockAskRows() {
+  const map = ownerActivity.read(ownerActivityDir());
+  return dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now(), { activityMs: (agent) => ownerActivity.lastOwnerMs(map, agent) });
+}
 let approvalsWin = null, approvalsTray = null, approvalsQuitting = false, approvalsSaveTimer = null;
 // THYRA's own amber bell icons (build/make-thyra-icon.py): plain, and with a red dot while something waits. Not the Agent Desktop logo.
 function thyraIcon(badge) { return path.join(__dirname, "..", "build", badge ? "icon-thyra-badge.ico" : "icon-thyra.ico"); }
@@ -3516,16 +3537,19 @@ function isApprovalsSender(event) {
 function saveApprovalsState(open) {
   const cur = approvalsWindowLib.readState(approvalsStateFile());
   let bounds = cur.bounds, full = cur.full, collapsed = cur.collapsed;
-  if (approvalsWin && !approvalsWin.isDestroyed()) { collapsed = !!approvalsWin.__thyraCollapsed; try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } if (!collapsed) full = null; else if (approvalsWin.__thyraFull) full = approvalsWin.__thyraFull; }
-  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : cur.onTop, collapsed, bounds, full });
+  if (approvalsWin && !approvalsWin.isDestroyed()) { collapsed = !!approvalsWin.__thyraCollapsed; if (!approvalsWin.__thyraSettling) { try { bounds = approvalsWin.getNormalBounds(); } catch (e) { /* keep the old one */ } } if (!collapsed) full = null; else if (approvalsWin.__thyraFull) full = approvalsWin.__thyraFull; }
+  approvalsWindowLib.writeState(approvalsStateFile(), { open: open == null ? cur.open : open, onTop: approvalsWin && !approvalsWin.isDestroyed() ? (approvalsWin.isAlwaysOnTop() || !!approvalsWin.__thyraCapture) : cur.onTop, collapsed, bounds, full });   // capture mode is temporary: never saved as 'Top off'
 }
 // v1.154.1 Always-on-top that holds: the highest topmost band ("screen-saver"), re-asserted on every blur/focus change of any window, on hide/show and every 3 s
 // while Top is on (another app's window or a focus change can push a topmost window down the z-order). moveTop() does not take focus; the window has no
 // parent/owner and nothing hides it on blur.
-function assertApprovalsOnTop(w) {
+function assertApprovalsOnTop(w, soft) {
   try {
     if (!w || w.isDestroyed() || !w.isAlwaysOnTop() && !w.__thyraWantTop) return;
     w.__thyraWantTop = true;
+    // soft (blur / focus / 3 s timer): only restore a Top flag that was lost. A window that is still topmost is NOT raised again, because a
+    // screenshot overlay (Lightshot, Snipping Tool) is created topmost and takes focus; re-raising THYRA over it blocked screenshots (Iddo 2026-11-07).
+    if (soft && w.isAlwaysOnTop()) return;
     w.setAlwaysOnTop(true, "screen-saver");
     if (w.isVisible() && !w.isMinimized()) w.moveTop();
   } catch (e) { /* cosmetic */ }
@@ -3542,21 +3566,28 @@ function openApprovalsWindow() {
     webPreferences: { preload: path.join(__dirname, "approvals-window-preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const w = approvalsWin;
-  w.__thyraCollapsed = !!st.collapsed; w.__thyraFull = st.full || null;
+  w.__thyraCollapsed = !!st.collapsed; w.__thyraFull = st.full || null; w.__thyraSettling = true;
   w.setMenuBarVisibility(false);
   w.__thyraWantTop = !!st.onTop;
   if (st.onTop) assertApprovalsOnTop(w);
   w.webContents.on("will-navigate", (e) => e.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   w.__thyraWantTop = !!st.onTop;
-  const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w); };
+  const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w, true); };
   w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
   const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 3000); topTimer.unref();
   const appEv = () => setTimeout(reassert, 50); app.on("browser-window-blur", appEv); app.on("browser-window-focus", appEv);
   w.once("closed", () => { clearInterval(topTimer); app.removeListener("browser-window-blur", appEv); app.removeListener("browser-window-focus", appEv); });
   w.once("ready-to-show", () => { if (!w.isDestroyed()) w.showInactive(); notifyApprovalsChanged(true); });   // never steals focus from what the owner is typing
-  const later = () => { clearTimeout(approvalsSaveTimer); approvalsSaveTimer = setTimeout(() => { if (!w.isDestroyed()) saveApprovalsState(true); }, 400); };
+  let dockSettled = false;
+  const later = () => { if (!dockSettled) return; clearTimeout(approvalsSaveTimer); approvalsSaveTimer = setTimeout(() => { if (!w.isDestroyed()) saveApprovalsState(true); }, 400); };
   w.on("move", later); w.on("resize", later);
+  // v1.155.1: Electron creates a window with the PRIMARY screen's scale, so on a smaller / differently scaled screen the size came out wrong and that wrong size was then saved.
+  // Re-apply the saved bounds once the window is there (twice, the second after the screen change has settled), and only start saving after that.
+  const target = approvalsWindowLib.clampBounds(st.bounds, approvalsWorkAreas(), was);
+  const reapply = () => { try { if (!w.isDestroyed() && !w.__thyraCollapsed) w.setBounds(target); } catch (e) { /* cosmetic */ } };
+  w.once("ready-to-show", () => { reapply(); setTimeout(reapply, 300); });
+  setTimeout(() => { dockSettled = true; w.__thyraSettling = false; if (!w.isDestroyed()) saveApprovalsState(true); }, 2000);
   w.on("closed", () => { clearTimeout(approvalsSaveTimer); approvalsWin = null; if (!approvalsQuitting) approvalsWindowLib.writeState(approvalsStateFile(), Object.assign(approvalsWindowLib.readState(approvalsStateFile()), { open: false })); notifyApprovalsChanged(true); refreshApprovalsTray(); });
   w.loadFile(path.join(__dirname, "renderer", "approvals-window.html"));
   saveApprovalsState(true);
@@ -3598,7 +3629,7 @@ function initApprovalsDock() {
   let lastAskKey = null, approvalsTrayBadge = false;
   const badge = () => {
     try {
-      const rows = dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()), n = approvalItems().length + dockAsks.recentCount(rows);
+      const rows = dockAskRows(), n = approvalItems().length + dockAsks.recentCount(rows);
       if (approvalsTray) { if (!!n !== approvalsTrayBadge) { approvalsTrayBadge = !!n; try { approvalsTray.setImage(thyraIcon(approvalsTrayBadge)); } catch (e) { /* icon only */ } } }
       if (approvalsTray) approvalsTray.setToolTip(n ? "Agent Desktop - " + n + " waiting for you" : "Agent Desktop - nothing waiting");
       if (approvalsWin && !approvalsWin.isDestroyed()) approvalsWin.setTitle(n ? "THYRA - " + n + " waiting" : "THYRA - Approvals");
@@ -3617,6 +3648,43 @@ function initApprovalsDock() {
       refreshApprovalsTray();
     } catch (e) { logStuckWatchdog(`approvals tray failed: ${e.message}`); }
     try { if (!globalShortcut.register("CommandOrControl+Alt+A", () => toggleApprovalsWindow())) logStuckWatchdog("approvals shortcut Ctrl+Alt+A is taken by another program"); } catch (e) { /* no shortcut */ }
+    // Capture mode (Iddo 2026-11-07): a screen-saver-level topmost window sits above the snipping overlay and blocks screenshots; Ctrl+Alt+P drops Top for 30 s, then puts it back.
+    const thyraCaptureEnd = (w) => { try { if (w.__thyraCaptureTimer) clearTimeout(w.__thyraCaptureTimer); w.__thyraCaptureTimer = null; w.__thyraCapture = false; if (!w.isDestroyed()) { w.__thyraWantTop = true; assertApprovalsOnTop(w); } } catch (e) { /* cosmetic */ } };
+    try {
+      const okP = globalShortcut.register("CommandOrControl+Alt+P", () => {
+        const w = approvalsWin; if (!w || w.isDestroyed()) return;
+        if (w.__thyraCapture) { thyraCaptureEnd(w); logStuckWatchdog("THYRA capture mode ended early (Ctrl+Alt+P)"); return; }   // second press = back on top now
+        if (!w.__thyraWantTop && !w.isAlwaysOnTop()) return;   // Top is off already: nothing blocks
+        w.__thyraCapture = true; w.__thyraWantTop = false;
+        w.setAlwaysOnTop(false); try { w.setAlwaysOnTop(false, "normal"); } catch (e) { /* level optional */ }
+        logStuckWatchdog("THYRA capture mode on for 30 s (Ctrl+Alt+P)");
+        w.__thyraCaptureTimer = setTimeout(() => thyraCaptureEnd(w), 30000);
+      });
+      logStuckWatchdog(okP && globalShortcut.isRegistered("CommandOrControl+Alt+P") ? "THYRA capture shortcut Ctrl+Alt+P registered" : "THYRA capture shortcut Ctrl+Alt+P is taken by another program");
+    } catch (e) { logStuckWatchdog("THYRA capture shortcut failed: " + e.message); }
+    // Auto capture mode (Iddo 2026-11-07: he forgets / cannot press Ctrl+Alt+P): while a screenshot tool is running THYRA drops Top by itself, and goes back 2 s after the tool closes.
+    {
+      const SHOT = new Set(["screenclippinghost.exe", "snippingtool.exe", "screensketch.exe", "sharex.exe", "greenshot.exe", "snagit32.exe", "snagiteditor.exe", "screenguide.exe"]);
+      let shotBusy = false, shotGone = 0;
+      const shotTimer = setInterval(() => {
+        const w = approvalsWin; if (shotBusy || !w || w.isDestroyed()) return;
+        shotBusy = true;
+        require("child_process").execFile("tasklist", ["/NH", "/FO", "CSV"], { windowsHide: true, timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+          shotBusy = false;
+          try {
+            if (err || w.isDestroyed()) return;
+            const on = String(out).toLowerCase().split("\n").some((l) => SHOT.has((l.split('","')[0] || "").replace(/"/g, "").trim()));
+            if (on) {
+              shotGone = 0;
+              if (!w.__thyraCapture && (w.__thyraWantTop || w.isAlwaysOnTop())) { w.__thyraCapture = true; w.__thyraAuto = true; w.__thyraWantTop = false; w.setAlwaysOnTop(false); logStuckWatchdog("THYRA capture mode on (screenshot tool running)"); }
+            } else if (w.__thyraCapture && w.__thyraAuto) {
+              if (++shotGone >= 2) { w.__thyraAuto = false; thyraCaptureEnd(w); logStuckWatchdog("THYRA capture mode off (screenshot tool closed)"); }
+            }
+          } catch (e) { /* cosmetic */ }
+        });
+      }, 3000);
+      shotTimer.unref();
+    }
     app.on("will-quit", () => { try { globalShortcut.unregisterAll(); } catch (e) { /* quitting */ } });
   }
   if (approvalsWindowLib.readState(approvalsStateFile()).open) setTimeout(() => { try { openApprovalsWindow(); } catch (e) { logStuckWatchdog(`approvals window reopen failed: ${e.message}`); } }, 1500);
@@ -5152,7 +5220,7 @@ ipcMain.handle("seal-answer", (event, id, text, via, shown) => {
 // Only the main window and the dock window may call these; the answer is re-checked against the ask file here AND again in the renderer.
 ipcMain.handle("dock-asks-list", (event) => {
   if (!isApprovalsSender(event)) return { ok: false, rows: [] };
-  return { ok: true, rows: dockAsks.buildRows(dockAsks.readAll(openQuestionsDir()), Date.now()) };
+  return { ok: true, rows: dockAskRows(), cleared: dockAsks.listCleared(openQuestionsDir(), Date.now()) };
 });
 let dockAskSeq = 0;
 ipcMain.handle("dock-ask-answer", async (event, req) => {
@@ -5169,6 +5237,37 @@ ipcMain.handle("dock-ask-answer", async (event, req) => {
   }, req && { id: req.id, label: req.label, shown: req.shown });
   if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* the list refreshes by itself */ } }
   return r;
+});
+ipcMain.handle("dock-ask-reply", async (event, req) => {   // v1.155.0 free-text reply typed in the dock: delivered like an answer, the ask closes unless keep
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = await dockAsks.replyFromDock({
+    readOne: (id) => dockAsks.readOne(openQuestionsDir(), id),
+    deliver: (d) => new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, retry: true, error: "window not ready" });
+      const reqId = "da" + (++dockAskSeq) + "-" + Date.now();
+      const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 30 s; it may still arrive, check the agent's chat before sending again" }); }, 30000);
+      answerOnceWaiting.set(reqId, { resolve, timer });
+      try { mainWindow.webContents.send("dock-ask-deliver", { reqId, id: d.id, label: d.text, free: true, keep: !!d.keep, shown: d.shown }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, retry: true, error: "send failed" }); }
+    }),
+  }, req && { id: req.id, text: req.text, keep: req.keep === true, shown: req.shown });
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* the list refreshes by itself */ } }
+  return r;
+});
+ipcMain.handle("dock-ask-keep", (event, req) => {   // v1.155.0 "Still waiting": the row flagged "maybe already answered" goes back to the list
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = dockAsks.keepWaiting(openQuestionsDir(), req && req.id, Date.now());
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* list refreshes by itself */ } }
+  return r;
+});
+ipcMain.handle("dock-ask-undo", (event, req) => {   // v1.155.0 restore a question the sweep archived automatically
+  if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
+  const r = dockAsks.undoCleared(openQuestionsDir(), req && req.id, Date.now());
+  if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* list refreshes by itself */ } }
+  return r;
+});
+ipcMain.handle("owner-activity", (event, agentPath) => {   // v1.155.0 the owner sent a message to this agent (renderer outbox hook). Main window only; stores the time, never the text.
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
+  return ownerActivity.record(ownerActivityDir(), agentPath, Date.now());
 });
 ipcMain.handle("dock-ask-dismiss", (event, req) => {
   if (!isApprovalsSender(event)) return { ok: false, error: "not from the main window" };
@@ -6019,8 +6118,31 @@ function switchConversationImpl(agentPath, args) {
   const trigger = String(a.trigger || (a.newConversation ? "unspecified" : "resume-switch")).slice(0, 60);
   const name = path.basename(agentPath);
   resetAgentPaths.set(dispatchKey(sessionCwd), agentPath);
-  return resetLock.run(dispatchKey(sessionCwd), trigger, () => switchConversationCore(agentPath, a),
-    (m) => logStuckWatchdog(`reset: ${name} ${m}`), { kind: a.newConversation ? "reset" : "serial" });
+  return resetLock.run(dispatchKey(sessionCwd), trigger, async () => {
+    const res = await switchConversationCore(agentPath, a);
+    scheduleSwitchAttachGuard(agentPath, sessionCwd, res && res.agentId, trigger);
+    return res;
+  }, (m) => logStuckWatchdog(`reset: ${name} ${m}`), { kind: a.newConversation ? "reset" : "serial" });
+}
+// v1.155.1 (user bug report, 2026-11-07): after a resume-switch the renderer's re-attach never came (client EXITED, no `attach` line),
+// the agent stayed green with no pty and every message bounced "no active session" for 25 min. The renderer normally attaches within
+// seconds; if no pty session exists 12 s after the switch, attach it from the main process once (known agentId, no second copy).
+function scheduleSwitchAttachGuard(agentPath, sessionCwd, agentId, trigger) {
+  const name = path.basename(agentPath);
+  setTimeout(async () => {
+    try {
+      if (ptySessions.has(agentPath)) return;
+      logStuckWatchdog(`switch-attach-guard: ${name} no pty 12 s after ${trigger}; attaching from main (agentId=${agentId || "?"})`);
+      ptySessions.set(agentPath, { starting: true, pendingInput: [] });
+      try {
+        await startTerminalSession(agentPath, sessionCwd, 120, 30, agentId || undefined, false, false, "switch-attach-guard");
+      } catch (e) {
+        ptySessions.delete(agentPath);
+        logStuckWatchdog(`switch-attach-guard: ${name} attach failed: ${e && e.message}`);
+        try { connHealth.onAttachFailed(agentPath, String(e && e.message), { cols: 120, rows: 30 }); } catch (e2) {}
+      }
+    } catch (e) {}
+  }, 12000);
 }
 async function switchConversationCore(agentPath, { resumeSessionId, newConversation, initialPrompt, placeholder }) {
   const sessionCwd = sessionCwdFor(agentPath);

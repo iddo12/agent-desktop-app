@@ -29,9 +29,12 @@ function clampBounds(saved, workAreas, minSize) {
   const mn = minSize || MIN;
   const wa = (workAreas && workAreas.length) ? workAreas : [{ x: 0, y: 0, width: 1280, height: 720 }];
   const size = (b) => ({ width: Math.max(mn.width, Math.min(MAX_SIZE, Math.round(b ? b.width : DEFAULT.width))), height: Math.max(mn.height, Math.min(MAX_SIZE, Math.round(b ? b.height : DEFAULT.height))) });
-  const s = size(saved);
+  let s = size(saved);
+  const ov = (a) => Math.max(0, Math.min(saved.x + s.width, a.x + a.width) - Math.max(saved.x, a.x)) * Math.max(0, Math.min(saved.y + s.height, a.y + a.height) - Math.max(saved.y, a.y));
+  const best = saved ? wa.reduce((m, a) => (ov(a) > ov(m) ? a : m), wa[0]) : null;
   if (saved) {
     for (const a of wa) {
+      if (a === best) s = { width: Math.max(Math.min(mn.width, a.width), Math.min(s.width, a.width)), height: Math.max(Math.min(mn.height, a.height), Math.min(s.height, a.height)) };   // v1.155.1: capped to its own screen (the one it overlaps most)
       const ox = Math.min(saved.x + s.width, a.x + a.width) - Math.max(saved.x, a.x), oy = Math.min(saved.y + s.height, a.y + a.height) - Math.max(saved.y, a.y);
       if (ox >= s.width / 2 && oy >= Math.min(s.height, 80)) return { x: saved.x, y: saved.y, width: s.width, height: s.height };   // still on a screen
     }
@@ -40,4 +43,14 @@ function clampBounds(saved, workAreas, minSize) {
   const w = Math.min(s.width, p.width), h = Math.min(s.height, p.height);
   return { x: p.x + p.width - w - 16, y: p.y + 16, width: w, height: h };
 }
-module.exports = { readState, writeState, clampBounds, DEFAULT, MIN, TAB };
+// v1.155.1: the main window remembers its size and place too. Same "at least half visible, capped to its screen" rule; maximized is remembered separately.
+function readMain(file) {
+  try {
+    const j = JSON.parse(fs.readFileSync(file, "utf8")), b = j && j.bounds, num = (v) => typeof v === "number" && isFinite(v);
+    return { bounds: b && num(b.x) && num(b.y) && num(b.width) && num(b.height) ? { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) } : null, maximized: !!(j && j.maximized) };
+  } catch (e) { return { bounds: null, maximized: false }; }
+}
+function writeMain(file, st) {
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); const tmp = file + ".tmp"; fs.writeFileSync(tmp, JSON.stringify({ bounds: st.bounds || null, maximized: !!st.maximized })); fs.renameSync(tmp, file); return true; } catch (e) { return false; }
+}
+module.exports = { readState, writeState, clampBounds, readMain, writeMain, DEFAULT, MIN, TAB };

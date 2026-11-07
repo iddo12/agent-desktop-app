@@ -60,3 +60,6 @@ body.wq-filter #agent-list .agent-item:not(.wq-waiting) { display: none !importa
 .wq-thread { display: flex; flex-direction: column; gap: 5px; margin: 6px 0; } .wq-msg { padding: 6px 9px; border-radius: 9px; font-size: 12.5px; max-width: 92%; } .wq-msg.you { background: #e4eefb; align-self: flex-end; color: #1b2a41; } .wq-msg.agent { background: var(--bg-hover, #eee); }
 .wq-actions { flex-wrap: wrap; }
 .wq-hint { font-size: 11.5px; color: var(--text-muted, #777); margin: 2px 0 4px; } .wq-mirror { font-size: 11px; color: var(--text-muted, #777); margin-top: 6px; }
+
+/* v1.155.1: the "N waiting for you" bar is retired: everything waiting for the owner is in THYRA (Ctrl+Alt+A). The code stays so it can be switched back by deleting this rule. */
+#wq-bar { display: none !important; }

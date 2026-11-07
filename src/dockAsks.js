@@ -51,15 +51,20 @@ function readOne(dir, id) {
 }
 
 // The rows the dock draws, newest first. older = created more than 3 days ago (hidden until the owner asks for them).
-function buildRows(asks, now) {
+// opts.activityMs(agent) -> ms of the owner's last message to that agent (0 = none). maybeAnswered = he wrote to the agent after the ask was filed and has not said
+// "still waiting" since (ask.still_waiting): such a row leaves the main list and the count, and the sweep archives it 24 h later. stale14 = no deadline and 14+ days old.
+function buildRows(asks, now, opts) {
+  const o = opts || {};
   const rows = (asks || []).map((a) => {
     const t = createdMs(a), s = shownOf(a);
-    return { id: String(a.id), agent: s.agent, question: s.question, context: s.context, quick: s.quick, merav: s.merav, created: s.created, ageMs: t ? Math.max(0, now - t) : 0, older: !t || now - t > RECENT_MS, _t: t };
+    const act = typeof o.activityMs === "function" ? (o.activityMs(s.agent) || 0) : 0, sw = Date.parse(String(a.still_waiting || "")) || 0;
+    return { id: String(a.id), agent: s.agent, question: s.question, context: s.context, quick: s.quick, merav: s.merav, created: s.created, ageMs: t ? Math.max(0, now - t) : 0, older: !t || now - t > RECENT_MS, _t: t,
+      kind: a.kind === "note" ? "note" : "ask", maybeAnswered: !!(t && act > t && act > sw), stale14: !!(t && !a.deadline && now - t > 14 * 86400000) };
   });
   rows.sort((a, b) => b._t - a._t || (a.id < b.id ? 1 : -1));
   return rows.map((r) => { delete r._t; return r; });
 }
-function recentCount(rows) { return rows.filter((r) => !r.older).length; }
+function recentCount(rows) { return rows.filter((r) => !r.older).length; }   // maybeAnswered is only a hint on the row (critic B2): it stays in the list and the count
 // repaint key: asks, their wording and which are older (age does not count)
 function listKey(rows) { return rows.map((r) => [r.id, r.older ? 1 : 0, r.quick.join("\u0001")].join("|")).join("\n"); }
 
@@ -105,4 +110,68 @@ function dismissFromDock(deps, request) {
   return done ? { ok: true } : { ok: false, error: "could not move the question file" };
 }
 
-module.exports = { checkDismiss, dismissFromDock, createdMs, readAll, readOne, buildRows, recentCount, listKey, checkAnswer, answerFromDock, shownOf, RECENT_MS, MAX_ROWS };
+// FREE-TEXT REPLY (v1.155.0): the owner types his own words to the asking agent from the dock. Same re-read rules as an answer (file still there and still what
+// was drawn); the text may be anything (1..1000 chars, one line, no control characters). keep=true sends WITHOUT closing the ask (no seal: a seal is final).
+const MAX_REPLY = 600;   // = the seal limit (sealedAnswers MAX_ANSWER), so every reply can be sealed (critic S1)
+function cleanReply(t) { return String(t == null ? "" : t).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_REPLY); }
+function checkReply(request, current) {
+  const r = request || {};
+  if (typeof r.id !== "string" || !ID_RX.test(r.id)) return { ok: false, error: "bad question id" };
+  const text = cleanReply(r.text);
+  if (!text) return { ok: false, error: "type something first" };
+  if (/^[\/!#]/.test(text)) return { ok: false, error: "do not start with / ! or # (the agent would run it as a command): add a word first" };
+  const c = checkAnswer({ id: r.id, label: quickOf(current || {})[0] || "-", shown: r.shown }, current);
+  if (!c.ok && !/quick answers/.test(c.error)) return c;      // free text needs no quick answer; every other refusal stands
+  return { ok: true, text, shown: shownOf(current) };
+}
+async function replyFromDock(deps, request) {
+  const r = request || {};
+  const c = checkReply(r, typeof r.id === "string" ? deps.readOne(r.id) : null);
+  if (!c.ok) return { ok: false, error: c.error };
+  let d;
+  try { d = await deps.deliver({ id: r.id, text: c.text, keep: r.keep === true, shown: c.shown }); } catch (e) { d = { ok: false, error: String(e && e.message || e).slice(0, 200) }; }
+  return d && d.ok ? { ok: true } : { ok: false, error: String(d && d.error || "unknown error").slice(0, 200), retry: !!(d && d.retry) };
+}
+
+// STILL WAITING / CLEARED AUTOMATICALLY (v1.155.0)
+// keepWaiting: the owner says an ask flagged "maybe already answered" is still open: stamps ask.still_waiting (not part of the sealed binding) so it returns to the list.
+// listCleared: asks the sweep archived in the last 7 days (answered\<id>.json with resolved_by "auto-sweep"), newest first, so he can see what vanished and Undo it.
+// undoCleared: moves one back to the open folder, only if it really was auto-archived (never an owner answer, never a sealed one).
+// read through an fd, never the syncGuard cache (see readOne)
+function readJsonFd(p) { let fd = null; try { fd = fs.openSync(p, "r"); return JSON.parse(fs.readFileSync(fd, "utf-8").replace(/^﻿/, "")); } finally { if (fd !== null) { try { fs.closeSync(fd); } catch (e) { /* closed */ } } } }
+const CLEARED_MS =7 * 24 * 3600 * 1000, MAX_CLEARED = 40;
+function keepWaiting(dir, id, now) {
+  if (!ID_RX.test(String(id || ""))) return { ok: false, error: "bad question id" };
+  const file = path.join(dir, id + ".json"); let d;
+  try { d = readJsonFd(file); } catch (e) { return { ok: false, error: "that question is already answered or withdrawn" }; }
+  if (!d || d.id !== id) return { ok: false, error: "bad question file" };
+  d.still_waiting = new Date(now || Date.now()).toISOString();
+  try { const tmp = file + ".sw.tmp"; fs.writeFileSync(tmp, JSON.stringify(d, null, 1)); fs.renameSync(tmp, file); } catch (e) { return { ok: false, error: "could not save" }; }
+  return { ok: true };
+}
+function listCleared(dir, now) {
+  const base = path.join(dir, "answered"), out = []; let names = [];
+  try { names = fs.readdirSync(base); } catch (e) { return out; }
+  for (const f of names) {
+    if (!/^[\w.-]+\.json$/.test(f)) continue;
+    try {
+      const p = path.join(base, f), st = fs.statSync(p); if (now - st.mtimeMs > CLEARED_MS) continue;
+      const d = readJsonFd(p);
+      if (d && d.id && ID_RX.test(String(d.id)) && d.resolved_by === "auto-sweep" && !d.seal) out.push({ id: String(d.id), agent: String(d.agent || ""), question: String(d.question || ""), reason: String(d.auto_reason || ""), at: String(d.auto_at || ""), _m: st.mtimeMs });
+    } catch (e) { /* skip */ }
+  }
+  out.sort((a, b) => b._m - a._m); return out.slice(0, MAX_CLEARED).map((r) => { delete r._m; return r; });
+}
+function undoCleared(dir, id, now) {
+  if (!ID_RX.test(String(id || ""))) return { ok: false, error: "bad question id" };
+  const src = path.join(dir, "answered", id + ".json"), dst = path.join(dir, id + ".json"); let d;
+  try { d = readJsonFd(src); } catch (e) { return { ok: false, error: "not in the cleared list" }; }
+  if (!d || d.id !== id || d.resolved_by !== "auto-sweep" || d.seal || d.answer || d.answered || d.answered_by) return { ok: false, error: "only automatically cleared questions can be restored" };
+  if (fs.existsSync(dst)) return { ok: false, error: "already open" };
+  for (const k of ["resolved_by", "resolved_at", "auto_reason", "auto_at"]) delete d[k];
+  d.restored_by_owner = true; d.still_waiting = new Date(now || Date.now()).toISOString();    // restored by hand: it must not be flagged "maybe answered" again
+  try { const tmp = dst + ".undo.tmp"; fs.writeFileSync(tmp, JSON.stringify(d, null, 1)); fs.renameSync(tmp, dst); fs.unlinkSync(src); } catch (e) { return { ok: false, error: "could not restore" }; }
+  return { ok: true };
+}
+
+module.exports = { keepWaiting, listCleared, undoCleared, CLEARED_MS, cleanReply, checkReply, replyFromDock, MAX_REPLY, checkDismiss, dismissFromDock, createdMs, readAll, readOne, buildRows, recentCount, listKey, checkAnswer, answerFromDock, shownOf, RECENT_MS, MAX_ROWS };

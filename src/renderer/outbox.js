@@ -125,6 +125,7 @@
   function add(ap, text) {
     try {
       if (!ap || !text) return null;
+      try { const mu = window.__ownerActivityMute; if (window.api && window.api.ownerActivity && !(mu && mu[ap] > Date.now())) window.api.ownerActivity(ap); } catch (e) { /* never blocks sending */ }   // v1.155.0: time of the owner's last message to this agent (not for THYRA dock deliveries)
       const it = L.create(ap, text, Date.now());
       it.createdPerf = perf();
       supersede(ap, null, "");

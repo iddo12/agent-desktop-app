@@ -46,29 +46,34 @@
   // ---- the one delivery path ----
   // Returns {ok, error?, retry?}. Re-reads the question first, so a stale card can never answer something already answered or changed.
   // shownOverride (dock): the question exactly as the dock drew it; refused if the file differs. Without it, what the card showed (asks[id]) is used.
-  function answer(id, label, sealIt, shownOverride) {
+  function answer(id, label, sealIt, shownOverride, opts) {
+    opts = opts || {}; var free = opts.free === true, keep = opts.keep === true;
     if (inflight[id]) return Promise.resolve({ ok: false, error: "already sending" });
     var shown = shownOverride ? shownOverride : asks[id] ? { question: asks[id].question, agent: asks[id].agent, quick: asks[id].quick || [], context: asks[id].context || "", merav: !!asks[id].merav, created: asks[id].created || "" } : null;   // what the card displayed
     inflight[id] = true; updateCards();
     var fin = function (r) {
       delete inflight[id];
-      if (r.ok) { answeredHere[id] = { label: label, agent: (asks[id] || {}).agent || "" }; delete asks[id]; ver++; try { window.dispatchEvent(new CustomEvent("answer-once-resolved", { detail: { id: id } })); } catch (e) { /* old engine */ } }
+      if (r.ok && !r.kept) { answeredHere[id] = { label: label, agent: (asks[id] || {}).agent || "" }; delete asks[id]; ver++; try { window.dispatchEvent(new CustomEvent("answer-once-resolved", { detail: { id: id } })); } catch (e) { /* old engine */ } }
       updateCards(); return r;
     };
     if (!window.queueSendToAgent || !window.api) return Promise.resolve(fin({ ok: false, retry: true, error: "chat not ready" }));
     return Promise.resolve(window.api.listOpenQuestions()).then(function (qs) {
       var ask = (qs || []).filter(function (q) { return q && q.id === id; })[0];
       if (!ask) return { ok: false, error: "that question is already answered or withdrawn" };
-      if (!Array.isArray(ask.quick) || ask.quick.indexOf(label) < 0) return { ok: false, error: "not one of the question's quick answers" };
+      if (!free && (!Array.isArray(ask.quick) || ask.quick.indexOf(label) < 0)) return { ok: false, error: "not one of the question's quick answers" };
       if (shownOverride && !sameAsShown(ask, shownOverride)) return { ok: false, error: "the question changed since it was shown" };
       asks[id] = ask;
       var rs = rows(); if (!rs.length) return { ok: false, retry: true, error: "agent list not loaded yet" };
-      var hit = matchAgent(ask.agent, rs); if (!hit || !hit.path) return { ok: false, error: "the asking agent (" + ask.agent + ") is not in the list" };
+      var target = ask.agent;   // the answer always goes to the agent that asked (a request file cannot redirect it)
+      var hit = matchAgent(target, rs); if (!hit || !hit.path) return { ok: false, error: "the agent that gets the answer (" + target + ") is not in the list" };
+      window.__ownerActivityMute = window.__ownerActivityMute || {}; window.__ownerActivityMute[hit.path] = Date.now() + 120000;   // a dock/card answer is not 'owner talked to this agent about something else'
       return Promise.resolve(window.queueSendToAgent(hit.path, label)).then(function (r) {
+        try { delete window.__ownerActivityMute[hit.path]; } catch (e) { /* none */ }
         if (!r || !r.ok) return { ok: false, error: (r && r.error) || "unknown error" };
         // delivered; a failed move only means the question may reappear in the list. A real click on the inline card is sealed (v1.153.0);
         // the confirm-window path (sealIt false) is not: its request file can be written by any process of this user.
-        return Promise.resolve(sealIt && window.api.sealAnswer ? window.api.sealAnswer(id, label, "button", shown) : null).catch(function () { return null; }).then(function () { return window.api.resolveOpenQuestion(id); }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
+        if (keep) return { ok: true, kept: true };   // free text sent, the question stays open (no seal: a seal is final)
+        return Promise.resolve(sealIt && window.api.sealAnswer ? window.api.sealAnswer(id, label, free ? "typed" : "button", shown) : null).catch(function () { return null; }).then(function () { return window.api.resolveOpenQuestion(id); }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
       });
     }).catch(function (e) { return { ok: false, error: String(e && e.message || e) }; }).then(fin);
   }
@@ -125,7 +130,7 @@
   if (window.api && window.api.onDockAskDeliver) {
     window.api.onDockAskDeliver(function (p) {
       if (!p || !p.reqId) return;
-      answer(String(p.id || ""), String(p.label || ""), true, p.shown).then(function (r) { window.api.answerOnceResult({ reqId: p.reqId, ok: !!r.ok, error: r.error || "", retry: !!r.retry }); });
+      answer(String(p.id || ""), String(p.label || ""), true, p.shown, { free: p.free === true, keep: p.keep === true }).then(function (r) { window.api.answerOnceResult({ reqId: p.reqId, ok: !!r.ok, error: r.error || "", retry: !!r.retry }); });
     });
   }
   setInterval(function () { if (document.querySelector(".ao-card")) refresh(true); }, 15000);

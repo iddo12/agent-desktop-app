@@ -30,6 +30,7 @@
     if (sig === lastDraw) { b.querySelectorAll(".ap-wait").forEach((w, i) => { if (items[i]) w.textContent = fmt(Date.now() - items[i].since); }); return; }
     lastDraw = sig;
     const settling = Date.now() - changedAt < 1000;
+    const ae = document.activeElement, keepRid = ae && ae.classList && ae.classList.contains("ap-reply-in") && ae.dataset ? ae.dataset.rid : "", keepSel = keepRid ? [ae.selectionStart, ae.selectionEnd] : null;   // typing must survive a repaint (critic S6)
     b.textContent = "";
     const act = items.filter((i) => i.answerable);
     if (WIN) document.body.dataset.collapsed = collapsed ? "1" : "";
@@ -69,6 +70,7 @@
     if (WIN && !list.children.length) list.append(el("div", "ap-empty", "Nothing waiting"));
     b.append(head, list, foot, el("div", "ap-note", STR.note));
     b.classList.remove("hidden");
+    if (keepRid) { const again = Array.from(b.querySelectorAll(".ap-reply-in")).find((x) => x.dataset.rid === keepRid); if (again && !again.disabled) { again.focus(); try { again.setSelectionRange(keepSel[0], keepSel[1]); } catch (e) { /* not selectable */ } } }
   }
   async function decide(list, answer, via) {
     if (busy) return;

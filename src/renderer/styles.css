@@ -2041,7 +2041,7 @@ button.danger:not(:disabled):hover { filter: brightness(1.1); }
 #approvals-popup .ap-msg { font-size: 12px; opacity: .85; }
 #approvals-popup .ap-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #ecd2c6; align-items: center; flex-wrap: wrap; }
 #approvals-popup .ap-note { font-size: 11px; opacity: .7; padding: 0 12px 8px; }
-#approvals-chip { position: fixed; left: 230px; bottom: 6px; z-index: 8000; font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 12px; border: 1px solid #c96442; background: #fff8f4; color: #7a2a14; cursor: pointer; opacity: .75; }
+#approvals-chip { position: fixed; left: 8px; bottom: 6px; max-width: 120px; z-index: 8000; font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 12px; border: 1px solid #c96442; background: #fff8f4; color: #7a2a14; cursor: pointer; opacity: .75; }
 #approvals-chip:hover { opacity: 1; }
 #approvals-popup .ap-btns { flex-wrap: wrap; }
 #approvals-popup .ap-q, #approvals-popup .ap-act, #approvals-popup .ap-msg { overflow-wrap: anywhere; min-width: 0; }
@@ -2053,3 +2053,11 @@ button.danger:not(:disabled):hover { filter: brightness(1.1); }
 #approvals-popup .ap-qbtn { background: #fff; color: #3b1c10; border-color: #c96442; }
 #approvals-popup .ap-done { font-size: 11px; color: #2e7d32; padding: 3px 0; }
 #approvals-popup .ap-older { margin: 6px 0; background: none; color: inherit; border-color: #d9b8a8; font-size: 11px; }
+
+#approvals-popup .ap-reply { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-width: 0; }
+#approvals-popup .ap-reply-in { flex: 1 1 140px; min-width: 0; border: 1px solid #d9b8a8; border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-send, #approvals-popup .ap-keep { font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-send { background: #c96442; color: #fff; }
+#approvals-popup .ap-stale { font-size: 11px; color: #a4551f; font-weight: 600; }
+#approvals-popup .ap-keepwait { font-size: 11px; padding: 1px 8px; border-radius: 6px; cursor: pointer; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
+#approvals-popup .ap-cleared { opacity: .85; }
