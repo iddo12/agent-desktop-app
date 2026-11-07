@@ -89,12 +89,16 @@
     if (asks) { try { await asks.refresh(); } catch (e) { /* asks are optional */ } }
     draw();
   }
-  // the always-there entry point in the main window: a small "Approvals" chip (count when something waits) that opens the dock window
+  // the always-there entry point in the main window (v1.155.4): the THYRA tile in the SYSTEMS grid (src/renderer/leftpane.js picks it up
+  // by data-system-nav); count badge + hot border when something waits; opens the dock window
   if (!WIN && window.api.approvalsWindow) {
-    const chip = el("button", "ap-chip", "Approvals"); chip.id = "approvals-chip"; chip.title = "Open the approvals window (Ctrl+Alt+A): small, movable, can stay on top of everything";
+    const chip = el("button", "thyra-nav"); chip.id = "approvals-chip"; chip.dataset.systemNav = "thyra";
+    chip.title = "THYRA: open the approvals window (Ctrl+Alt+A): small, movable, can stay on top of everything";
+    const nm = el("span", "iris-nav-name"); nm.append(el("span", "iris-nav-title", "THYRA"), el("span", "iris-nav-sub", "Approvals"));
+    const badge = el("span", "iris-nav-badge hidden"); chip.append(nm, badge);
     chip.addEventListener("click", (ev) => { if (ev.isTrusted) window.api.approvalsWindow("open"); });
-    document.body.appendChild(chip);
-    const upd = () => { chip.textContent = waiting() ? "Approvals " + waiting() : "Approvals"; chip.classList.toggle("ap-chip-hot", waiting() > 0); chip.style.display = docked ? "none" : ""; };
+    const sb = document.getElementById("sidebar"); (sb || document.body).appendChild(chip);
+    const upd = () => { const n = waiting(); badge.textContent = n ? String(n) : ""; badge.classList.toggle("hidden", !n); chip.classList.toggle("thyra-hot", n > 0); };
     const oldDraw = draw; draw = function () { oldDraw(); upd(); };
   }
   window.api.onApprovalsChanged(() => refresh());

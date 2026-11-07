@@ -3549,7 +3549,10 @@ function assertApprovalsOnTop(w, soft) {
     w.__thyraWantTop = true;
     // soft (blur / focus / 3 s timer): only restore a Top flag that was lost. A window that is still topmost is NOT raised again, because a
     // screenshot overlay (Lightshot, Snipping Tool) is created topmost and takes focus; re-raising THYRA over it blocked screenshots (Iddo 2026-11-07).
-    if (soft && w.isAlwaysOnTop()) return;
+    // v1.155.5: a flag that is still set is re-raised again (the 11-07 "never re-raise" left THYRA buried under other topmost windows), but only
+    // while one of OUR windows has focus: a snipping overlay takes focus from us, so during a screenshot nothing is raised and the capture works;
+    // the next focus change back to Agent Desktop puts THYRA on top again (the momentary drop Iddo suggested 2026-11-07).
+    if (soft && w.isAlwaysOnTop()) { if (!require("electron").BrowserWindow.getFocusedWindow()) return; if (w.isVisible() && !w.isMinimized()) w.moveTop(); return; }
     w.setAlwaysOnTop(true, "screen-saver");
     if (w.isVisible() && !w.isMinimized()) w.moveTop();
   } catch (e) { /* cosmetic */ }
