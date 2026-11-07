@@ -113,5 +113,17 @@
     return "Resets " + date + ", " + timeText(d.resetsAtMs, opts) + " (in " + formatSpanLong(d.remainingMs) + ")." + tail;
   }
 
-  return { WINDOW_MS, STALE_5H_AGE_MIN, WARN_UNDER_MS, parseMs, readingAgeMin, describe, elapsedFraction, formatSpan, formatSpanLong, formatAgo, label, sentence, sameLocalDay };
+  // Pace of usage against elapsed time: d = describe() result, pct = used percent 0..100.
+  // -> null when the reset is unknown, else { expected, used, delta, state: "on"|"over"|"under", text }.
+  function pace(d, pct) {
+    if (!d || !d.known || d.fraction === null || typeof pct !== "number" || !Number.isFinite(pct)) return null;
+    const used = Math.min(100, Math.max(0, pct));
+    const expected = Math.min(100, Math.max(0, d.fraction * 100));
+    const delta = Math.round(used - expected);
+    if (Math.abs(used - expected) < 1) return { expected, used, delta: 0, state: "on", text: "on pace" };
+    if (delta >= 0) return { expected, used, delta, state: "over", text: "▲ +" + delta + " pts over pace" };
+    return { expected, used, delta, state: "under", text: "▼ " + Math.abs(delta) + " pts under pace" };
+  }
+
+  return { WINDOW_MS, STALE_5H_AGE_MIN, WARN_UNDER_MS, parseMs, readingAgeMin, describe, elapsedFraction, formatSpan, formatSpanLong, formatAgo, label, sentence, sameLocalDay, pace };
 });

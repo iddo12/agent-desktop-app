@@ -144,7 +144,23 @@
   }
   function tipText(el) {
     const first = document.createElement("div"); first.className = "xp-tip-main"; first.textContent = el.dataset.xpSentence || "";
-    const frag = document.createDocumentFragment(); frag.appendChild(first);
+    const frag = document.createDocumentFragment();
+    if (el.dataset.xpPaceE) {
+      const u = el.dataset.xpPaceU, e = el.dataset.xpPaceE, st = el.dataset.xpPaceS;
+      const head = document.createElement("div"); head.className = "xp-tip-main";
+      head.textContent = "7d usage: " + u + "% used / expected " + e + "% by now";
+      frag.appendChild(head);
+      [["should be", e, "xp-pc-exp"], ["used", u, "xp-pc-use " + st]].forEach(([lab, v, cls]) => {
+        const row = document.createElement("div"); row.className = "xp-pc-row";
+        const l = document.createElement("span"); l.className = "xp-pc-l"; l.textContent = lab;
+        const tr = document.createElement("span"); tr.className = "xp-pc-tr";
+        const f = document.createElement("i"); f.className = cls; f.style.width = v + "%"; tr.appendChild(f);
+        const num = document.createElement("span"); num.className = "xp-pc-n"; num.textContent = v + "%";
+        row.append(l, tr, num); frag.appendChild(row);
+      });
+    }
+    if (el.dataset.xpPaceE) first.className = "xp-tip-more xp-tip-reset";
+    frag.appendChild(first);
     if (el.dataset.xpTitle) { const more = document.createElement("div"); more.className = "xp-tip-more"; more.textContent = el.dataset.xpTitle; frag.appendChild(more); }
     return frag;
   }
@@ -193,10 +209,22 @@
     rt.classList.toggle("unknown", lab.unknown);
     // a reading older than the window itself says nothing about it: "?" instead of a percentage
     const aged = d.readingTooOld;
+    // pace chip (7d only): used % against the share of the window already gone; hidden when the reset or the reading is unusable
+    let chip = rt.querySelector(".xp-m-pace");
+    const pc = kind === "7d" && !aged && UR.pace ? UR.pace(d, parseFloat(el.dataset.xpPct)) : null;
+    if (pc) {
+      if (!chip) { chip = document.createElement("span"); chip.className = "xp-m-pace"; rt.appendChild(chip); }
+      chip.hidden = false; chip.className = "xp-m-pace " + pc.state;
+      setText(chip, pc.text);
+      el.dataset.xpPaceU = String(Math.round(pc.used)); el.dataset.xpPaceE = String(Math.round(pc.expected)); el.dataset.xpPaceS = pc.state;
+    } else {
+      if (chip) chip.hidden = true;
+      delete el.dataset.xpPaceU; delete el.dataset.xpPaceE; delete el.dataset.xpPaceS;
+    }
     setText(n, aged ? "?" : (el.dataset.xpPct || "") + "%");
     el.dataset.xpAged = aged ? "1" : "";
     const name = (METERS.find((m) => m[0] === el.id) || [])[2] || kind;
-    el.setAttribute("aria-label", name + (aged ? " unknown. " : " " + el.dataset.xpPct + " percent. ") + sentence);
+    el.setAttribute("aria-label", name + (aged ? " unknown. " : " " + el.dataset.xpPct + " percent. ") + (pc ? pc.text.replace(/^\S+\s/, "") + ". " : "") + sentence);
     if (aged) el.removeAttribute("aria-valuenow"); else el.setAttribute("aria-valuenow", el.dataset.xpPct || "0");
     el.dataset.xpSentence = sentence;
     el.setAttribute("tabindex", "0");

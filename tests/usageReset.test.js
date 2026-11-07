@@ -27,6 +27,18 @@ t("elapsed fraction: start, middle, end, clamped, unusable", () => {
   assert.strictEqual(UR.elapsedFraction(NaN, NOW, "7d"), null);
   assert.strictEqual(UR.elapsedFraction(NOW + H, NOW, "1y"), null);
 });
+t("pace: over, under, on pace, clamped, unknown reset", () => {
+  const d = UR.describe({ resetKnown: true, resetsAt: iso(NOW + 3.5 * D), lastReadingAt: iso(NOW) }, "7d", NOW); // 50% elapsed
+  const over = UR.pace(d, 62);
+  assert.strictEqual(over.state, "over"); assert.strictEqual(over.delta, 12); assert.strictEqual(over.text, "▲ +12 pts over pace");
+  const under = UR.pace(d, 38);
+  assert.strictEqual(under.state, "under"); assert.strictEqual(under.text, "▼ 12 pts under pace");
+  assert.strictEqual(UR.pace(d, 50.4).state, "on"); assert.strictEqual(UR.pace(d, 50.4).text, "on pace");
+  assert.strictEqual(UR.pace(d, 140).used, 100); assert.strictEqual(UR.pace(d, -5).used, 0);
+  const unk = UR.describe({ resetKnown: false }, "7d", NOW);
+  assert.strictEqual(UR.pace(unk, 40), null);
+  assert.strictEqual(UR.pace(d, NaN), null);
+});
 t("span text: Xh Ym, under an hour, days, rounds down", () => {
   assert.strictEqual(UR.formatSpan(110 * M), "1h 50m");
   assert.strictEqual(UR.formatSpan(42 * M + 59e3), "42m");
