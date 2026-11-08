@@ -13,6 +13,7 @@
 // sends only a week name. Links open through research-open (http/https only, checked in main). Look: styles-skills.css (tokens --rs-*, prefix sk-).
 (function () {
   "use strict";
+  const wk = (w) => (window.researchFilter && window.researchFilter.weekLabel ? window.researchFilter.weekLabel(w) : String(w || ""));
   const api = window.api && window.api.research;
   if (!api || !api.skillsLoad) return;
 
@@ -108,10 +109,10 @@
     when.append(el("b", "", "Next run: "), document.createTextNode(r.nextRunAt ? fmtWhen(r.nextRunAt) : (r.schedule || "not set")));
     s.appendChild(when);
     const set = [];
-    if (r.week) set.push("List set for week " + r.week);
+    if (r.week) set.push("List set for week " + wk(r.week));
     if (r.setAt) set.push("on " + fmtDay(r.setAt));
     if (set.length) s.appendChild(el("p", "sk-small", set.join(" ") + "."));
-    if (r.week && d.thisWeek && r.week < d.thisWeek) s.appendChild(el("p", "sk-note", "This list was set for week " + r.week + ". The list for this week (" + d.thisWeek + ") has not been written yet, so the next run may use different agents."));
+    if (r.week && d.thisWeek && r.week < d.thisWeek) s.appendChild(el("p", "sk-note", "This list was set for week " + wk(r.week) + ". The list for this week (" + wk(d.thisWeek) + ") has not been written yet, so the next run may use different agents."));
     return s;
   }
 
@@ -242,17 +243,17 @@
     }).catch(() => { S.sending.delete(dk); S.msg.set(dk, { ok: false, text: "Not sent: something went wrong." }); render(); });
   }
   function renderFound(d) {
-    const s = section("found", "Found" + (d.week ? " in week " + d.week : ""), d.week ? plural(d.total, "item", "items") + " from " + plural(d.agents.length, "agent", "agents") : "");
+    const s = section("found", "Found" + (d.week ? " in week " + wk(d.week) : ""), d.week ? plural(d.total, "item", "items") + " from " + plural(d.agents.length, "agent", "agents") : "");
     if (d.weeks && d.weeks.length > 1) {
       const lab = el("label", "sk-weeklab"); lab.appendChild(el("span", "", "Week"));
       const sel = el("select", "sk-week"); sel.setAttribute("aria-label", "Choose a week");
-      d.weeks.forEach((w, i) => { const o = el("option", "", w + (i === 0 ? " (latest)" : "")); o.value = w; if (w === d.week) o.selected = true; sel.appendChild(o); });
+      d.weeks.forEach((w, i) => { const o = el("option", "", wk(w) + (i === 0 ? " (latest)" : "")); o.value = w; if (w === d.week) o.selected = true; sel.appendChild(o); });
       sel.addEventListener("change", () => { S.week = sel.value; load(); });
       lab.appendChild(sel); s.querySelector(".sk-sec-h").appendChild(lab);
     }
     const nr = d.rotation && d.rotation.nextRunAt ? " The next run is " + fmtWhen(d.rotation.nextRunAt) + "." : "";
     if (!d.week) { s.appendChild(el("p", "sk-empty", "Nothing found yet this week." + nr)); return s; }
-    if (d.thisWeek && d.week < d.thisWeek) s.appendChild(el("p", "sk-note", "Nothing found yet this week (" + d.thisWeek + "). Showing the last week that has results, " + d.week + "." + nr));
+    if (d.thisWeek && d.week < d.thisWeek) s.appendChild(el("p", "sk-note", "Nothing found yet this week (" + wk(d.thisWeek) + "). Showing the last week that has results, " + wk(d.week) + "." + nr));
     s.appendChild(el("p", "sk-small", SCORE_HELP + " Best first."));
     if (d.skipped) s.appendChild(el("p", "sk-note", plural(d.skipped, "report file", "report files") + " could not be read and are not shown."));
     d.agents.forEach((a) => {

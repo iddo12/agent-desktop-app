@@ -82,7 +82,16 @@
     return n;
   }
   function clearOne(F, k) { const n = Object.assign({}, F); if (k === "agent" || k === "q") n[k] = ""; else if (k === "tier" || k === "topic") n[k] = null; else n[k] = false; return n; }
-  const api = { fold, host, themeOf, noFilters, chipActive, isActive, hay, matchesQuery, inScope, matches, flatten, agentOptions, counts, filterPicks, activeLabels, setFilter, clearOne };
+  // v1.155.7 one week formatter for every tab: "2026-W43" -> "19-25 Oct 2026" / "19-25 Oct 2026 (W43)"; unknown text comes back unchanged
+  function weekDates(week) {
+    const m = /^(\d{4})-W(\d{2})$/.exec(week); if (!m) return "";
+    const y = +m[1], w = +m[2], jan4 = new Date(Date.UTC(y, 0, 4)), dow = jan4.getUTCDay() || 7;
+    const mon = new Date(jan4.getTime() + ((w - 1) * 7 - (dow - 1)) * 86400000), sun = new Date(mon.getTime() + 6 * 86400000);
+    const mo = (d) => d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" });
+    return mon.getUTCDate() + (mo(mon) !== mo(sun) ? " " + mo(mon) : "") + "-" + sun.getUTCDate() + " " + mo(sun) + " " + sun.getUTCFullYear();
+  }
+  function weekLabel(week) { const d = weekDates(week); return d ? d + " (W" + String(week).slice(6) + ")" : String(week || ""); }
+  const api = { weekDates, weekLabel, fold, host, themeOf, noFilters, chipActive, isActive, hay, matchesQuery, inScope, matches, flatten, agentOptions, counts, filterPicks, activeLabels, setFilter, clearOne };
   /* global module */
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.researchFilter = api;

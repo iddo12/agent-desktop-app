@@ -61,12 +61,12 @@
     const row = el("div", "rs-head-row");
     row.append(el("b", "rs-title", "My Research"));
     const snap = S.snap;
-    if (snap && snap.ok && snap.week) row.appendChild(el("span", "rs-sub", "Week " + snap.week.slice(6)));
+    if (snap && snap.ok && snap.week) row.appendChild(el("span", "rs-sub", "Week " + snap.week.slice(6) + (window.researchFilter ? " · " + window.researchFilter.weekDates(snap.week) : "")));
     row.appendChild(el("span", "rs-sp"));
     if (snap && snap.weeks && snap.weeks.length) {
       const lab = el("label", "rs-weeklab"); lab.append(el("span", "", "Week"));
       const sel = el("select", "rs-week"); sel.setAttribute("aria-label", "Choose a week");
-      snap.weeks.forEach((w, i) => { const o = el("option", "", w + (i === 0 ? " (latest)" : "")); o.value = w; if (w === snap.week) o.selected = true; sel.appendChild(o); });
+      snap.weeks.forEach((w, i) => { const o = el("option", "", window.researchFilter.weekLabel(w) + (i === 0 ? " (latest)" : "")); o.value = w; if (w === snap.week) o.selected = true; sel.appendChild(o); });
       sel.addEventListener("change", () => S.onWeek(sel.value));
       lab.appendChild(sel); row.appendChild(lab);
     }
