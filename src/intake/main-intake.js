@@ -73,6 +73,7 @@ function init({ localApprovalsPath, ipcMain: raw, getMainWindow, log, cfg, agent
   handle("intake-load", () => {
     const s = state(); if (!s.ok) return s;
     const sum = L.summarize(s.items, s.approvals);
+    say("intake-load dir=" + dir() + " items=" + s.items.length + " empty=" + !!s.empty);   // v1.155.6: kept so a wrong Intake folder is visible in the log (paths only, never item text)
     const rows = sum.rows.map((r) => ({ id: r.id, kind: r.kind, sub: r.sub, status: r.status, tab: r.tab, created: r.created, verified: r.verified, sealed: r.sealed, held: r.held, suggestedAgent: r.suggestedAgent, title: r.title }));
     return { ok: true, counts: sum.counts, rows, empty: !!s.empty, defaultAgent: opts().defaultAgent, requireVerified: opts().requireVerified, synced: isSynced() };
   });
