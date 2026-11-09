@@ -328,7 +328,9 @@
       if (instant) { delete dismissed[it.key]; failedText[it.key] = text; refresh(); }
       toast("Could not send to " + firstName(it.name) + ": " + msg + ". Nothing was sent.");
     };
-    window.queueSendToAgent(it.path, text).then(function (r) {
+    var typed = text;   // v1.155.10: a registered ask is typed as a full sentence with the question (the seal still gets the raw text)
+    if (it.shown && it.qid && window.AnswerOncePure && window.AnswerOncePure.contextSentence) typed = window.AnswerOncePure.contextSentence({ id: it.qid, question: it.shown.question, context: it.shown.context }, text, !(it.quick && it.quick.indexOf(text) >= 0));
+    window.queueSendToAgent(it.path, typed).then(function (r) {
       if (r && r.ok) finish(); else failed((r && r.error) || "unknown error");
     }).catch(function (e) { failed(e && e.message || e); });
   }

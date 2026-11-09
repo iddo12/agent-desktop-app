@@ -79,7 +79,7 @@ ok(!da.checkAnswer({ id: noQuick.id, label: "Yes", shown: da.shownOf(noQuick) },
   }
   let win = loadAO();
   win._dock({ reqId: "d1", id: fresh.id, label: "Yes", shown }); await new Promise((res) => setTimeout(res, 30));
-  eq(order, ["type:/a/Security:Yes", "seal:" + fresh.id + ":Yes:button:Merge it?", "resolve:" + fresh.id], "type into the ASKING agent, then seal (button, bound to the shown question), then resolve");
+  eq(order, ["type:/a/Security:Iddo answers YES to your question: \"Merge it?\" (ask " + fresh.id + ", context: ctx). He agrees to: Merge it.", "seal:" + fresh.id + ":Yes:button:Merge it?", "resolve:" + fresh.id], "type into the ASKING agent, then seal (button, bound to the shown question), then resolve");
   eq(win._result, { reqId: "d1", ok: true, error: "", retry: false });
   order.length = 0; win = loadAO();
   win._dock({ reqId: "d2", id: fresh.id, label: "Yes", shown: Object.assign({}, shown, { question: "Something I never saw" }) }); await new Promise((res) => setTimeout(res, 30));
@@ -211,7 +211,7 @@ ok(!da.checkAnswer({ id: noQuick.id, label: "Yes", shown: da.shownOf(noQuick) },
   ok(/isApprovalsSender\(event\)\) return \{ ok: false, error: "not from the main window" \};\s*const r = dockAsks\.dismissFromDock/.test(rd("main.js").replace(/\r/g, "")), "dismiss IPC refuses other senders");
   ok(!/getSealer|sealAnswer|sealIntoFile|seal-answer/.test(rd("main.js").split('ipcMain.handle("dock-ask-dismiss"')[1].split("v1.152.0 ANSWER ONCE")[0]), "dismiss path never touches the sealer");
   const mj = rd("main.js");
-  ok(/setAlwaysOnTop\(true, "screen-saver"\)/.test(mj) && /moveTop\(\)/.test(mj) && /setInterval\(\(\) => \{ if \(w\.isDestroyed\(\)\) clearInterval\(topTimer\); else reassert\(\); \}, 3000\)/.test(mj) && /w\.on\("blur"/.test(mj), "always-on-top re-asserted on blur and every 3 s");
+  ok(/setAlwaysOnTop\(true, "screen-saver"\)/.test(mj) && /moveTop\(\)/.test(mj) && /setInterval\(\(\) => \{ if \(w\.isDestroyed\(\)\) clearInterval\(topTimer\); else reassert\(\); \}, 1000\)/.test(mj) && /w\.on\("blur"/.test(mj), "always-on-top re-asserted on blur and every 1 s");
   ok(!/parent:/.test(mj.split("function openApprovalsWindow()")[1].split("w.loadFile")[0]), "dock window has no parent/owner");
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("thyraAsks: " + n + " checks passed");

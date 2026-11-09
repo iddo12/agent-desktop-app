@@ -134,7 +134,17 @@ t("renderer: matchAgent follows the queue's rule", () => {
 });
 t("renderer: answer() sends the label into the ASKING agent's chat, then resolves, then tells the queue", async () => {
   const m = loadRenderer(); const r = await m.win.AnswerOnce.answer(ASK.id, "Yes");
-  assert.strictEqual(r.ok, true); assert.deepStrictEqual(m.sent, [["/a/Security", "Yes"]]); assert.deepStrictEqual(m.resolved, [ASK.id]); assert.strictEqual(m.events["answer-once-resolved"].length, 1);
+  assert.strictEqual(r.ok, true); assert.deepStrictEqual(m.sent, [["/a/Security", `Iddo answers YES to your question: "${ASK.question}" (ask ${ASK.id}). He agrees to: May I restart the NAS app.`]]); assert.deepStrictEqual(m.resolved, [ASK.id]); assert.strictEqual(m.events["answer-once-resolved"].length, 1);
+});
+t("renderer v1.155.10: context sentence for Yes / No / other quick / free text; bare text only when the question is empty", () => {
+  const { win } = loadRenderer(); const c = win.AnswerOncePure.contextSentence;
+  const a = { id: "20261109-101010-abcd", question: "Deploy Specs staging build w8bf (adds Sirui Aurora 15mm/24mm, removes 7 Sony Alphas) to staging?", context: "staging only" };
+  assert.strictEqual(c(a, "Yes", false), 'Iddo answers YES to your question: "' + a.question + '" (ask ' + a.id + ", context: staging only). He agrees to: " + a.question.replace(/\?$/, "") + ".");
+  assert.strictEqual(c(a, "No", false), 'Iddo answers NO to your question: "' + a.question + '" (ask ' + a.id + ", context: staging only). He declines: " + a.question.replace(/\?$/, "") + ".");
+  assert.strictEqual(c({ id: a.id, question: "Which one?" }, "Option B", false), 'Iddo answers "Option B" to your question: "Which one?" (ask ' + a.id + ").");
+  assert.strictEqual(c({ id: a.id, question: "Which one?" }, "/run\nnow", true), 'Iddo answers your question: "Which one?" (ask ' + a.id + ') with this text: "/run now".');
+  assert.strictEqual(c({ id: a.id, question: "   " }, "Yes", false), "Yes"); assert.strictEqual(c({ id: a.id }, "no", true), "no"); assert.strictEqual(c(null, "Yes", false), "Yes");
+  assert.ok(c({ id: a.id, question: "x".repeat(5000) }, "Yes", false).length < 1700);
 });
 t("renderer: refuses text that is not a quick answer, a closed ask, an unknown agent; never resolves on a failed send", async () => {
   let m = loadRenderer(); assert.strictEqual((await m.win.AnswerOnce.answer(ASK.id, "Delete it")).ok, false); assert.strictEqual(m.sent.length, 0);
@@ -146,7 +156,7 @@ t("renderer: refuses text that is not a quick answer, a closed ask, an unknown a
 t("renderer: a request from the confirm window goes through the same path and reports back", async () => {
   const m = loadRenderer(); let got = null; m.win.api.answerOnceResult = async (x) => { got = x; };
   m.win._deliver({ reqId: "r1", id: ASK.id, answer: "No" }); await new Promise((res) => setTimeout(res, 20));
-  assert.deepStrictEqual(m.sent, [["/a/Security", "No"]]); assert.strictEqual(got.reqId, "r1"); assert.strictEqual(got.ok, true);
+  assert.deepStrictEqual(m.sent, [["/a/Security", `Iddo answers NO to your question: "${ASK.question}" (ask ${ASK.id}). He declines: May I restart the NAS app.`]]); assert.strictEqual(got.reqId, "r1"); assert.strictEqual(got.ok, true);
 });
 
 (async () => {
