@@ -5,7 +5,7 @@
   const hay = (e) => [e.label, e.origin, e.name, e.group, e.kind, e.type, e.status, (e.tags || []).join(" "), e.notes, e.reference, e.addedBy].filter((x) => x !== undefined && x !== null && x !== "").join(" \u0001 ").toLowerCase();
   const cmpText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base", numeric: true });
 
-  // f = { type:"all|motion|still", group:"" , tag:"", status:"all|draft|approved", q:"" }. Search words are ANDed; "#58" or "58" also matches id 58.
+  // f = { type:"all|motion|still|transition|effect", group:"" , tag:"", status:"all|draft|approved", q:"" }. Search words are ANDed; "#58" or "58" also matches id 58.
   function apply(list, f) {
     f = f || {};
     const ws = words(f.q);

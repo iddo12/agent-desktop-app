@@ -3543,6 +3543,23 @@ function saveApprovalsState(open) {
 // v1.154.1 Always-on-top that holds: the highest topmost band ("screen-saver"), re-asserted on every blur/focus change of any window, on hide/show and every 3 s
 // while Top is on (another app's window or a focus change can push a topmost window down the z-order). moveTop() does not take focus; the window has no
 // parent/owner and nothing hides it on blur.
+// v1.155.6 foreground watcher: one hidden PowerShell prints the foreground window's process name whenever it changes (poll 300 ms, no load). THYRA is re-raised on
+// every change to another program and held back only while a capture tool (Lightshot, Snipping Tool overlay, ShareX ...) is in front.
+const THYRA_CAPTURE_FG = new Set(["lightshot.exe", "screenclippinghost.exe", "snippingtool.exe", "screensketch.exe", "sharex.exe", "greenshot.exe", "snagit32.exe", "snagiteditor.exe", "screenguide.exe", "picpick.exe", "flameshot.exe"]);
+let thyraFg = "", thyraFgProc = null;
+function thyraFgIsCapture() { return THYRA_CAPTURE_FG.has(thyraFg); }
+function startThyraFgWatcher(onChange) {
+  if (thyraFgProc) return;
+  try {
+    const ps = "Add-Type -Namespace T -Name F -MemberDefinition '[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);';" +
+      "$l='';while($true){try{$h=[T.F]::GetForegroundWindow();$p=0;[void][T.F]::GetWindowThreadProcessId($h,[ref]$p);$n=(Get-Process -Id $p -ErrorAction Stop).ProcessName+'.exe'}catch{$n='?'};if(($n+$h) -ne $l){$l=$n+$h;[Console]::Out.WriteLine('FG '+$n);[Console]::Out.Flush()};Start-Sleep -Milliseconds 300}";
+    const cp = require("child_process").spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    thyraFgProc = cp; let buf = "";
+    cp.stdout.on("data", (d) => { buf += d.toString(); let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line.startsWith("FG ")) { thyraFg = line.slice(3).toLowerCase(); try { onChange(thyraFg); } catch (e) { /* cosmetic */ } } } });
+    cp.on("exit", () => { thyraFgProc = null; });
+    app.on("will-quit", () => { try { cp.kill(); } catch (e) { /* gone */ } });
+  } catch (e) { thyraFgProc = null; }
+}
 function assertApprovalsOnTop(w, soft) {
   try {
     if (!w || w.isDestroyed() || !w.isAlwaysOnTop() && !w.__thyraWantTop) return;
@@ -3552,7 +3569,9 @@ function assertApprovalsOnTop(w, soft) {
     // v1.155.5: a flag that is still set is re-raised again (the 11-07 "never re-raise" left THYRA buried under other topmost windows), but only
     // while one of OUR windows has focus: a snipping overlay takes focus from us, so during a screenshot nothing is raised and the capture works;
     // the next focus change back to Agent Desktop puts THYRA on top again (the momentary drop Iddo suggested 2026-11-07).
-    if (soft && w.isAlwaysOnTop()) { if (!require("electron").BrowserWindow.getFocusedWindow()) return; if (w.isVisible() && !w.isMinimized()) w.moveTop(); return; }
+    // v1.155.6: the guard is now "is a capture tool in front", not "is one of our windows focused": Claude Desktop is itself a topmost window, so when Iddo clicked it
+    // none of ours had focus, nothing re-raised THYRA and Claude (activated later, same topmost band) stayed above it (Iddo 2026-11-09).
+    if (soft && w.isAlwaysOnTop()) { if (thyraFgIsCapture()) return; if (w.isVisible() && !w.isMinimized()) w.moveTop(); return; }
     w.setAlwaysOnTop(true, "screen-saver");
     if (w.isVisible() && !w.isMinimized()) w.moveTop();
   } catch (e) { /* cosmetic */ }
@@ -3577,8 +3596,9 @@ function openApprovalsWindow() {
   w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   w.__thyraWantTop = !!st.onTop;
   const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w, true); };
+  startThyraFgWatcher(() => { if (!w.isDestroyed() && w.__thyraWantTop) setTimeout(reassert, 80); });   // v1.155.6: re-raise whenever another program (Claude Desktop ...) comes to the front
   w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
-  const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 3000); topTimer.unref();
+  const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 1000); topTimer.unref();
   const appEv = () => setTimeout(reassert, 50); app.on("browser-window-blur", appEv); app.on("browser-window-focus", appEv);
   w.once("closed", () => { clearInterval(topTimer); app.removeListener("browser-window-blur", appEv); app.removeListener("browser-window-focus", appEv); });
   w.once("ready-to-show", () => { if (!w.isDestroyed()) w.showInactive(); notifyApprovalsChanged(true); });   // never steals focus from what the owner is typing

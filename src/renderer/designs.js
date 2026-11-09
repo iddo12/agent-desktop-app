@@ -14,7 +14,9 @@
   function btn(label, cls, onClick) { const b = el("button", cls || "dg-btn", label); b.type = "button"; b.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); onClick(ev); }); return b; }
   const fileUrl = (p) => { const q = String(p).replace(/\\/g, "/"); const enc = (x) => x.split("/").map(encodeURIComponent).join("/").replace(/^([A-Za-z])%3A/, "$1:"); return q.startsWith("//") ? "file://" + enc(q.slice(2)) : "file:///" + enc(q); };   // UNC host/share/x -> file://host/share/x
   const labelOf = (e) => e.label || "#" + e.id;
-  const typeLabel = (t) => (t === "still" ? "Still" : "Motion");
+  const typeLabel = (t) => (t === "still" ? "Still" : t === "transition" ? "Transition" : t === "effect" ? "Effect" : "Motion");
+  // A transition's kind says how many clips it needs: "two-clip" goes between two clips, "one-clip" is a head or tail of one clip. Shown as a big badge.
+  const clipBadge = (e) => (e.type === "transition" ? (e.kind === "two-clip" ? "TWO CLIPS" : e.kind === "one-clip" ? "ONE CLIP" : "") : "");
 
   // ================================================================ lazy loading (no polling: one observer, created on first need)
   let io = null;
@@ -62,6 +64,7 @@
     c.setAttribute("aria-label", "Design " + labelOf(e) + ", " + e.name);
     const top = el("div", "dg-card-top");
     top.append(renderPreview(e, false), el("span", "dg-num", labelOf(e)), el("span", "dg-type dg-type-" + e.type, typeLabel(e.type)));
+    const cb = clipBadge(e); if (cb) top.appendChild(el("span", "dg-clip dg-clip-" + e.kind, cb));
     const body = el("div", "dg-card-body");
     const line = el("div", "dg-card-line");
     line.append(el("b", "dg-name", e.name), el("span", "dg-chip dg-chip-" + e.status, e.status));
@@ -105,6 +108,7 @@
     if (e.tags.length) { const t = el("div", "dg-tags"); e.tags.forEach((x) => t.appendChild(el("span", "dg-tag", x))); facts.appendChild(row("Tags", t)); }
     if (e.notes) facts.appendChild(row("Notes", val(e.notes)));
     if (e.addedBy || e.added) facts.appendChild(row("Added", val([e.addedBy, (e.added || "").slice(0, 10)].filter(Boolean).join(", "))));
+    const pcb = clipBadge(e); if (pcb) head.insertBefore(el("span", "dg-clip dg-clip-" + e.kind + " dg-clip-inline", pcb), head.children[2]);
     p.append(head, renderPreview(e, true), actions, facts);
     return p;
   }
@@ -137,7 +141,7 @@
   function renderFilters(S) {
     const bar = el("div", "dg-filters");
     const seg = el("div", "dg-seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Type");
-    [["all", "All"], ["motion", "Motion"], ["still", "Still"]].forEach(([k, l]) => {
+    [["all", "All"], ["motion", "Motion"], ["still", "Still"], ["transition", "Transitions"], ["effect", "Effects"]].forEach(([k, l]) => {
       const on = (S.f.type || "all") === k;
       const b = btn(l, "dg-seg-b" + (on ? " dg-on" : ""), () => { S.f.type = k; S.onFilter(false); }); b.setAttribute("aria-pressed", on ? "true" : "false"); seg.appendChild(b);
     });

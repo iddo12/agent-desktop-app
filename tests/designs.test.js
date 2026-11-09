@@ -199,6 +199,32 @@ t("no hard-coded drive letters or personal names in the new files", () => {
   }
 });
 
+// ---- Transitions + Effects tabs (v1.155.8): explicit type kept, kind passed through, filter by tab
+const lib2 = path.join(tmp, "lib2"); fs.mkdirSync(path.join(lib2, "previews"), { recursive: true });
+for (const f of ["70.mp4", "71.mp4", "72.mp4", "90.mp4", "91.mp4"]) fs.writeFileSync(path.join(lib2, "previews", f), "x");
+fs.writeFileSync(path.join(lib2, "styles.json"), JSON.stringify({ styles: [
+  { id: 70, name: "Whip", type: "transition", kind: "two-clip", preview: "previews/70.mp4" },
+  { id: 71, name: "Fade in", type: "transition", kind: "one-clip", preview: "previews/71.mp4" },
+  { id: 72, name: "Plain", preview: "previews/72.mp4" },
+  { id: 90, name: "Glitch", type: "effect", preview: "previews/90.mp4" },
+  { id: 91, name: "Glow", type: "effect", preview: "previews/91.mp4" },
+] }));
+t("transition/effect: explicit type is kept (not turned into motion), kind passes through, untyped video stays motion", () => {
+  const by = Object.fromEntries(D.load(lib2).items.map((e) => [e.id, e]));
+  assert.strictEqual(by[70].type, "transition"); assert.strictEqual(by[70].kind, "two-clip"); assert.strictEqual(by[71].kind, "one-clip");
+  assert.strictEqual(by[90].type, "effect"); assert.strictEqual(by[72].type, "motion");
+});
+t("transition/effect: the Transitions and Effects tabs filter by type", () => {
+  const L = D.load(lib2).items.map(D.publicItem);
+  assert.deepStrictEqual(F.apply(L, { type: "transition" }).map((e) => e.id), [70, 71]);
+  assert.deepStrictEqual(F.apply(L, { type: "effect" }).map((e) => e.id), [90, 91]);
+  assert.deepStrictEqual(F.apply(L, { type: "motion" }).map((e) => e.id), [72]);
+});
+t("transition/effect: renderer has both tabs and the clip badge", () => {
+  const view = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "designs.js"), "utf8");
+  assert.ok(view.includes('["transition", "Transitions"]') && view.includes('["effect", "Effects"]') && view.includes("TWO CLIPS") && view.includes("ONE CLIP"));
+});
+
 Promise.all(pending).then(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`${n - fails}/${n} passed`);

@@ -33,7 +33,7 @@ function resolvePreview(dir, rel, realDir) {
 }
 
 function inferType(s, kind) {
-  if (s.type === "motion" || s.type === "still") return s.type;
+  if (s.type === "motion" || s.type === "still" || s.type === "transition" || s.type === "effect") return s.type;
   const ext = path.extname(String(s.preview || "")).toLowerCase();
   return kind === "video" || ext === ".gif" ? "motion" : "still";
 }

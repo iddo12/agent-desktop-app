@@ -86,3 +86,11 @@
 .dg-syncmsg { font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid currentColor; }
 .dg-sync-ok { color: #2e7d32; background: rgba(46, 125, 50, 0.10); }
 .dg-sync-bad { color: #b3261e; background: rgba(179, 38, 30, 0.10); }
+
+/* Transitions / Effects (v1.155.8): the kind of a transition shows as a big badge, bottom-left of the preview and in the side panel */
+.dg-type-transition { background: rgba(124,58,237,.85); }
+.dg-type-effect { background: rgba(2,132,199,.85); }
+.dg-clip { position: absolute; left: 8px; bottom: 8px; font-weight: 800; font-size: 14px; line-height: 1; padding: 6px 10px; border-radius: 8px; letter-spacing: .04em; color: #fff; pointer-events: none; }
+.dg-clip-two-clip { background: #c2410c; }
+.dg-clip-one-clip { background: #0f766e; }
+.dg-clip-inline { position: static; font-size: 12px; padding: 4px 8px; }
