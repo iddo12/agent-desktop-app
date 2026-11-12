@@ -126,6 +126,8 @@
     try {
       if (!ap || !text) return null;
       try { const mu = window.__ownerActivityMute; if (window.api && window.api.ownerActivity && !(mu && mu[ap] > Date.now())) window.api.ownerActivity(ap); } catch (e) { /* never blocks sending */ }   // v1.155.0: time of the owner's last message to this agent (not for THYRA dock deliveries)
+      const dup = L.findDuplicate(Array.from(items.values()), ap, text, Date.now());   // v1.155.12: same text still waiting = same message, not a second copy
+      if (dup) { log("identical message to " + nm(ap) + " is already waiting - not queued twice"); return dup.id; }
       const it = L.create(ap, text, Date.now());
       it.createdPerf = perf();
       supersede(ap, null, "");

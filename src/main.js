@@ -3595,7 +3595,12 @@ function openApprovalsWindow() {
   w.webContents.on("will-navigate", (e) => e.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   w.__thyraWantTop = !!st.onTop;
-  const reassert = () => { if (w.__thyraWantTop) assertApprovalsOnTop(w, true); };
+  const reassert = () => {
+    // v1.155.9: Win+D / "Show desktop" / another program minimizing or hiding the dock must not make it vanish (it has no taskbar button): bring it back unless the owner minimized it with its own button.
+    try { if (!w.isDestroyed() && !w.__thyraUserMin && !w.__thyraCapture) { if (w.isMinimized()) { logStuckWatchdog("THYRA dock was minimized by something else, restoring"); w.restore(); } else if (!w.isVisible()) { logStuckWatchdog("THYRA dock was hidden by something else, showing"); w.showInactive(); } } } catch (e) { /* cosmetic */ }
+    if (w.__thyraWantTop) assertApprovalsOnTop(w, true);
+  };
+  w.on("minimize", () => setTimeout(reassert, 150)); w.on("restore", () => { w.__thyraUserMin = false; });
   startThyraFgWatcher(() => { if (!w.isDestroyed() && w.__thyraWantTop) setTimeout(reassert, 80); });   // v1.155.6: re-raise whenever another program (Claude Desktop ...) comes to the front
   w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
   const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 1000); topTimer.unref();
@@ -3719,7 +3724,7 @@ ipcMain.handle("approvals-window", (event, { action }) => {
   if (action === "toggle" && !fromDock) { toggleApprovalsWindow(); return { ok: true }; }
   if (action === "close" && fromDock) { closeApprovalsWindow(); return { ok: true }; }
   if (action === "ontop-toggle" && fromDock) { const on = !approvalsWin.isAlwaysOnTop(); approvalsWin.__thyraWantTop = on; if (on) assertApprovalsOnTop(approvalsWin); else approvalsWin.setAlwaysOnTop(false); saveApprovalsState(true); return { ok: true, onTop: on }; }
-  if (action === "minimize" && fromDock) { approvalsWin.minimize(); return { ok: true }; }
+  if (action === "minimize" && fromDock) { approvalsWin.__thyraUserMin = true; approvalsWin.minimize(); return { ok: true }; }
   if (action === "collapse-toggle" && fromDock) { return { ok: true, collapsed: toggleApprovalsCollapse() }; }
   if (action === "state") return { open: !!(approvalsWin && !approvalsWin.isDestroyed()), onTop: approvalsWin && !approvalsWin.isDestroyed() ? approvalsWin.isAlwaysOnTop() : true, collapsed: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.__thyraCollapsed), minimized: !!(approvalsWin && !approvalsWin.isDestroyed() && approvalsWin.isMinimized()) };
   return { ok: false };
@@ -5350,6 +5355,20 @@ ipcMain.on("perf-log", (event, { lines }) => {
 });
 
 ipcMain.handle("get-session-activity", (event, { agentPath }) => getSessionActivity(sessionCwdPath(agentPath)));
+// v1.155.12: does this agent have a person request nobody has answered yet? (Restart agents skips such agents.) Unknown = null.
+ipcMain.handle("agent-has-open-request", (event, { agentPath }) => {
+  try {
+    const nt = require("./archive").newestTranscript(sessionCwdPath(agentPath));
+    if (!nt) return false;
+    const len = Math.min(128 * 1024, nt.size);
+    const fd = fs.openSync(nt.jsonlPath, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, nt.size - len);
+      return !!require("./keepGoing").openUserRequest(buf.toString("utf-8"), len < nt.size);
+    } finally { fs.closeSync(fd); }
+  } catch (e) { return null; }
+});
 // 2026-09-23: how long the agent's transcript has been quiet. The delivery
 // check needs this because "is it working" is a heuristic that goes false in
 // every gap between two tool calls, while a transcript that is still growing

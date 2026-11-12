@@ -5974,6 +5974,17 @@ async function restartAllRunBatch(paths) {
       continue;
     }
 
+    // v1.155.12: a person's request nobody has answered yet would be lost in the restart (friction item 10): leave this agent for Retry skipped
+    let openReq = null;
+    try { openReq = await window.api.agentHasOpenRequest(agentPath); } catch (e) { openReq = null; }
+    if (openReq === true) {
+      restartAllSetRowStatus(agentPath, "status-skip", "Skipped (has an unanswered request)");
+      skipped++;
+      const agentObj = agents.find((a) => a.path === agentPath);
+      skippedEntries.push({ path: agentPath, name: (agentObj && agentObj.displayName) || agentPath });
+      continue;
+    }
+
     restartAllSetRowStatus(agentPath, "status-active", "Restarting…");
     try {
       const convos = await window.api.listConversations(agentPath);

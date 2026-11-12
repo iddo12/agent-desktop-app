@@ -60,6 +60,17 @@
       firstSentAt: 0, lastSentAt: 0, attempts: 0, state: "queued", written: false, nextRetryAt: 0, seenAt: 0, why: "",
       newer: false, manual: false };
   }
+  // v1.155.12: the same text re-sent to the same agent while the first copy is still waiting (not yet seen, not superseded) is the same message.
+  // Returns that live item or null. Window: 15 min.
+  const DUP_WINDOW_MS = 15 * 60 * 1000;
+  function findDuplicate(items, agentPath, text, now) {
+    const n = norm(text);
+    if (!n) return null;
+    for (const o of items) {
+      if (o && o.agentPath === String(agentPath || "") && (o.state === "queued" || o.state === "sent") && !o.newer && now - (o.createdAt || 0) < DUP_WINDOW_MS && norm(o.text) === n) return o;
+    }
+    return null;
+  }
   // command markup the CLI writes for a slash command: <command-name>/x</command-name> ... <command-args>y</command-args>
   function commandText(s) {
     const n = /<command-name>\s*([^<]*?)\s*<\/command-name>/.exec(s);
@@ -291,7 +302,7 @@
     } catch (e) { return []; }
   }
 
-  const api = { MAX_ATTEMPTS, BACKOFF_BASE_MS, IDLE_BEFORE_RETRY_MS, TTL_MS, KEEP_SEEN_MS, MAX_ITEMS, MAX_TEXT, MAX_FILE_BYTES, STRONG_MIN,
+  const api = { findDuplicate, DUP_WINDOW_MS, MAX_ATTEMPTS, BACKOFF_BASE_MS, IDLE_BEFORE_RETRY_MS, TTL_MS, KEEP_SEEN_MS, MAX_ITEMS, MAX_TEXT, MAX_FILE_BYTES, STRONG_MIN,
     MAX_AUTO_AGE_MS, UNKNOWN_MANUAL_MS, RETRY_LOCK_MS, PASTE_UNSAFE_RE, MAX_AUTO_ATTEMPTS,
     clean, isCommand, isAppPrompt, commandText, norm, longRef, needleFor, create, entryText, scanTranscripts, tailReachesBack, backoffMs, blockReason, decide, label,
     connectionNotice, serialize, parse, dismissItem };

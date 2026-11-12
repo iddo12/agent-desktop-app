@@ -310,7 +310,19 @@ function create(deps) {
       log("keepgoing: no mission after handoff for " + p + (info && info.blocked ? " (handoff declares BLOCKED)" : info && !info.mission ? " (no open work in the handoff)" : ""));
     }
     save(); emit(p);
-    return { text: K.resumePromptText(archivedPath, { mission }, rel, ctxNow()), mission };
+    let text = K.resumePromptText(archivedPath, { mission }, rel, ctxNow());
+    // v1.155.12: a person's request still unanswered when the session was reset travels with the resume message (it used to be lost:
+    // the fresh session saw only the handoff and replied BLOCKED while the person waited). Fails open (no change to the text).
+    try {
+      const tail = deps.readTail ? deps.readTail(p) : null;
+      const open = tail && K.openUserRequest(tail.text, tail.partialFirst);
+      if (open) {
+        text += "\n\nUNANSWERED REQUEST carried over from the previous session (it was still open when the context was reset; answer it first, " +
+          "to whoever sent it, unless the handoff says it was done):\n----- request start -----\n" + open.text + "\n----- request end -----";
+        log("keepgoing: carried an unanswered request (" + open.text.length + " chars) into the fresh session for " + p);
+      }
+    } catch (e) { log("keepgoing: could not look for an open request for " + p + ": " + (e && e.message)); }
+    return { text, mission };
   }
 
   return { tick, setEnabled, setRelentless, relentlessFor, getSettings, resumeText, snapshot: snap, _state: () => P };

@@ -394,7 +394,43 @@
     return "Keep going - nudge: you announced a next step, please do it now";
   }
 
-  const api = { READ_ONLY_TOOLS, NUDGE_MARKER, RESUME_MARKER, NUDGE_TEXT, NEXT_PROJECT_TEXT, NEXT_PROJECT_QUESTION_TEXT, SAFEGUARD_TEXT, SAFEGUARD_RX, texts, setOwner, OWN_SRC, LIMITS, LIMITS_RELENTLESS, parseTail, classify, protocolOf, decide, hashText, parseHandoff, resumePromptText,
+  // v1.155.12: the last person request the old session had NOT yet answered when it is reset (null if none). A request counts as answered once
+  // an assistant entry with text and no tool call follows it (before the handoff prompt). App messages (nudges, resume, handoff prompts,
+  // task notifications, reminders) are not requests. Returns { text, ts } with text capped at maxChars.
+  const PEER_WRAP_RX = /^\s*(Another Claude session sent a message|\[Cross-session|\[Artifact comment sent to Claude|<cross-session)/i;
+  function openUserRequest(rawText, partialFirst, maxChars) {
+    let lines = String(rawText || "").split("\n");
+    if (partialFirst) lines = lines.slice(1);
+    const cap = maxChars || 3000;
+    let open = null;
+    for (const line of lines) {
+      const l = line.trim();
+      if (!l) continue;
+      let o;
+      try { o = JSON.parse(l); } catch (e) { continue; }
+      if (!o || (o.type !== "user" && o.type !== "assistant") || o.isSidechain || o.isMeta || !o.message) continue;
+      const c = o.message.content;
+      const blocks = Array.isArray(c) ? c : [];
+      const text = textOf(c);
+      if (o.type === "user") {
+        if (blocks.some((b) => b && b.type === "tool_result") || !text) continue;
+        const s = stripMarkers(text);
+        if (isHandoffPrompt(s)) break; // everything after the handoff prompt is the handoff turn itself
+        if (o.origin && o.origin.kind && o.origin.kind !== "human") continue; // peer / task / hook turns are not a person
+        if (PEER_WRAP_RX.test(s)) continue;
+        if (isSystemish(text) || NON_HUMAN_PREFIX.test(s) || /^\[\[(KEEPGOING|WAKE|HEARTBEAT)\]\]/.test(s)) continue;
+        const ts = o.timestamp ? new Date(o.timestamp).getTime() : 0;
+        open = { text: s, ts: Number.isFinite(ts) ? ts : 0 };
+      } else if (open && text && !blocks.some((b) => b && b.type === "tool_use") && !o.isApiErrorMessage) {
+        open = null; // answered with a real reply
+      }
+    }
+    if (!open) return null;
+    if (open.text.length > cap) open.text = open.text.slice(0, cap) + " ...[cut]";
+    return open;
+  }
+
+  const api = { openUserRequest, READ_ONLY_TOOLS, NUDGE_MARKER, RESUME_MARKER, NUDGE_TEXT, NEXT_PROJECT_TEXT, NEXT_PROJECT_QUESTION_TEXT, SAFEGUARD_TEXT, SAFEGUARD_RX, texts, setOwner, OWN_SRC, LIMITS, LIMITS_RELENTLESS, parseTail, classify, protocolOf, decide, hashText, parseHandoff, resumePromptText,
     isSystemish, isHandoffPrompt, nudgeLabelFor, stripMarkers };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.KeepGoing = api;

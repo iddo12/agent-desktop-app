@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld("api", {
   getLiveTranscript: (agentPath, ifChanged, peek) => ipcRenderer.invoke("get-live-transcript", { agentPath, ifChanged: !!ifChanged, peek: !!peek }), // v1.115.0: peek = last 14 blocks, never touches the chat view's "unchanged" bookkeeping
   perfLog: (lines) => ipcRenderer.send("perf-log", { lines }),
   getSessionActivity: (agentPath) => ipcRenderer.invoke("get-session-activity", { agentPath }),
+  agentHasOpenRequest: (agentPath) => ipcRenderer.invoke("agent-has-open-request", { agentPath }),   // v1.155.12
   agentInputHoldsText: (agentPath, snippet) => ipcRenderer.invoke("agent-input-holds-text", { agentPath, snippet }),
   agentDialogOpen: (agentPath) => ipcRenderer.invoke("agent-dialog-open", { agentPath }),
   approvalPending: (agentPath) => ipcRenderer.invoke("approval-pending-get", { agentPath }),
