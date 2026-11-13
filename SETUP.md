@@ -65,6 +65,8 @@ Easiest route: open Agent Desktop > Setup and press the button of each feature; 
 - roleSecurity (text): Folder name of your security agent  [env AGENT_DESKTOP_ROLE_SECURITY]
 - roleOptimization (text): Folder name of your maintenance / optimization agent (a trailing * matches the start)  [env AGENT_DESKTOP_ROLE_OPTIMIZATION]
 - roleSeo (text): Folder name of your SEO agent  [env AGENT_DESKTOP_ROLE_SEO]
+- thyraIdeaTargets (text): THYRA Ideas: agents an idea can be sent to (folder names separated by ;)  [env AGENT_DESKTOP_THYRA_IDEA_TARGETS]
+- thyraIdeaDestinations (text): THYRA Ideas: where a built idea can be recorded as moved (names separated by ;; default My Tools; Product Development; Software Engineering; LensVid tools)  [env AGENT_DESKTOP_THYRA_IDEA_DESTINATIONS]
 - argusJobPrefixes (text): ARGUS: scheduled-job prefixes per role (for example SEC_=security;OPT_=optimization)  [env AGENT_DESKTOP_ARGUS_JOB_PREFIXES]
 - argusShortNames (text): ARGUS: short names for agent folders (for example Some Folder=Short)  [env AGENT_DESKTOP_ARGUS_SHORT_NAMES]
 - governorMaxWorking (text): Load governor: most agents working at once (default 6)  [env AGENT_DESKTOP_GOVERNOR_MAX_WORKING]

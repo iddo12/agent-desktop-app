@@ -5306,6 +5306,69 @@ ipcMain.handle("dock-ask-dismiss", (event, req) => {
   if (r.ok) { try { notifyApprovalsChanged(true); } catch (e) { /* list refreshes by itself */ } }
   return r;
 });
+// v1.156.0 THYRA TABS (src/thyraTabs.js): Task list + Ideas tabs of the dock window. Loaded only when a tab is opened (lazy); read-only over the task
+// stores and registry, writes only our own ledger (userData\thyra-ideas.json) and tasks.py --close for "Mark built". Only the dock window may call these.
+const thyraTabs = require("./thyraTabs");
+const isDockSender = (event) => { try { return !!(approvalsWin && !approvalsWin.isDestroyed() && event.sender === approvalsWin.webContents); } catch (e) { return false; } };
+const thyraCfg = (k) => { try { return require("./appConfig").get(k); } catch (e) { return null; } };
+const thyraIdeasFile = () => path.join(app.getPath("userData"), "thyra-ideas.json");
+const thyraTaskDir = () => { const r = thyraCfg("sharedReports"); return r ? path.join(r, "tasks") : null; };
+const thyraTargets = () => { try { return thyraTabs.targets(thyraCfg("thyraIdeaTargets"), [thyraCfg("roleSecurity"), thyraCfg("roleCoo")], listAgents({ noAvatar: true }).map((a) => a.folderName).filter(Boolean)); } catch (e) { return []; } };
+function thyraIdeasNow() {
+  const d = thyraTaskDir(), stores = d ? thyraTabs.readStores(d) : null;
+  const reg = thyraTabs.readRegistryIdeas(path.join(registryBase(), "shared_registry"));
+  const ideas = thyraTabs.collectIdeas(stores || [], reg, thyraTabs.readLedger(thyraIdeasFile()), Date.now());
+  return { ok: !!(stores || reg.length), ideas, stores: stores || [] };
+}
+ipcMain.handle("thyra-tasks-load", (event) => {
+  if (!isDockSender(event)) return { ok: false, reason: "Not allowed." };
+  const d = thyraTaskDir(); if (!d) return { ok: false, reason: "The shared reports folder is not set (Setup)." };
+  const stores = thyraTabs.readStores(d); if (!stores) return { ok: false, reason: "The task folder could not be read." };
+  const groups = thyraTabs.buildTaskGroups(stores, Date.now());
+  return { ok: true, groups, totals: thyraTabs.taskTotals(groups), at: Date.now() };
+});
+ipcMain.handle("thyra-ideas-load", (event) => {
+  if (!isDockSender(event)) return { ok: false, reason: "Not allowed.", ideas: [], targets: [], destinations: [] };
+  const r = thyraIdeasNow();
+  return { ok: r.ok, reason: r.ok ? "" : "No task folder or registry could be read.", ideas: r.ideas, targets: thyraTargets(), destinations: thyraTabs.destinations(thyraCfg("thyraIdeaDestinations")), at: Date.now() };
+});
+let thyraIdeaSeq = 0;
+ipcMain.handle("thyra-idea-send", async (event, req) => {
+  if (!isDockSender(event)) return { ok: false, error: "not from the dock" };
+  try {
+    const key = req && typeof req.key === "string" ? req.key : "", target = req && typeof req.target === "string" ? req.target : "";
+    if (!thyraTabs.validInstruction(req && req.text)) return { ok: false, error: "Type a short instruction first." };
+    if (!thyraTargets().includes(target)) return { ok: false, error: "That agent is not in the list." };
+    const idea = thyraIdeasNow().ideas.find((i) => i.key === key); if (!idea) return { ok: false, error: "That idea is no longer open." };   // the idea text comes from the store, never from the dock
+    const text = thyraTabs.ideaMessage(idea, target, req.text, thyraCfg("ownerName"));
+    const r = await new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return resolve({ ok: false, error: "window not ready" });
+      const reqId = "ti" + (++thyraIdeaSeq) + "-" + Date.now();
+      const timer = setTimeout(() => { answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "no confirmation after 30 s; it may still arrive, check the agent's chat before sending again" }); }, 30000);
+      answerOnceWaiting.set(reqId, { resolve, timer });
+      try { mainWindow.webContents.send("thyra-idea-deliver", { reqId, agent: target, text }); } catch (e) { clearTimeout(timer); answerOnceWaiting.delete(reqId); resolve({ ok: false, error: "send failed" }); }
+    });
+    if (r.ok) { const led = thyraTabs.readLedger(thyraIdeasFile()); led.sent[key] = { to: target, at: new Date().toISOString(), text: String(req.text).replace(/\s+/g, " ").trim().slice(0, 300) }; thyraTabs.writeLedger(thyraIdeasFile(), led); }
+    return r.ok ? { ok: true } : { ok: false, error: r.error || "not delivered" };
+  } catch (e) { return { ok: false, error: "That did not work." }; }
+});
+ipcMain.handle("thyra-idea-built", async (event, req) => {
+  if (!isDockSender(event)) return { ok: false, error: "not from the dock" };
+  try {
+    const key = req && typeof req.key === "string" ? req.key : "", dest = req && typeof req.dest === "string" ? req.dest : "";
+    if (!thyraTabs.destinations(thyraCfg("thyraIdeaDestinations")).includes(dest)) return { ok: false, error: "Pick where it went." };
+    const idea = thyraIdeasNow().ideas.find((i) => i.key === key); if (!idea) return { ok: false, error: "That idea is no longer open." };
+    const led = thyraTabs.readLedger(thyraIdeasFile()); led.moved[key] = { to: dest, at: new Date().toISOString(), title: idea.title.slice(0, 160) };
+    if (!thyraTabs.writeLedger(thyraIdeasFile(), led)) return { ok: false, error: "Could not save the record." };
+    let closed = null;   // a task-sourced idea is also closed in its own store (one writer: tasks.py); failure keeps the ledger record, the idea is gone from the list either way
+    if (idea.source === "task") {
+      const py = thyraCfg("pythonExe"), tool = thyraCfg("tasksTool");
+      if (py && tool) closed = await new Promise((resolve) => require("child_process").execFile(py, [tool, "--agent", idea.agent, "--close", idea.id, "--note", "Built; moved to " + dest + " (marked in THYRA Ideas)"], { timeout: 20000, windowsHide: true }, (err) => resolve(!err)));
+      try { require("./syncGuard").drop(path.join(thyraTaskDir(), idea.agent + ".json")); } catch (e) { /* cache hygiene */ }
+    }
+    return { ok: true, closed };
+  } catch (e) { return { ok: false, error: "That did not work." }; }
+});
 // v1.152.0 ANSWER ONCE: a signed request written by shared_toolssk_confirm.py's window (the owner's click) is verified here (src/answerOnce.js
 // has the threat model) and handed to the renderer, which types the answer into the asking agent's chat exactly like a queue button.
 // A test instance only runs it when AGENT_DESKTOP_ANSWER_ONCE_DIR is set (never eats the live inbox).
@@ -6001,6 +6064,7 @@ try {
     userData: app.getPath("userData"),
     workspaceRoot: AGENTS_ROOT,
     testMode: testMode.TEST_MODE,
+    openInternal: (what) => { if (what === "thyra") { openApprovalsWindow(); return true; } return false; },   // v1.156.0: a My Tools card that opens a part of Agent Desktop itself (src/tools/internalOpen.js)
     log: (line) => logStuckWatchdog(line),   // ids and counts only
   });
 } catch (e) {

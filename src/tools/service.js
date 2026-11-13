@@ -21,6 +21,7 @@ function writeAtomic(file, text) {
   fs.renameSync(tmp, file);
 }
 
+const internalOpen = require("./internalOpen");
 function createService(o) {
   const env = o.env || process.env;
   const say = typeof o.log === "function" ? o.log : () => {};
@@ -105,7 +106,7 @@ function createService(o) {
       const lc = t.self || !t.launch ? null : launcher.check(t.launch, { roots: getRoots() });
       let tr = "n/a";
       if (lc && lc.ok) { try { tr = trust.evaluate(pins[t.id], { real: lc.real, args: lc.args, sha256: trust.hashFile(lc.real).sha256 }); } catch (e) { tr = "new"; } }
-      return model.toCard(t, { launchCheck: lc, procs, procsUnknown: needProcs && !Array.isArray(procs), stats: sv.byTool[t.id], today, trust: tr, pinnedAt: pins[t.id] && pins[t.id].approvedAt, screenshots: shotCards });
+      return internalOpen.decorate(model.toCard(t, { launchCheck: lc, procs, procsUnknown: needProcs && !Array.isArray(procs), stats: sv.byTool[t.id], today, trust: tr, pinnedAt: pins[t.id] && pins[t.id].approvedAt, screenshots: shotCards }));
     });
     return {
       ok: true, today, groups: model.groupCards(cards, { acmeco: cfg.get("toolsBasketLabel") }), tabs: model.groupByKind(cards, { acmeco: cfg.get("toolsBasketLabel") }), count: cards.length, thumbsPending: cards.some((c) => c.screenshots.some((s) => s.pending)),
@@ -121,6 +122,8 @@ function createService(o) {
     const t = loadCatalogue().tools.find((x) => x.id === id);   // always the file as it is NOW
     if (!t) return { ok: false, reason: "Unknown tool." };
     if (snap && JSON.stringify(snap.launch) !== JSON.stringify(t.launch)) return { ok: false, reason: "The catalogue changed since this page loaded. Close and reopen Tools." };
+    const inner = internalOpen.whatFor(t.id);   // v1.156.0 a card that opens a part of Agent Desktop (THYRA): no launcher, no trust prompt
+    if (inner) { let ok = false; try { ok = !!(o.openInternal && o.openInternal(inner)); } catch (e) { ok = false; } say("tools-start: id=" + t.id + " internal ok=" + ok); return ok ? { ok: true, opened: true } : { ok: false, reason: "Could not open it." }; }
     if (t.self) return { ok: false, reason: "Agent Desktop is already running." };
     const now = Date.now();
     if (now - (lastStart.get(id) || 0) < 5000) return { ok: false, reason: "Just started; give it a few seconds." };

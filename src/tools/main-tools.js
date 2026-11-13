@@ -4,7 +4,7 @@
 "use strict";
 const MAX_ARG_CHARS = 2048;
 
-function init({ ipcMain: raw, getMainWindow, dialog, userData, workspaceRoot, testMode, log, env, openExternal, nativeImage }) {
+function init({ ipcMain: raw, getMainWindow, dialog, userData, workspaceRoot, testMode, log, env, openExternal, nativeImage, openInternal }) {
   const say = typeof log === "function" ? log : () => {};
   let svc = null;
   // The confirmation is a NATIVE dialog opened here in the main process: a compromised page cannot click it.
@@ -18,7 +18,7 @@ function init({ ipcMain: raw, getMainWindow, dialog, userData, workspaceRoot, te
     const r = await dialog.showMessageBox(w || undefined, { type: d.changed ? "warning" : "question", buttons: ["Cancel", "Start and trust"], defaultId: 0, cancelId: 0, noLink: true, title: "Start " + d.name, message: (d.changed ? "Launcher changed: start " : "Start ") + d.name + "?", detail: lines.join("\n") });
     return r.response === 1;
   };
-  const service = () => (svc || (svc = require("./service").createService({ userData, workspaceRoot, testMode, log: say, env: env || process.env, openExternal, confirm, nativeImage })));
+  const service = () => (svc || (svc = require("./service").createService({ userData, workspaceRoot, testMode, log: say, env: env || process.env, openExternal, confirm, nativeImage, openInternal })));
   const handle = (channel, fn) => raw.handle(channel, async (event, arg) => {
     try {
       const w = typeof getMainWindow === "function" ? getMainWindow() : null;

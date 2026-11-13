@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld("api", {
   dockAskKeep: (req) => ipcRenderer.invoke("dock-ask-keep", req),   // v1.155.0 "Still waiting"
   dockAskUndo: (req) => ipcRenderer.invoke("dock-ask-undo", req),   // v1.155.0 restore an automatically cleared question
   dockAskDismiss: (req) => ipcRenderer.invoke("dock-ask-dismiss", req),   // v1.154.1 "No longer needed": clears an ask, no answer, no seal
+  thyraTasksLoad: () => ipcRenderer.invoke("thyra-tasks-load"),   // v1.156.0 Task list tab (read-only)
+  thyraIdeasLoad: () => ipcRenderer.invoke("thyra-ideas-load"),   // v1.156.0 Ideas tab
+  thyraIdeaSend: (req) => ipcRenderer.invoke("thyra-idea-send", req),
+  thyraIdeaBuilt: (req) => ipcRenderer.invoke("thyra-idea-built", req),
   onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
   approvalsWindow: (action) => ipcRenderer.invoke("approvals-window", { action }),   // "close" | "ontop-toggle" | "state"
 });
