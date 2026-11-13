@@ -197,9 +197,10 @@ body.dark #xp-reset-tip .xp-pc-use.under { background: #5ad0a8; }
   display: inline-flex; align-items: center; gap: 5px;
 }
 #model-badge:hover { filter: brightness(0.95); }
-#model-badge::after { content: "BE"; font-size: 0.7rem; opacity: 0.7; }
+#model-badge::after { content: "\25BE"; font-size: 0.7rem; opacity: 0.7; }
 .model-menu { position: fixed; z-index: 10000; min-width: 150px; padding: 4px; border-radius: 8px; background: var(--bg-sidebar); border: 1px solid var(--border, rgba(0,0,0,.15)); box-shadow: 0 6px 18px rgba(0,0,0,.18); display: flex; flex-direction: column; }
 .model-menu-item { text-align: left; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 0.8rem; cursor: pointer; }
+.model-menu-head { padding: 4px 10px 2px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
 .model-menu-item:hover { background: var(--bg-active); }
 .model-menu-item.current { font-weight: 700; }
 

@@ -2400,6 +2400,16 @@ function pinnedModelFor(sessionCwd) {
   }
 }
 
+// v1.158.0: effort level per agent (same file as the model); "default" means no --effort flag.
+function pinnedEffortFor(sessionCwd) {
+  try {
+    const cfg = readJsonFile(path.join(app.getPath("userData"), "agent-model.json"));
+    return require("./agentModel").effortFor(cfg, path.basename(path.dirname(sessionCwd)));
+  } catch (_) {
+    return "default";
+  }
+}
+
 // v1.96.0 wake-agent: remember the bg ids of the COO / Security sessions this app dispatched or found, so a wake request
 // can be traced (by process ancestry) to one of them. No-op for every other folder, in demo mode, or if the module fails.
 function wakeNoteSession(sessionCwd, id) {
@@ -2421,6 +2431,8 @@ async function dispatchBackgroundAgentImpl(shell, spawnEnv, sessionCwd, opts = {
     args = hasPriorSession(sessionCwd) ? ["--bg", "--continue"] : ["--bg"];
   }
   args.splice(1, 0, "--model", pinnedModelFor(sessionCwd)); // after --bg, before the prompt/resume args
+  const pinnedEffort = pinnedEffortFor(sessionCwd);
+  if (pinnedEffort !== "default") args.splice(3, 0, "--effort", pinnedEffort);
   // Every `claude --bg` in this app goes through here (the sweep, opening a
   // chat, resume-after-pause, conversation switch, login recovery), so this is
   // the one place the workspace-trust prompt is caught - see workspaceTrust.js
@@ -5201,6 +5213,15 @@ ipcMain.handle("set-agent-model", (event, { agentPath, model }) => {
   const am = require("./agentModel");
   const name = path.basename(String(agentPath || ""));
   return am.setAgentModel(path.join(app.getPath("userData"), "agent-model.json"), name, model);
+});
+ipcMain.handle("set-agent-effort", (event, { agentPath, effort }) => {
+  const am = require("./agentModel");
+  const name = path.basename(String(agentPath || ""));
+  return am.setAgentEffort(path.join(app.getPath("userData"), "agent-model.json"), name, effort);
+});
+ipcMain.handle("get-agent-effort", (event, { agentPath }) => {
+  const am = require("./agentModel");
+  return am.effortFor(am.readCfg(path.join(app.getPath("userData"), "agent-model.json")), path.basename(String(agentPath || "")));
 });
 ipcMain.handle("get-context-usage", (event, { agentPath }) => getLatestUsage(sessionCwdPath(agentPath)));
 

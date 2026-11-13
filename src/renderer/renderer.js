@@ -5770,6 +5770,7 @@ function hideRestartStatusBannerSoon(delayMs) {
 // v1.157.0: the model chip is a dropdown. Picking a model saves it for this agent (agent-model.json, the file
 // pinnedModelFor() reads) and then runs the normal Restart Session flow so it takes effect; the chip follows the latest turn.
 const MODEL_CHOICES = [["sonnet", "Sonnet 5.5"], ["opus", "Opus 5.5"], ["fable", "Fable 5.1"], ["haiku", "Haiku 5.5"]];
+const EFFORT_CHOICES = [["default", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra high"], ["max", "Max"]];
 let modelMenuEl = null;
 function closeModelMenu() { if (modelMenuEl) { modelMenuEl.remove(); modelMenuEl = null; } }
 modelBadgeEl.addEventListener("click", (ev) => {
@@ -5779,6 +5780,7 @@ modelBadgeEl.addEventListener("click", (ev) => {
   const cur = (modelBadgeEl.dataset.model || "").toLowerCase();
   const menu = document.createElement("div");
   menu.className = "model-menu";
+  const mh = document.createElement("div"); mh.className = "model-menu-head"; mh.textContent = "Model"; menu.appendChild(mh);
   for (const [id, label] of MODEL_CHOICES) {
     const b = document.createElement("button");
     b.type = "button";
@@ -5801,6 +5803,24 @@ modelBadgeEl.addEventListener("click", (ev) => {
     });
     menu.appendChild(b);
   }
+  const eh = document.createElement("div"); eh.className = "model-menu-head"; eh.textContent = "Effort"; menu.appendChild(eh);
+  const effortBtns = [];
+  for (const [id, label] of EFFORT_CHOICES) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "model-menu-item"; b.dataset.effort = id; b.textContent = label;
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const agentPath = activeAgentPath;
+      b.textContent = "Saving\u2026"; b.disabled = true;
+      try { await window.api.setAgentEffort(agentPath, id); } catch (err) { b.textContent = "Failed: " + (err && err.message || err); return; }
+      closeModelMenu();
+      restartSessionBtn.click(); // asks for confirmation; cancelling leaves the effort saved for the next start
+    });
+    effortBtns.push(b); menu.appendChild(b);
+  }
+  Promise.resolve(window.api.getAgentEffort(activeAgentPath)).then((cur2) => {
+    for (const b of effortBtns) if (b.dataset.effort === cur2) { b.classList.add("current"); b.textContent = "\u2713 " + b.textContent; }
+  }).catch(() => {});
   const r = modelBadgeEl.getBoundingClientRect();
   menu.style.left = Math.round(r.left) + "px";
   menu.style.top = Math.round(r.bottom + 4) + "px";
