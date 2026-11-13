@@ -229,7 +229,8 @@ function classifyReason(err, info, ageMs, code) {
     if (/refused|no key/i.test(e)) return { reason: "key_refused", reasonText: "17TRACK refused the key - check it under Tracking key." };
     if (/rate limit|too many requests/i.test(e)) return { reason: "rate", reasonText: "17TRACK was busy (rate limit) - it will be asked again." };
     if (/quota|insufficient|balance|exceed/i.test(e)) return { reason: "quota", reasonText: "The 17TRACK quota is used up, so this number cannot be tracked." };
-    if (/invalid|illegal|format|incorrect/i.test(e)) return { reason: "invalid", reasonText: "17TRACK says this is not a valid tracking number (" + clean(e, 80) + ")." };
+    if (/no tracking information/i.test(e)) return { reason: "not_found", reasonText: "17TRACK has no tracking information for this number yet. The carrier may not have scanned it, or it is not a tracking number." };   // 2026-11-13: "information" used to match /format/ and flag these as invalid
+    if (/invalid|illegal|\bformat\b|incorrect/i.test(e)) return { reason: "invalid", reasonText: "17TRACK says this is not a valid tracking number (" + clean(e, 80) + ")." };
     if (/carrier|detect|identif|rejected/i.test(e) || code != null) return { reason: "rejected", reasonText: "17TRACK did not accept this number: " + clean(e, 100) + "." };
     return { reason: "error", reasonText: "The tracking lookup failed: " + clean(e, 100) + "." };
   }

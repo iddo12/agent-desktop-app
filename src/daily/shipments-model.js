@@ -200,7 +200,14 @@ function cleanCount(v) { const n = Math.floor(Number(v)); return Number.isFinite
 function cleanItems(v) {
   const out = [];
   for (const x of Array.isArray(v) ? v : []) {
-    const name = clean(x && x.name, 100);
+    let rawName = String((x && x.name) || "").trim(), urlSrc = "";
+    if (/^https?:\/\//i.test(rawName)) {
+      // 2026-11-13: iHerb mails gave img src / product link hrefs as names. A product link carries the name in its path ("/p/<Name>/<id>"); an image URL is a picture, not a name.
+      const pm = rawName.match(/^https?:\/\/[^/\s]*\/(?:[a-z]{2}\/)?p\/([^/?#]+)/i);
+      if (pm) { try { rawName = decodeURIComponent(pm[1]); } catch (e) { rawName = pm[1]; } }
+      else { if (/\.(?:jpe?g|png|webp|gif)(?:\?|$)/i.test(rawName)) urlSrc = rawName; rawName = ""; }
+    }
+    const name = clean(rawName, 100);
     if (!name || out.length >= 12) continue;
     const it = { name, qty: Math.min(99, cleanCount(x.qty) || 1) };
     if (x.cat) it.cat = true;   // a category ("Shoes"), not a product name
@@ -327,6 +334,7 @@ function effectiveState(s, now, stuckDays) {
   // 2026-10-27: "final status for this shipment tracking number" = this carrier finished its leg and handed the parcel to another one (Aramex -> Amazon Italy); no later event is expected from it
   if (s.lastEvent && /final status for this shipment/i.test(s.lastEvent.text || "")) return s.state;
   if (s.carrier === "amazon" && !(s.events && s.events.length)) return s.state;   // tracked inside Amazon: nothing to poll, so "no update" means nothing
+  if (s.carrier === "other" && !(s.events && s.events.length) && !s.polledAt) return s.state;   // 2026-11-13: unknown carrier, never polled: silence means nothing (iHerb card said "No update for 12 days")
   const days = stuckDays || STUCK_DAYS_DEFAULT;
   if (now - (s.lastChangeAt || s.stateAt || 0) > days * DAY) return "exception_stuck";
   return s.state;
