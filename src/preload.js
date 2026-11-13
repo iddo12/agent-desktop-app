@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld("api", {
   dockAskUndo: (req) => ipcRenderer.invoke("dock-ask-undo", req),   // v1.155.0 restore an automatically cleared question
   ownerActivity: (agentPath) => ipcRenderer.invoke("owner-activity", agentPath),   // v1.155.0 the owner messaged this agent (time only)
   dockAskDismiss: (req) => ipcRenderer.invoke("dock-ask-dismiss", req),   // v1.154.1 "No longer needed": clears an ask, no answer, no seal
+  onThyraIdeaDeliver: (callback) => { ipcRenderer.on("thyra-idea-deliver", (event, payload) => callback(payload)); },   // v1.156.0 main -> this window: type an idea message into the chosen agent's chat
   onDockAskDeliver: (callback) => { ipcRenderer.on("dock-ask-deliver", (event, payload) => callback(payload)); },   // main -> this window: type the chosen answer into the asking agent's chat
   onApprovalsChanged: (callback) => { ipcRenderer.on("approvals-changed", () => callback()); },
   getTranscriptQuietMs: (agentPath) => ipcRenderer.invoke("get-transcript-quiet-ms", { agentPath }),

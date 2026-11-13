@@ -90,6 +90,9 @@ const KEYS = {
   roleSecurity: { kind: "text", segment: true, star: true, label: "Folder name of your security agent", derive: () => null },
   roleOptimization: { kind: "text", segment: true, star: true, label: "Folder name of your maintenance / optimization agent (a trailing * matches the start)", derive: () => null },
   roleSeo: { kind: "text", segment: true, star: true, label: "Folder name of your SEO agent", derive: () => null },
+  // THYRA Ideas (v1.156.0): who an idea can be sent to (agent folder names separated by ;, a trailing * = starts with; unset = the security and lead roles) and where a built idea can be recorded as moved
+  thyraIdeaTargets: { kind: "text", max: 2000, label: "THYRA Ideas: agents an idea can be sent to (folder names separated by ;)", derive: () => null },
+  thyraIdeaDestinations: { kind: "text", max: 1000, label: "THYRA Ideas: where a built idea can be recorded as moved (names separated by ;; default My Tools; Product Development; Software Engineering; LensVid tools)", derive: () => null },
   // ARGUS: which scheduled-job name prefix belongs to which role, "PREFIX=role;PREFIX=role" (roles: coo, security, optimization, seo), and short display names "folder=Short;folder=Short"
   argusJobPrefixes: { kind: "text", label: "ARGUS: scheduled-job prefixes per role (for example SEC_=security;OPT_=optimization)", derive: () => null },
   argusShortNames: { kind: "text", label: "ARGUS: short names for agent folders (for example Some Folder=Short)", derive: () => null },

@@ -52,3 +52,65 @@ body[data-collapsed="1"] .ap-head { border-bottom: 0; padding: 3px 6px; flex-wra
 #approvals-popup .ap-stale { font-size: 11px; color: #a4551f; font-weight: 600; }
 #approvals-popup .ap-keepwait { font-size: 11px; padding: 1px 8px; border-radius: 6px; cursor: pointer; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
 #approvals-popup .ap-cleared { opacity: .85; }
+
+/* v1.156.0 THYRA tabs: Approvals | Task list | Ideas. Colours: amber = needs you, green = working/ok, grey = not started, red ONLY for stuck (blocked) and errors. */
+#approvals-popup .ap-tabs { display: flex; gap: 2px; padding: 4px 8px 0; flex: 0 0 auto; border-bottom: 1px solid #ecd2c6; }
+#approvals-popup .ap-tab { background: none; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 3px 9px; font-size: 12px; color: #7a2a14; cursor: pointer; }
+#approvals-popup .ap-tab-on { background: #fff; border-color: #ecd2c6; font-weight: 700; color: #3b1c10; box-shadow: inset 0 3px 0 #c96442; }
+#approvals-popup .ap-tab-n { margin-left: 5px; background: #8a6a5c; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; }
+#approvals-popup .ap-tab-n.ap-tab-hot { background: #c96442; }
+#approvals-popup .tt-pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 0 0 0 8px; }
+#approvals-popup .tt-bar { display: flex; gap: 5px; padding: 6px 12px 4px 0; flex: 0 0 auto; }
+#approvals-popup .tt-search, #approvals-popup .tt-in { flex: 1 1 120px; min-width: 0; border: 1px solid #d9b8a8; border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; background: #fff; color: #3b1c10; }
+#approvals-popup .tt-btn { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid #c96442; background: #fff; color: #3b1c10; }
+#approvals-popup .tt-btn.tt-primary { background: #c96442; color: #fff; }
+#approvals-popup .tt-btn.tt-busy { opacity: .7; font-style: italic; }
+#approvals-popup .tt-sum { font-size: 11px; opacity: .8; padding: 0 12px 3px 0; flex: 0 0 auto; }
+#approvals-popup .tt-list { flex: 1 1 auto; min-height: 0; overflow-y: scroll; overflow-x: hidden; padding-right: 12px; scrollbar-gutter: stable; }
+#approvals-popup .tt-list::-webkit-scrollbar { width: 10px; }
+#approvals-popup .tt-list::-webkit-scrollbar-track { background: #f3e3da; border-left: 1px solid #ecd2c6; }
+#approvals-popup .tt-list::-webkit-scrollbar-thumb { background: #c96442; border-radius: 5px; border: 2px solid #f3e3da; min-height: 30px; }
+#approvals-popup .tt-note { padding: 14px 4px; font-size: 12px; opacity: .8; text-align: center; }
+#approvals-popup .tt-err { color: #b3261e; opacity: 1; }
+#approvals-popup .tt-ok { color: #2e7d32; }
+#approvals-popup .tt-msg { font-size: 11px; margin: 3px 0; overflow-wrap: anywhere; }
+#approvals-popup .tt-agent { border-bottom: 1px solid #ecd2c6; }
+#approvals-popup .tt-agent.tt-hot { box-shadow: inset 3px 0 0 #e0a030; }
+#approvals-popup .tt-ahead { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 4px 4px 4px 6px; border-radius: 0; cursor: pointer; color: inherit; }
+#approvals-popup .tt-ahead:hover { background: #fdeee5; }
+#approvals-popup .tt-l1 { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
+#approvals-popup .tt-arrow { font-family: Consolas, monospace; width: 10px; color: #8a4a30; }
+#approvals-popup .tt-aname { font-weight: 700; overflow-wrap: anywhere; }
+#approvals-popup .tt-count { font-size: 11px; opacity: .75; }
+#approvals-popup .tt-l2 { display: block; font-size: 11px; opacity: .75; margin: 1px 0 0 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#approvals-popup .tt-chip { font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 8px; color: #fff; }
+#approvals-popup .tt-c-needs { background: #c47f10; }
+#approvals-popup .tt-c-stuck { background: #b3261e; }
+#approvals-popup .tt-abody { padding: 0 0 5px 14px; }
+#approvals-popup .tt-task { display: flex; gap: 6px; align-items: flex-start; padding: 2px 0; font-size: 12px; cursor: pointer; min-width: 0; }
+#approvals-popup .tt-ttext { flex: 1 1 auto; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+#approvals-popup .tt-ttext.tt-open { display: block; }
+#approvals-popup .tt-age { flex: 0 0 auto; font-size: 10px; opacity: .7; white-space: nowrap; margin-left: auto; }
+#approvals-popup .tt-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; display: inline-block; }
+#approvals-popup .tt-d-needs { background: #e0a030; }
+#approvals-popup .tt-d-stuck { background: #b3261e; }
+#approvals-popup .tt-d-working { background: #2e7d32; }
+#approvals-popup .tt-d-new { background: #a89a92; }
+#approvals-popup .tt-legend { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 12px 5px 0; border-top: 1px solid #ecd2c6; font-size: 10px; opacity: .85; }
+#approvals-popup .tt-leg { display: inline-flex; align-items: center; gap: 4px; }
+#approvals-popup .tt-leg .tt-dot { margin-top: 0; }
+#approvals-popup .tt-idea { padding: 6px 0 6px 2px; border-bottom: 1px solid #ecd2c6; }
+#approvals-popup .tt-itop { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+#approvals-popup .tt-badge { font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 8px; color: #fff; }
+#approvals-popup .tt-b-task { background: #8a6a5c; }
+#approvals-popup .tt-b-reg { background: #4a6fa5; }
+#approvals-popup .tt-b-sent { background: #2e7d32; }
+#approvals-popup .tt-ibody { cursor: pointer; margin: 2px 0; }
+#approvals-popup .tt-ititle { font-weight: 700; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+#approvals-popup .tt-idetail { font-size: 12px; opacity: .85; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; white-space: pre-wrap; }
+#approvals-popup .tt-idea.tt-open .tt-ititle, #approvals-popup .tt-idea.tt-open .tt-idetail { display: block; -webkit-line-clamp: unset; }
+#approvals-popup .tt-imeta { font-size: 10px; opacity: .7; overflow-wrap: anywhere; }
+#approvals-popup .tt-btns { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
+#approvals-popup .tt-form { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; margin-top: 5px; padding: 5px; background: #fdeee5; border-radius: 6px; }
+#approvals-popup .tt-sel { border: 1px solid #d9b8a8; border-radius: 6px; padding: 2px 4px; font: inherit; font-size: 12px; background: #fff; color: #3b1c10; max-width: 100%; }
+#approvals-popup .tt-lbl { font-size: 11px; }

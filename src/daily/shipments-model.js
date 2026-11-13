@@ -336,7 +336,7 @@ function effectiveState(s, now, stuckDays) {
   if (s.lastEvent && /final status for this shipment/i.test(s.lastEvent.text || "")) return s.state;
   if (s.carrier === "amazon" && !(s.events && s.events.length)) return s.state;   // tracked inside Amazon: nothing to poll, so "no update" means nothing
   if (s.carrier === "other" && !(s.events && s.events.length) && !s.polledAt) return s.state;   // 2026-11-13: unknown carrier, never polled: silence means nothing (iHerb card said "No update for 12 days")
-  // 2026-11-13 (Iddo screenshot): a parcel that never produced a single tracking event (17TRACK has nothing / number not accepted) is not "stuck" - we simply do not know; it shows as "can't track yet", not as a red Problem
+  // 2026-11-13 (owner screenshot): a parcel that never produced a single tracking event (17TRACK has nothing / number not accepted) is not "stuck" - we simply do not know; it shows as "can't track yet", not as a red Problem
   if (!(s.events && s.events.length) && !s.lastEvent) return s.state;
   const days = stuckDays || STUCK_DAYS_DEFAULT;
   if (now - (s.lastChangeAt || s.stateAt || 0) > days * DAY) return "exception_stuck";

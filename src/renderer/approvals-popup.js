@@ -13,6 +13,9 @@
   const fmt = (ms) => { const s = Math.round(ms / 1000); return s < 90 ? s + " s" : s < 5400 ? Math.round(s / 60) + " min" : s < 172800 ? (s / 3600).toFixed(1) + " h" : Math.round(s / 86400) + " d"; };
   // v1.154.0 "Questions for you": the open asks under the permission prompts (src/renderer/thyra-asks.js); absent when that script or its IPC is missing
   const asks = window.ThyraAsks && window.api.dockAsksList && window.api.dockAskAnswer ? window.ThyraAsks.create({ api: window.api, el, fmt, onChange: () => draw() }) : null;
+  // v1.156.0 THYRA tabs: Approvals (this list) | Task list | Ideas, in the dock window only; the two new tabs read their data when first opened (src/renderer/thyra-tabs.js)
+  let tab = "approvals", lastCounts = "", tabs = null;
+  if (WIN && window.ThyraTabs && window.api.thyraTasksLoad && window.api.thyraIdeasLoad) tabs = window.ThyraTabs.create({ api: window.api, el, onChange: () => { const c = tabs.counts(), k = c.tasks + "|" + c.ideas; if (k !== lastCounts) { lastCounts = k; lastDraw = ""; draw(); } } });
   const waiting = () => items.length + (asks ? asks.recentCount() : 0);   // what the chip and the collapsed tab count: prompts + recent asks
   function ensure() {
     if (box) return box;
@@ -26,11 +29,12 @@
     if (!WIN && (docked || !items.length || (hidden && hiddenKey === k))) { b.classList.add("hidden"); b.textContent = ""; lastDraw = ""; return; }
     if (hidden && hiddenKey !== k) hidden = false;     // something new arrived: show again
     if (k !== shownKey) { shownKey = k; changedAt = Date.now(); setTimeout(draw, 1100); }   // buttons stay disabled for 1 s after the list changes, so a click cannot land on a different set than the one the owner was looking at
-    const sig = k + "|" + (asks ? asks.sig() : "") + "|" + collapsed + "|" + onTop + "|" + busy + "|" + (Date.now() - changedAt < 1000) + "|" + Array.from(msgs.entries()).join(",");
+    const sig = tab + "|" + lastCounts + "|" + k + "|" + (asks ? asks.sig() : "") + "|" + collapsed + "|" + onTop + "|" + busy + "|" + (Date.now() - changedAt < 1000) + "|" + Array.from(msgs.entries()).join(",");
     if (sig === lastDraw) { b.querySelectorAll(".ap-wait").forEach((w, i) => { if (items[i]) w.textContent = fmt(Date.now() - items[i].since); }); return; }
     lastDraw = sig;
     const settling = Date.now() - changedAt < 1000;
     const ae = document.activeElement, keepRid = ae && ae.classList && ae.classList.contains("ap-reply-in") && ae.dataset ? ae.dataset.rid : "", keepSel = keepRid ? [ae.selectionStart, ae.selectionEnd] : null;   // typing must survive a repaint (critic S6)
+    const aeTab = ae && ae.closest && ae.closest(".tt-pane") ? ae : null;   // v1.156.0 typing in a tab's search box survives a repaint of the frame around it
     b.textContent = "";
     const act = items.filter((i) => i.answerable);
     if (WIN) document.body.dataset.collapsed = collapsed ? "1" : "";
@@ -45,6 +49,13 @@
       if (collapsed) head.append(col); else head.append(pin, col, mn, cl);
     } else head.append(x);
     if (WIN && collapsed) { b.append(head); b.classList.remove("hidden"); return; }
+    if (WIN && tabs) {
+      const bar = el("div", "ap-tabs"); bar.setAttribute("role", "tablist");
+      const c = tabs.counts(), mk = (id, label, n, hot) => { const t = el("button", "ap-tab" + (tab === id ? " ap-tab-on" : ""), label); t.type = "button"; t.setAttribute("role", "tab"); t.setAttribute("aria-selected", tab === id ? "true" : "false"); if (n) { const nb = el("span", "ap-tab-n" + (hot ? " ap-tab-hot" : ""), String(n)); t.append(nb); } t.addEventListener("click", (ev) => { if (!ev.isTrusted || tab === id) return; tab = id; lastDraw = ""; draw(); }); return t; };
+      bar.append(mk("approvals", "Approvals", waiting(), waiting() > 0), mk("tasks", "Task list", c.tasks, c.tasks > 0), mk("ideas", "Ideas", c.ideas, false));
+      b.append(head, bar);
+      if (tab !== "approvals") { b.append(tabs.show(tab)); b.classList.remove("hidden"); if (aeTab && aeTab.isConnected) { try { aeTab.focus(); } catch (e) { /* gone */ } } return; }
+    }
     const list = el("div", "ap-list");
     for (const it of items) {
       const row = el("div", "ap-item"), top = el("div", "ap-top");
@@ -68,7 +79,7 @@
       foot.append(all, da);
     }
     if (WIN && !list.children.length) list.append(el("div", "ap-empty", "Nothing waiting"));
-    b.append(head, list, foot, el("div", "ap-note", STR.note));
+    if (WIN && tabs) b.append(list, foot, el("div", "ap-note", STR.note)); else b.append(head, list, foot, el("div", "ap-note", STR.note));
     b.classList.remove("hidden");
     if (keepRid) { const again = Array.from(b.querySelectorAll(".ap-reply-in")).find((x) => x.dataset.rid === keepRid); if (again && !again.disabled) { again.focus(); try { again.setSelectionRange(keepSel[0], keepSel[1]); } catch (e) { /* not selectable */ } } }
   }

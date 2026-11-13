@@ -307,7 +307,7 @@ function pairByAlt(items, imgs, merchant, count) {
   });
   if (out.some((x) => x.src) || (out.length && !out.every((x) => x.cat))) return out;
   // no usable names from the text: the alt texts are the product names (all categories or none). A known count caps the list; otherwise at most 6.
-  // 2026-11-13: with no known count the picture alts of a whole shop mail include "you may also like" rows (iHerb listed products Iddo never ordered), so no count = no invented items
+  // 2026-11-13: with no known count the picture alts of a whole shop mail include "you may also like" rows (iHerb listed products the owner never ordered), so no count = no invented items
   if (!(count > 0)) return out;
   const take = cands.slice(0, Math.min(count, 12));
   return take.map((c) => ({ name: M.clean(c.alt, 100), qty: 1, src: c.src }));
