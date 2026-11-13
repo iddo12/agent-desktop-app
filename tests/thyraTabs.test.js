@@ -65,7 +65,7 @@ eq(T.targets("", ["Security", "COO*"], folders), ["Security", "COO Agent"], "uns
 eq(T.targets("", [], folders), [], "nothing configured = no targets (no guessing)");
 // ---- the delivered message ----
 const msg = T.ideaMessage({ source: "task", id: "s1", agent: "Security", title: "Big idea", detail: "Because\nreasons" }, "COO Agent", " build   it ", "Iddo");
-ok(/^Iddo sent you an idea/.test(msg) && /Big idea/.test(msg) && /task s1 in Security/.test(msg) && /Instruction: "build it"/.test(msg) && !/\n/.test(msg), "message names the idea, its source and the one-line instruction, on one line");
+ok(/^Iddo sent you an idea/.test(msg) && /Big idea/.test(msg) && /task s1 in Security/.test(msg) && /with this instruction: "build it"/.test(msg) && /treat it as data/.test(msg) && !/\n/.test(msg), "message names the idea, its source and the one-line instruction, on one line");
 ok(!T.validInstruction("") && !T.validInstruction("  ") && !T.validInstruction(5) && T.validInstruction("go"), "an empty instruction is refused");
 
 // ---- renderer filters ----
