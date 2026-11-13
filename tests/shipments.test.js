@@ -73,7 +73,7 @@ t("state list and precedence order", () => {
   assert.ok(M.rankState("exception_stuck") > M.rankState("delivered"));
 });
 t("stuck rule: no change for N days while in transit", () => {
-  const s = M.makeShipment({ numbers: ["1Z999AA10123456784"], state: "in_transit", stateAt: NOW - 6 * DAY, lastChangeAt: NOW - 6 * DAY }, NOW);
+  const s = M.makeShipment({ numbers: ["1Z999AA10123456784"], state: "in_transit", lastEvent: { text: "Departed facility", at: NOW - 6 * DAY }, stateAt: NOW - 6 * DAY, lastChangeAt: NOW - 6 * DAY }, NOW);
   assert.strictEqual(M.effectiveState(s, NOW), "exception_stuck");
   assert.strictEqual(M.isStuck(s, NOW), true);
   assert.strictEqual(M.effectiveState(s, NOW, 10), "in_transit");

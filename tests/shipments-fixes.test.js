@@ -177,7 +177,7 @@ t("fix 4: a store migrated at 4 whose only number is the owner's known-wrong pla
   const items = svc._loadStore().items;
   assert.deepStrictEqual(items[0].numbers.map((x) => x.no), [ph]);
   assert.ok(fs.readdirSync(dir).some((n) => /\.bak_/.test(n)), "backup first");
-  assert.strictEqual(raw().migrated, 5);
+  assert.strictEqual(raw().migrated, 6);
 });
 t("F15: a number that used to be KNOWN_JUNK on a manual Amazon card with events is never touched, even in a rerun", () => {
   const c = card({ id: "z", merchant: "Amazon", source: "manual", numbers: [{ no: "5550001111", carrier: "aramex", carrierSet: true }], events: [{ at: 7, text: "Delivered to courier", place: "" }], msgIds: ["m-3"] });
@@ -237,13 +237,12 @@ t("F2: Amazon shipped mail: pictures pair by alt text, logo and recommendations 
   assert.strictEqual(c.items[1].src, "https://m.media-amazon.com/images/I/bbb.jpg");
   assert.strictEqual(c.itemCount, 2);
 });
-t("F7: iHerb mail with no item text: the alt becomes the name, the picture goes with it", () => {
+t("F7 (2026-11-13): iHerb mail with no item text and no count: no invented items (alts include 'you may also like' rows)", () => {
   const c = E.extractShipments({ from: "iHerb <shipping@iherb.com>", subject: "Your iHerb order has shipped", date: "2026-10-20T08:00:00Z", messageId: "<ih2@iherb.com>", verified: "iherb.com", body: "Your order has shipped.\nTracking number: XLT123456789\n", imageAlts: [
     { src: "https://s3.images-iherb.com/logo/iherb.png", alt: "iHerb" },
     { src: "https://s3.images-iherb.com/abc/l/1.jpg", alt: "Vitamin Example 500 mg, 90 Capsules" },
     { src: "https://cloudinary.images-iherb.com/image/upload/2.jpg", alt: "Protein Sample Powder, Vanilla" }] }, NOW)[0];
-  assert.deepStrictEqual(c.items.map((x) => x.name), ["Vitamin Example 500 mg, 90 Capsules", "Protein Sample Powder, Vanilla"]);
-  assert.ok(c.items.every((x) => /^https:\/\//.test(x.src)));
+  assert.deepStrictEqual(c.items, []);
 });
 t("F19: no pictures when the sender failed DMARC, or the host is not a known shop image host", () => {
   assert.ok(E.extractShipments(AMZ({ verified: "" }), NOW)[0].items.every((x) => !x.src));

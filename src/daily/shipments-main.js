@@ -33,7 +33,7 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
   let timer = null;
   let scanning = null;
 
-  const MIGRATION = 5;   // 5 (2026-10-31): NUMBER_FIXES re-applied (the old PH-twin rule had kept the wrong plain number) + the duplicate check;  // 4: duplicate cards made from one mail are merged (dedupeByMail);  2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
+  const MIGRATION = 6;   // 5 (2026-10-31): NUMBER_FIXES re-applied (the old PH-twin rule had kept the wrong plain number) + the duplicate check;  // 4: duplicate cards made from one mail are merged (dedupeByMail);  2: order numbers stored as tracking numbers (M.migrateWrongNumbers); 3: guessed numbers on Amazon mail cards (see junkAmazon)
   // 3 (2026-10-27): Amazon shop mails carry link ids that were taken for a carrier number (2300000002 -> an old Lyon parcel).
   // Drop a number from an Amazon email card when its format is only a weak guess and the owner never chose its carrier; the
   // tracking events that came from it go with it. Returns the number of cards changed.
@@ -100,6 +100,10 @@ function createService({ file, settingsFile, readStore, writeJsonAtomic, tracker
       // 5: the owner-confirmed number fixes again (idempotent; proven numbers are never touched) for stores migrated by the inverted PH rule
       const r5 = st.migrated >= 2 && st.migrated < 5 ? M.migrateWrongNumbers(st.items, clock()) : { changed: false, moved: [], fixed: [] };
       if (r5.changed) { r.changed = true; r.moved = (r.moved || []).concat(r5.moved); r.fixed = (r.fixed || []).concat(r5.fixed); }
+      // 6 (2026-11-13): iHerb items scraped from the mail's picture alts / links included "you may also like" products nobody ordered; keep only items the owner confirmed with a screenshot (they carry a thumb)
+      let promo = 0;
+      if (st.migrated < 6) for (const s of st.items) if (s.merchant === "iHerb" && s.source === "email" && (s.items || []).length && !s.items.some((x) => x.thumb)) { promo += s.items.length; s.items = []; s.itemCount = 0; }
+      if (promo) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; log("shipments: removed " + promo + " scraped iHerb item(s) that were recommendations, not the order"); }
       if (dd) { r.changed = true; log("shipments: merged " + dd + " duplicate card(s) made from the same mail"); }
       if (junk || dd) { r.changed = true; r.moved = r.moved || []; r.fixed = r.fixed || []; }
       if (r.changed) {

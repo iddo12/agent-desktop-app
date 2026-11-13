@@ -152,7 +152,7 @@ t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id
   const svc = S.createService({ file, readStore, writeJsonAtomic, tracker: noTracker, getMails: async () => [], now: () => NOW, notices: [], say: () => {}, testMode: true });
   await svc.load({});
   const out = JSON.parse(fs.readFileSync(file, "utf8"));
-  assert.strictEqual(out.migrated, 5);
+  assert.strictEqual(out.migrated, 6);
   assert.strictEqual(out.items.length, 3, JSON.stringify(out.items.map((x) => [x.merchant, x.orderId, x.numbers.map((n) => n.no)])));
   const ali1 = out.items.find((x) => x.orderId === "00100000000111");
   assert.strictEqual(ali1.numbers.length, 0);
@@ -165,7 +165,7 @@ t("migration 4: cards sharing a mail id merge into one; PH twin and own-order-id
 t("amazon cards (tracked inside Amazon) are never 'stuck'; category items are flagged; paste box answers to hover and shows progress", () => {
   const a = M.makeShipment({ merchant: "Amazon", carrier: "amazon", state: "shipped", numbers: [{ no: "TBA123456789012", carrier: "amazon" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
   assert.strictEqual(M.effectiveState(a, NOW, 10), "shipped");
-  const ups = M.makeShipment({ merchant: "X", carrier: "ups", state: "in_transit", numbers: [{ no: "1Z999AA10123456784", carrier: "ups" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
+  const ups = M.makeShipment({ merchant: "X", carrier: "ups", state: "in_transit", lastEvent: { text: "Departed facility", at: NOW - 30 * 86400000 }, numbers: [{ no: "1Z999AA10123456784", carrier: "ups" }], lastChangeAt: NOW - 30 * 86400000, stateAt: NOW - 30 * 86400000 }, NOW);
   assert.strictEqual(M.effectiveState(ups, NOW, 10), "exception_stuck");
   assert.ok(E.extractItems("", "Shipped 2 items: Shoes, Adhesives").items.every((x) => x.cat));
   assert.ok(!E.extractItems(["Hi", "Thing", "B&H #A1", "QTY: 1"].join(String.fromCharCode(10)), "").items[0].cat);
