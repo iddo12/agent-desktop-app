@@ -1288,7 +1288,7 @@ function createWindow() {
       if (template.length) template.push({ type: "separator" });
       template.push(
         { label: "Copy Link Address", click: () => clipboard.writeText(params.linkURL) },
-        { label: "Open Link in Browser", click: () => shell.openExternal(params.linkURL) }
+        { label: "Open Link in Browser", click: () => { try { const u = new URL(params.linkURL); if (u.protocol === "https:" || u.protocol === "http:") shell.openExternal(u.href); } catch (e) {} } }
       );
     }
     if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
