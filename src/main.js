@@ -5197,6 +5197,11 @@ ipcMain.handle("list-archived-days", (event, { agentPath }) => {
 
 ipcMain.handle("read-archived-day", (event, { agentPath, dateKey }) => readArchivedDay(agentPath, dateKey));
 
+ipcMain.handle("set-agent-model", (event, { agentPath, model }) => {
+  const am = require("./agentModel");
+  const name = path.basename(String(agentPath || ""));
+  return am.setAgentModel(path.join(app.getPath("userData"), "agent-model.json"), name, model);
+});
 ipcMain.handle("get-context-usage", (event, { agentPath }) => getLatestUsage(sessionCwdPath(agentPath)));
 
 // v1.68.0: the memoised blocks array is the same object while the transcript files are unchanged. A renderer that

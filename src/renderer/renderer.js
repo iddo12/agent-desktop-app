@@ -2627,7 +2627,8 @@ async function refreshContextUsage(agentPath) {
   }
   if (usage && usage.model) {
     modelBadgeEl.textContent = prettyModelName(usage.model);
-    modelBadgeEl.title = "The model this agent used for its most recent reply (" + usage.model + "). Agents can switch models, so this follows the latest turn.";
+    modelBadgeEl.dataset.model = usage.model;
+    modelBadgeEl.title = "Click to change this agent's model (saved, then the session restarts). Last reply used " + usage.model + ".";
     modelBadgeEl.classList.remove("hidden");
   } else {
     modelBadgeEl.classList.add("hidden");
@@ -5765,6 +5766,49 @@ function hideRestartStatusBannerSoon(delayMs) {
     restartStatusBannerEl.className = "restart-status-banner hidden";
   }, delayMs);
 }
+
+// v1.157.0: the model chip is a dropdown. Picking a model saves it for this agent (agent-model.json, the file
+// pinnedModelFor() reads) and then runs the normal Restart Session flow so it takes effect; the chip follows the latest turn.
+const MODEL_CHOICES = [["sonnet", "Sonnet 5.5"], ["opus", "Opus 5.5"], ["fable", "Fable 5.1"], ["haiku", "Haiku 5.5"]];
+let modelMenuEl = null;
+function closeModelMenu() { if (modelMenuEl) { modelMenuEl.remove(); modelMenuEl = null; } }
+modelBadgeEl.addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  if (modelMenuEl) { closeModelMenu(); return; }
+  if (!activeAgentPath) return;
+  const cur = (modelBadgeEl.dataset.model || "").toLowerCase();
+  const menu = document.createElement("div");
+  menu.className = "model-menu";
+  for (const [id, label] of MODEL_CHOICES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "model-menu-item" + (cur.includes(id) ? " current" : "");
+    b.textContent = (cur.includes(id) ? "✓ " : "") + label;
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const agentPath = activeAgentPath;
+      b.textContent = "Saving…"; b.disabled = true;
+      try {
+        await window.api.setAgentModel(agentPath, id);
+      } catch (err) {
+        b.textContent = "Failed: " + (err && err.message || err);
+        return;
+      }
+      closeModelMenu();
+      modelBadgeEl.textContent = label;
+      modelBadgeEl.dataset.model = id;
+      restartSessionBtn.click(); // asks for confirmation; cancelling leaves the model saved for the next start
+    });
+    menu.appendChild(b);
+  }
+  const r = modelBadgeEl.getBoundingClientRect();
+  menu.style.left = Math.round(r.left) + "px";
+  menu.style.top = Math.round(r.bottom + 4) + "px";
+  document.body.appendChild(menu);
+  modelMenuEl = menu;
+});
+document.addEventListener("click", closeModelMenu);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModelMenu(); });
 
 restartSessionBtn.addEventListener("click", async () => {
   if (!activeAgentPath || switchingConversation) return;

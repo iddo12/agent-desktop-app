@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld("api", {
   listConversations: (agentPath) => ipcRenderer.invoke("list-conversations", { agentPath }),
   renameConversation: (agentPath, sessionId, title) => ipcRenderer.invoke("rename-conversation", { agentPath, sessionId, title }),
   switchConversation: (agentPath, opts) => ipcRenderer.invoke("switch-conversation", { agentPath, ...opts }),
+  setAgentModel: (agentPath, model) => ipcRenderer.invoke("set-agent-model", { agentPath, model }),
   getContextUsage: (agentPath) => ipcRenderer.invoke("get-context-usage", { agentPath }),
   getUsageWindows: () => ipcRenderer.invoke("get-usage-windows"),
   getInferredPlanId: () => ipcRenderer.invoke("get-inferred-plan-id"),
