@@ -59,6 +59,8 @@ function validateTool(raw) {
   // kind is a soft field: an unknown value does not reject the entry; it loads as "app" and kindBad lets the service report the code.
   e.kind = "app"; e.kindBad = false;
   if (raw.kind != null) { if (KINDS.includes(raw.kind)) e.kind = raw.kind; else e.kindBad = true; }
+  // updated (v1.155.15): last meaningful build/release/update date, YYYY-MM-DD; soft field: a bad value loads as '' (the card sorts last) instead of rejecting the entry
+  e.updated = isStr(raw.updated) && DATE.test(raw.updated) ? raw.updated : "";
   e.self = raw.self === true;                       // Agent Desktop's own card: always Running, never launches itself
   if (raw.repo == null || raw.repo === "") e.repo = null; else if (isStr(raw.repo) && REPO.test(raw.repo)) e.repo = raw.repo; else bad("repo", "bad-repo");
   if (raw.release == null) e.release = { url: null, date: null, notes: null };

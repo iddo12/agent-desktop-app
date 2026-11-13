@@ -206,6 +206,7 @@
     const meta = el("div", "tl-meta");
     meta.appendChild(el("span", "tl-ver", card.version ? "v" + card.version.replace(/^v/i, "") : "no version"));
     if (card.owner) meta.appendChild(el("span", "tl-owner", card.owner));
+    if (card.updated) { const u = el("span", "tl-upd", "Updated " + card.updated); u.title = "Last meaningful build, release or update"; meta.appendChild(u); }
     c.appendChild(meta);
     c.appendChild(el("div", "tl-next", card.next ? "Next: " + card.next : "Next: nothing planned"));
     if (card.uncertain && card.uncertain.length) c.appendChild(el("div", "tl-guess", "Guess, to confirm: " + card.uncertain.join(", ")));
@@ -285,7 +286,7 @@
     body.appendChild(el("div", "tl-purpose", card.purpose));
     body.appendChild(section("About", textBlock(card.description, "No long description yet.")));
     const facts = el("table", "tl-table");
-    for (const [k, v] of [["Version", card.version || "not set"], ["Next", card.next || "nothing planned"], ["Owner agent", card.owner || "not set"], ["Folder", card.folder || "not set"], ["Launcher file (resolved)", card.resolved || "none"], ["Launcher trust", trustText(card)], ["Visibility", card.visibility], ["Last release date", card.release.date || "none"]]) {
+    for (const [k, v] of [["Version", card.version || "not set"], ["Next", card.next || "nothing planned"], ["Owner agent", card.owner || "not set"], ["Folder", card.folder || "not set"], ["Launcher file (resolved)", card.resolved || "none"], ["Launcher trust", trustText(card)], ["Visibility", card.visibility], ["Last updated", card.updated || "not set"], ["Last release date", card.release.date || "none"]]) {
       const r = el("tr"); r.append(el("th", "", k), el("td", "", v)); facts.appendChild(r);
     }
     body.appendChild(section("Facts", facts));

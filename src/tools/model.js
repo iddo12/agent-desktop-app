@@ -58,6 +58,7 @@ function toCard(tool, ctx) {
     status: tool.status, statusLabel: STATUS_LABELS[tool.status] || tool.status,
     version: tool.version || "", next: tool.next || "", owner: tool.owner || "", folder: tool.folder || "",
     description: tool.description || "", notes: tool.notes || "", upcoming: tool.upcoming || [], feedback: tool.feedback || [],
+    updated: tool.updated || "",
     visibility: tool.visibility, uncertain: tool.uncertain || [],
     start, dots: healthDots(tool, c.launchCheck, c.today),
     resolved: c.launchCheck && c.launchCheck.ok ? c.launchCheck.real : "", launchArgs: tool.launch ? tool.launch.args : [],
@@ -70,8 +71,16 @@ function toCard(tool, ctx) {
   };
 }
 
+// v1.155.15: newest software first. Sort key = `updated` (YYYY-MM-DD) descending, ties and missing dates by name; a missing date sorts last.
+// Pure and deterministic (same input, same order), so the view never reshuffles between refreshes.
+function byNewest(a, b) {
+  const ua = String(a.updated || ""), ub = String(b.updated || "");
+  if (ua !== ub) return ua === "" ? 1 : ub === "" ? -1 : ua < ub ? 1 : -1;
+  return String(a.name || a.id || "").localeCompare(String(b.name || b.id || ""), "en", { sensitivity: "base" });
+}
+
 function groupCards(cards, labels) {
-  return BASKETS.map((b) => ({ basket: b, label: (labels && typeof labels[b] === "string" && labels[b]) || BASKET_LABELS[b], cards: cards.filter((c) => c.basket === b) }));
+  return BASKETS.map((b) => ({ basket: b, label: (labels && typeof labels[b] === "string" && labels[b]) || BASKET_LABELS[b], cards: cards.filter((c) => c.basket === b).sort(byNewest) }));
 }
 
 // v1.122.0: two tabs. Cards are split by kind first (a missing or unknown kind is "app"), then by the basket groups inside each tab.
@@ -90,4 +99,4 @@ function comingUp(entries, tools, cap) {
   return { total: items.length, items: items.slice(0, n) };
 }
 
-module.exports = { isRunning, healthDots, toCard, groupCards, groupByKind, comingUp, reasonText, TESTED_STALE_DAYS };
+module.exports = { byNewest, isRunning, healthDots, toCard, groupCards, groupByKind, comingUp, reasonText, TESTED_STALE_DAYS };
