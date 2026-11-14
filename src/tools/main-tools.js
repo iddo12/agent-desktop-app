@@ -42,6 +42,7 @@ function init({ ipcMain: raw, getMainWindow, dialog, userData, workspaceRoot, te
     return { ok: true };
   });
   handle("tools-load", () => service().load());
+  handle("tools-grades-load", (a) => service().loadGrades(a));
   handle("tools-start", (a) => service().start(idOf(a)));
   handle("tools-refresh", () => service().refreshStats());
   handle("tools-open-link", (a) => service().openLink(idOf(a), a && a.kind));

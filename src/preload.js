@@ -353,6 +353,7 @@ contextBridge.exposeInMainWorld("api", {
     load: () => ipcRenderer.invoke("tools-load"),
     getPrefs: () => ipcRenderer.invoke("tools-prefs-get"),
     setPrefs: (p) => ipcRenderer.invoke("tools-prefs-set", p),
+    gradesLoad: (a) => ipcRenderer.invoke("tools-grades-load", { sort: a && a.sort, filters: a && a.filters }),
     start: (id) => ipcRenderer.invoke("tools-start", { id }),
     refresh: () => ipcRenderer.invoke("tools-refresh"),
     openLink: (id, kind) => ipcRenderer.invoke("tools-open-link", { id, kind }),

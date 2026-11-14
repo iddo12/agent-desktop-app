@@ -41,6 +41,7 @@ const KEYS = {
   pcHealthScript: { kind: "file", exec: true, exts: [".py"], label: "pc_health.py", derive: (c) => c.sub("sharedTools", "pc_health", "pc_health.py") },
   toolsCatalogue: { kind: "file", label: "Tools catalogue (tools.json)", derive: (c) => c.sub("sharedTools", "tools", "tools.json") },
   styleLibrary: { kind: "folder", label: "My Designs library folder (holds styles.json)", derive: (c) => c.sub("workspaceRoot", "shared_assets", "style_library") },
+  toolsGradesFile: { kind: "file", label: "Tools: grades file for the All programs tab (grades.json)", derive: (c) => c.sub("sharedTools", "tools", "grades.json") },
   toolsBasketLabel: { kind: "text", label: "Tools: heading of the first group of tools (the one your catalogue marks with basket \"acmeco\")", derive: () => null },
   financeVault: { kind: "folder", autoCreate: true, label: "Finance folder", derive: (c) => c.userSub("finance-vault") },
   // My Finance feed (v1.129.0): the read-only JSON the Accounting feed tool writes. Default: <work folder>/finance/feed/finance_feed.json. Never inside a cloud-synced folder (refused at read time).

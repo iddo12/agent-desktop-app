@@ -2,7 +2,7 @@
 // STRUCTURE FOR RESTYLING (UI-UX): all look is in styles-tools.css (tokens --tl-*). All markup is built by the NAMED render functions
 // below (renderHeader, renderBasket, renderCard, renderChip, renderDots, renderStats, renderDrawer, renderComingUp, renderEmpty);
 // restyle or re-lay them out without touching the data/logic section at the bottom.
-// PRIVACY/LIGHT: textContent only; no timers (one 2.5 s re-check after a Start and one toast fade); the page keeps nothing from the
+// PRIVACY/LIGHT: textContent only; timers: one 2.5 s re-check after a Start and one toast fade (the All programs tab has none: it reloads when it opens, on a Reload click and when the window regains focus); the page keeps nothing from the
 // catalogue once the view closes; the renderer never sends a path or command, only a tool id.
 (function () {
   "use strict";
@@ -32,13 +32,13 @@
   }
 
   // v1.122.0: two tabs, "Programs" (kind app, the default) and "Behind the scenes" (kind service). One Tab stop, arrows/Home/End move, remembered per user.
-  const TAB_KINDS = ["app", "service"], TAB_LABELS = { app: "Programs", service: "Behind the scenes" };
+  const TAB_KINDS = ["app", "service", "grades"], TAB_LABELS = { app: "Programs", service: "Behind the scenes", grades: "All programs" };
   const tabInfo = (S, k) => { const t = S.snap && S.snap.ok && Array.isArray(S.snap.tabs) ? S.snap.tabs.find((x) => x.kind === k) : null; return t || { kind: k, label: TAB_LABELS[k], count: 0, groups: [] }; };
   function renderTabs(S) {
     const bar = el("div", "tl-tabs"); bar.setAttribute("role", "tablist"); bar.setAttribute("aria-label", "Tool types");
     TAB_KINDS.forEach((k) => {
       const on = S.tab === k, ti = tabInfo(S, k);
-      const b = el("button", "tl-tab", TAB_LABELS[k] + (S.snap && S.snap.ok ? " (" + ti.count + ")" : "")); b.type = "button"; b.id = "tl-tab-" + k; b.dataset.tab = k;
+      const b = el("button", "tl-tab", TAB_LABELS[k] + (k === "grades" ? (S.g.data && !S.g.data.empty ? " (" + S.g.data.total + ")" : "") : S.snap && S.snap.ok ? " (" + ti.count + ")" : "")); b.type = "button"; b.id = "tl-tab-" + k; b.dataset.tab = k;
       b.setAttribute("role", "tab"); b.setAttribute("aria-selected", on ? "true" : "false"); b.setAttribute("aria-controls", "tl-panel"); b.tabIndex = on ? 0 : -1;
       b.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); S.onTab(k, false); });
       b.addEventListener("keydown", (ev) => {
@@ -52,6 +52,101 @@
   }
   function renderTabEmpty(k) {
     return el("div", "tl-muted tl-tab-empty", k === "service" ? "Nothing behind the scenes yet." : "No programs yet.");
+  }
+
+
+  // ---------------------------------------------------------------- v1.160.0 "All programs": readiness of every tool + what is left (read-only, data from grades.json via main)
+  const G_SORTS = [["score", "Readiness"], ["name", "Name"], ["hours", "Hours to target"], ["lensvid", "LensVid first"]];
+  const G_FILTERS = [["yes", "LensVid yes"], ["maybe", "LensVid maybe"], ["internal", "Internal"], ["needsIddo", "Needs Iddo"]];
+  const G_CRIT = { features: "Features", tests: "Tests", systems: "Other systems", launch: "Launch", interface: "Interface", agent: "Agent use", docs: "Docs", nohardcode: "Nothing hard-coded", identity: "Name and icon", errors: "Error handling", bugs: "Known bugs", licence: "Licence" };
+  const hrs = (h) => (Math.round(h * 10) / 10) + " h";
+  function gBar(pct, target, label) {
+    const b = el("span", "tl-gbar"); b.setAttribute("role", "img"); b.setAttribute("aria-label", label || pct + " percent");
+    const f = el("span", "tl-gbar-f" + (target && pct >= target ? " tl-gbar-ok" : "")); f.style.width = Math.max(0, Math.min(100, pct)) + "%"; b.appendChild(f);
+    if (target) { const m = el("span", "tl-gbar-m"); m.style.left = Math.min(100, target) + "%"; m.title = "Target " + target + "%"; b.appendChild(m); }
+    return b;
+  }
+  function gTaskRow(t) {
+    const r = el("li", "tl-gtask");
+    r.appendChild(el("span", "tl-gtask-t", t.title));
+    const m = el("span", "tl-gtask-m");
+    m.appendChild(gBar(t.pct, 0, t.pct + " percent done"));
+    m.appendChild(el("span", "tl-gtask-n", t.pct + "%  ·  " + hrs(t.hours)));
+    if (t.needsIddo) m.appendChild(el("span", "tl-gtag tl-gtag-iddo", "Needs Iddo"));
+    if (t.zotac) m.appendChild(el("span", "tl-gtag", "Zotac OK"));
+    if (t.model === "opus" || t.model === "fable") m.appendChild(el("span", "tl-gtag", t.model === "opus" ? "Opus" : "Fable"));
+    r.appendChild(m);
+    return r;
+  }
+  function gDetail(row, S) {
+    const d = el("div", "tl-gdetail");
+    if (row.candidateWhy) d.appendChild(el("p", "tl-text", "LensVid: " + row.candidateWhy));
+    if (row.criteria.length) {
+      d.appendChild(el("b", "tl-gh", "Score breakdown"));
+      const ul = el("ul", "tl-gcrit");
+      row.criteria.forEach((c) => {
+        const li = el("li", "tl-gcrit-i"); li.title = c.evidence || "";
+        li.append(el("span", "tl-gcrit-n", G_CRIT[c.key] || c.key), gBar(c.max ? (c.points / c.max) * 100 : 0, 0, c.points + " of " + c.max), el("span", "tl-gcrit-p", c.points + " / " + c.max));
+        if (c.evidence) li.appendChild(el("span", "tl-gcrit-e", c.evidence));
+        ul.appendChild(li);
+      });
+      d.appendChild(ul);
+    }
+    d.appendChild(el("b", "tl-gh", "Left to reach " + row.target + "%"));
+    if (row.tasks.length) { const ul = el("ul", "tl-gtasks"); row.tasks.forEach((t) => ul.appendChild(gTaskRow(t))); d.appendChild(ul); } else d.appendChild(el("p", "tl-muted", "Nothing left on the list."));
+    if (row.laterTasks.length) {
+      const det = el("details", "tl-glater"); det.appendChild(el("summary", "", "After " + row.target + "% (" + row.laterTasks.length + ")"));
+      const ul = el("ul", "tl-gtasks"); row.laterTasks.forEach((t) => ul.appendChild(gTaskRow(t))); det.appendChild(ul); d.appendChild(det);
+    }
+    if (row.testRunToday) d.appendChild(el("p", "tl-muted", "Test run today: " + row.testRunToday));
+    if (row.folder) d.appendChild(el("p", "tl-muted", "Folder: " + row.folder));
+    const hasCard = !!findCard(row.id);
+    const bar = el("div", "tl-gbtns");
+    const ob = btn("Open in Tools view", "tl-btn tl-sm", () => S.onGradeOpenCard(row.id)); ob.disabled = !hasCard; if (!hasCard) ob.title = "Not in the tools catalogue"; bar.appendChild(ob);
+    d.appendChild(bar);
+    return d;
+  }
+  function renderGrades(S) {
+    const G = S.g, box = el("section", "tl-grades");
+    const data = G.data;
+    if (!data) { box.appendChild(el("div", "tl-muted tl-pad", "Reading the grades...")); return box; }
+    if (data.empty) { const c = el("div", "tl-empty"); c.appendChild(el("b", "", "No grading yet")); c.appendChild(el("p", "tl-text", data.reason || "No grading yet - run grade.py")); box.appendChild(c); return box; }
+    const h = data.header;
+    const was = (w, unit) => (w == null ? "" : " (was " + w + (unit || "") + ")");
+    const line = el("div", "tl-ghead");
+    line.appendChild(el("span", "", "Mean readiness " + h.mean + "%" + was(h.meanWas, "%")));
+    line.appendChild(el("span", "", h.atOrAbove + " of " + h.tools + " at or above " + h.target + "%" + was(h.atOrAboveWas)));
+    if (h.generated) line.appendChild(el("span", "tl-muted", "Graded " + h.generated));
+    line.appendChild(btn("Reload", "tl-btn tl-sm", () => { loadGrades(false); }));
+    box.appendChild(line);
+    const ctl = el("div", "tl-gctl");
+    const sel = el("select", "tl-gsel"); sel.setAttribute("aria-label", "Sort by");
+    G_SORTS.forEach(([k, l]) => { const o = el("option", "", l); o.value = k; if (G.sort === k) o.selected = true; sel.appendChild(o); });
+    sel.addEventListener("change", () => { S.onGradeSort(sel.value); });
+    ctl.appendChild(sel);
+    G_FILTERS.forEach(([k, l]) => { const on = G.filters.includes(k); const b = btn(l, "tl-chipb" + (on ? " tl-chipb-on" : ""), () => S.onGradeFilter(k)); b.setAttribute("aria-pressed", on ? "true" : "false"); ctl.appendChild(b); });
+    box.appendChild(ctl);
+    if (!data.tools.length) { box.appendChild(el("div", "tl-muted tl-pad", "No tool matches these filters.")); return box; }
+    const list = el("div", "tl-glist");
+    data.tools.forEach((r) => {
+      const open = G.openId === r.id;
+      const row = el("div", "tl-grow" + (open ? " tl-grow-open" : ""));
+      const head = el("button", "tl-grow-h"); head.type = "button"; head.setAttribute("aria-expanded", open ? "true" : "false");
+      head.addEventListener("click", (ev) => { ev.preventDefault(); S.onGradeToggle(r.id); });
+      const card = findCard(r.id);
+      const sh = card && card.screenshots && card.screenshots[0] && card.screenshots[0].thumb ? card.screenshots[0] : null;
+      head.appendChild(sh ? shotImg(card, sh, "tl-g-thumb") : el("span", "tl-g-thumb tl-g-thumb-empty"));
+      const nm = el("span", "tl-g-name"); nm.appendChild(el("b", "", r.name)); if (r.owner) nm.appendChild(el("span", "tl-muted", r.owner)); head.appendChild(nm);
+      const sc = el("span", "tl-g-score"); sc.append(gBar(r.score, r.target, r.score + " percent ready, target " + r.target), el("b", "", r.score + "%")); head.appendChild(sc);
+      head.appendChild(el("span", "tl-gtag tl-gcand-" + r.candidate, r.candidate === "yes" ? "LensVid" : r.candidate === "maybe" ? "Maybe LensVid" : "Internal"));
+      head.appendChild(el("span", "tl-g-hours", r.score >= r.target ? "Done" : hrs(r.hoursTo90) + (r.hoursTo90NoIddo !== r.hoursTo90 ? " (" + hrs(r.hoursTo90NoIddo) + " without Iddo)" : "")));
+      if (r.needsIddo) { const dd = el("span", "tl-gdot", "●"); dd.title = "A task needs Iddo"; dd.setAttribute("aria-label", "A task needs Iddo"); head.appendChild(dd); }
+      row.appendChild(head);
+      if (open) row.appendChild(gDetail(r, S));
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    return box;
   }
 
   // card size S / M / L (UI-UX spec 2026-10-08): segmented control left of Refresh, one Tab stop, arrows move, remembered per user
@@ -206,6 +301,7 @@
     const meta = el("div", "tl-meta");
     meta.appendChild(el("span", "tl-ver", card.version ? "v" + card.version.replace(/^v/i, "") : "no version"));
     if (card.owner) meta.appendChild(el("span", "tl-owner", card.owner));
+    if (card.readiness != null) { const r = el("span", "tl-ready"); r.title = "Readiness for " + card.readinessStage + " (target " + card.readinessTarget + "%)"; r.append(gBar(card.readiness, card.readinessTarget, card.readiness + " percent, target " + card.readinessTarget), el("b", "", (card.readinessStage === "beta" ? "Beta " : "Ready ") + card.readiness + "%")); meta.appendChild(r); }
     if (card.updated) { const u = el("span", "tl-upd", "Updated " + card.updated); u.title = "Last meaningful build, release or update"; meta.appendChild(u); }
     c.appendChild(meta);
     c.appendChild(el("div", "tl-next", card.next ? "Next: " + card.next : "Next: nothing planned"));
@@ -337,7 +433,7 @@
   view.append(headHost, bodyHost, toast);
   document.getElementById("main-panel").appendChild(view);
 
-  const S = { snap: null, openId: null, starting: null, refreshing: false, galIdx: {}, lb: null, size: "M", tab: "app" };
+  const S = { snap: null, openId: null, starting: null, refreshing: false, galIdx: {}, lb: null, size: "M", tab: "app", g: { data: null, sort: "score", filters: [], openId: null, mtime: 0 } };
   view.dataset.size = S.size;
   // remembered size (main process file); read when the view is built, long before the first click shows it
   function paintHead() { headHost.textContent = ""; headHost.appendChild(renderHeader(S)); if (S.snap && S.snap.ok && S.snap.count) headHost.appendChild(renderTabs(S)); }   // no tabs in the setup, error or empty states
@@ -401,11 +497,30 @@
     say("Card size: " + SIZE_NAMES[k]);
   };
 
+
+  // All programs: load = one IPC (main sorts and filters). No timer (guard test): reloads on open, on Reload and when the window regains focus while this tab is shown.
+  const onGradesFocus = () => { if (open && S.tab === "grades") loadGrades(true); };
+  function stopGradesTimer() { window.removeEventListener("focus", onGradesFocus); }
+  function loadGrades(quiet) {
+    if (!api.gradesLoad) { S.g.data = { empty: true, reason: "Not available in this build." }; if (open) render(); return Promise.resolve(); }
+    return api.gradesLoad({ sort: S.g.sort, filters: S.g.filters }).then((r) => {
+      if (!open || S.tab !== "grades") return;
+      const same = quiet && S.g.data && r && r.mtime && r.mtime === S.g.mtime && !r.empty;
+      S.g.data = r && r.ok ? r : { empty: true, reason: "Could not read the grades." }; S.g.mtime = r && r.mtime || 0;
+      if (!same) render();
+    }).catch(() => { if (open && S.tab === "grades" && !quiet) { S.g.data = { empty: true, reason: "Could not read the grades." }; render(); } });
+  }
+  function startGradesTimer() { stopGradesTimer(); window.addEventListener("focus", onGradesFocus); }
+  S.onGradeSort = (k) => { S.g.sort = k; loadGrades(false).then(() => { const x = bodyHost.querySelector(".tl-gsel"); if (x) x.focus(); }); };
+  S.onGradeFilter = (k) => { const f = S.g.filters; const i = f.indexOf(k); if (i >= 0) f.splice(i, 1); else f.push(k); loadGrades(false).then(() => { const b = [...bodyHost.querySelectorAll(".tl-chipb")].find((x) => x.textContent === (G_FILTERS.find((y) => y[0] === k) || [])[1]); if (b) b.focus(); }); };
+  S.onGradeToggle = (id) => { S.g.openId = S.g.openId === id ? null : id; render(); const h = [...bodyHost.querySelectorAll(".tl-grow-h")].find((x) => x.querySelector(".tl-g-name b") && x.querySelector(".tl-g-name b").textContent === (S.g.data.tools.find((t) => t.id === id) || {}).name); if (h) h.focus(); };
+  S.onGradeOpenCard = (id) => { const c = findCard(id); if (!c) return; stopGradesTimer(); S.tab = c.kind === "service" ? "service" : "app"; S.openId = id; S.focus = "drawer"; S.opener = id; render(); };
+
   S.onTab = (k, focus) => {
     if (S.tab === k) return;
     S.tab = k; S.openId = null;   // the open card may belong to the other tab
-    if (api.setPrefs) api.setPrefs({ tab: k }).catch(() => {});   // not remembered if it fails; the change still applies
-    render();
+    if (k !== "grades" && api.setPrefs) api.setPrefs({ tab: k }).catch(() => {});   // not remembered if it fails; the change still applies. "All programs" is never remembered: the view opens on Programs.
+    if (k === "grades") { S.g.data = null; render(); loadGrades(false); startGradesTimer(); } else { stopGradesTimer(); render(); }
     if (focus) { const nb = headHost.querySelector('.tl-tab[data-tab="' + k + '"]'); if (nb) nb.focus(); }
   };
 
@@ -424,7 +539,8 @@
     const wrap = el("div", "tl-wrap");
     const main = el("div", "tl-main");
     main.id = "tl-panel"; main.setAttribute("role", "tabpanel"); main.setAttribute("aria-labelledby", "tl-tab-" + S.tab);
-    if (!S.snap.count) main.appendChild(renderEmpty(S.snap));
+    if (S.tab === "grades") main.appendChild(renderGrades(S));
+    else if (!S.snap.count) main.appendChild(renderEmpty(S.snap));
     else { const ti = tabInfo(S, S.tab); if (!ti.count) main.appendChild(renderTabEmpty(S.tab)); else ti.groups.forEach((g) => { if (g.cards.length) main.appendChild(renderBasket(g, S)); }); }
     if (S.snap.catalogue && S.snap.catalogue.shots && S.snap.catalogue.shots.length) main.appendChild(el("div", "tl-warn", "Some screenshots were ignored: " + S.snap.catalogue.shots.map((r) => r.id + " (" + r.count + ": " + r.codes.join(", ") + ")").join("; ")));
     if (S.snap.catalogue && S.snap.catalogue.kinds && S.snap.catalogue.kinds.length) main.appendChild(el("div", "tl-warn", "Unknown type ignored (shown under Programs): " + S.snap.catalogue.kinds.map((r) => r.id + " (kind: " + r.code + ")").join("; ")));
@@ -472,7 +588,7 @@
   }
   function close() {
     if (!open) return;
-    open = false; clearTimeout(recheck);
+    open = false; clearTimeout(recheck); stopGradesTimer(); S.g.data = null; S.g.openId = null; if (S.tab === "grades") S.tab = "app";
     document.removeEventListener("click", onDocClick, true);
     document.removeEventListener("keydown", onDocKey);
     document.body.classList.remove("tools-open");

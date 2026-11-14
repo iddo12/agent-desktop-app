@@ -58,7 +58,7 @@ function toCard(tool, ctx) {
     status: tool.status, statusLabel: STATUS_LABELS[tool.status] || tool.status,
     version: tool.version || "", next: tool.next || "", owner: tool.owner || "", folder: tool.folder || "",
     description: tool.description || "", notes: tool.notes || "", upcoming: tool.upcoming || [], feedback: tool.feedback || [],
-    updated: tool.updated || "",
+    updated: tool.updated || "", rank: tool.rank == null ? null : tool.rank, readiness: tool.readiness == null ? null : tool.readiness, readinessTarget: tool.readinessTarget || 90, readinessStage: tool.readinessStage || "beta",
     visibility: tool.visibility, uncertain: tool.uncertain || [],
     start, dots: healthDots(tool, c.launchCheck, c.today),
     resolved: c.launchCheck && c.launchCheck.ok ? c.launchCheck.real : "", launchArgs: tool.launch ? tool.launch.args : [],
@@ -79,8 +79,17 @@ function byNewest(a, b) {
   return String(a.name || a.id || "").localeCompare(String(b.name || b.id || ""), "en", { sensitivity: "base" });
 }
 
+// v1.159.0: ranked tools first (rank ascending); tools without a rank follow, newest first. Same input, same order.
+function byRankThenNewest(a, b) {
+  const ra = a.rank == null ? Infinity : a.rank, rb = b.rank == null ? Infinity : b.rank;
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  const sa = a.readiness == null ? -1 : a.readiness, sb = b.readiness == null ? -1 : b.readiness;
+  if (sa !== sb) return sb - sa;
+  return byNewest(a, b);
+}
+
 function groupCards(cards, labels) {
-  return BASKETS.map((b) => ({ basket: b, label: (labels && typeof labels[b] === "string" && labels[b]) || BASKET_LABELS[b], cards: cards.filter((c) => c.basket === b).sort(byNewest) }));
+  return BASKETS.map((b) => ({ basket: b, label: (labels && typeof labels[b] === "string" && labels[b]) || BASKET_LABELS[b], cards: cards.filter((c) => c.basket === b).sort(byRankThenNewest) }));
 }
 
 // v1.122.0: two tabs. Cards are split by kind first (a missing or unknown kind is "app"), then by the basket groups inside each tab.
@@ -99,4 +108,4 @@ function comingUp(entries, tools, cap) {
   return { total: items.length, items: items.slice(0, n) };
 }
 
-module.exports = { byNewest, isRunning, healthDots, toCard, groupCards, groupByKind, comingUp, reasonText, TESTED_STALE_DAYS };
+module.exports = { byNewest, byRankThenNewest, isRunning, healthDots, toCard, groupCards, groupByKind, comingUp, reasonText, TESTED_STALE_DAYS };
