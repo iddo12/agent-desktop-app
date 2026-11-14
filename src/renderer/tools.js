@@ -206,6 +206,7 @@
     const meta = el("div", "tl-meta");
     meta.appendChild(el("span", "tl-ver", card.version ? "v" + card.version.replace(/^v/i, "") : "no version"));
     if (card.owner) meta.appendChild(el("span", "tl-owner", card.owner));
+    if (card.readiness != null) { const r = el("span", "tl-ready", "Ready " + card.readiness + "%"); r.title = "Beta-readiness score (target 90%)"; meta.appendChild(r); }
     if (card.updated) { const u = el("span", "tl-upd", "Updated " + card.updated); u.title = "Last meaningful build, release or update"; meta.appendChild(u); }
     c.appendChild(meta);
     c.appendChild(el("div", "tl-next", card.next ? "Next: " + card.next : "Next: nothing planned"));

@@ -61,6 +61,9 @@ function validateTool(raw) {
   if (raw.kind != null) { if (KINDS.includes(raw.kind)) e.kind = raw.kind; else e.kindBad = true; }
   // updated (v1.155.15): last meaningful build/release/update date, YYYY-MM-DD; soft field: a bad value loads as '' (the card sorts last) instead of rejecting the entry
   e.updated = isStr(raw.updated) && DATE.test(raw.updated) ? raw.updated : "";
+  // rank (v1.159.0): position in the group, 1 = first; readiness: 0-100 beta-readiness score. Both soft: a bad value loads as null.
+  e.rank = Number.isInteger(raw.rank) && raw.rank >= 1 && raw.rank <= 9999 ? raw.rank : null;
+  e.readiness = typeof raw.readiness === "number" && isFinite(raw.readiness) && raw.readiness >= 0 && raw.readiness <= 100 ? Math.round(raw.readiness) : null;
   e.self = raw.self === true;                       // Agent Desktop's own card: always Running, never launches itself
   if (raw.repo == null || raw.repo === "") e.repo = null; else if (isStr(raw.repo) && REPO.test(raw.repo)) e.repo = raw.repo; else bad("repo", "bad-repo");
   if (raw.release == null) e.release = { url: null, date: null, notes: null };
