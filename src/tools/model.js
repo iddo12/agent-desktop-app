@@ -58,7 +58,7 @@ function toCard(tool, ctx) {
     status: tool.status, statusLabel: STATUS_LABELS[tool.status] || tool.status,
     version: tool.version || "", next: tool.next || "", owner: tool.owner || "", folder: tool.folder || "",
     description: tool.description || "", notes: tool.notes || "", upcoming: tool.upcoming || [], feedback: tool.feedback || [],
-    updated: tool.updated || "", rank: tool.rank == null ? null : tool.rank, readiness: tool.readiness == null ? null : tool.readiness,
+    updated: tool.updated || "", rank: tool.rank == null ? null : tool.rank, readiness: tool.readiness == null ? null : tool.readiness, readinessTarget: tool.readinessTarget || 90, readinessStage: tool.readinessStage || "beta",
     visibility: tool.visibility, uncertain: tool.uncertain || [],
     start, dots: healthDots(tool, c.launchCheck, c.today),
     resolved: c.launchCheck && c.launchCheck.ok ? c.launchCheck.real : "", launchArgs: tool.launch ? tool.launch.args : [],
@@ -83,6 +83,8 @@ function byNewest(a, b) {
 function byRankThenNewest(a, b) {
   const ra = a.rank == null ? Infinity : a.rank, rb = b.rank == null ? Infinity : b.rank;
   if (ra !== rb) return ra < rb ? -1 : 1;
+  const sa = a.readiness == null ? -1 : a.readiness, sb = b.readiness == null ? -1 : b.readiness;
+  if (sa !== sb) return sb - sa;
   return byNewest(a, b);
 }
 

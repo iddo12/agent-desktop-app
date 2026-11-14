@@ -63,7 +63,11 @@ function validateTool(raw) {
   e.updated = isStr(raw.updated) && DATE.test(raw.updated) ? raw.updated : "";
   // rank (v1.159.0): position in the group, 1 = first; readiness: 0-100 beta-readiness score. Both soft: a bad value loads as null.
   e.rank = Number.isInteger(raw.rank) && raw.rank >= 1 && raw.rank <= 9999 ? raw.rank : null;
-  e.readiness = typeof raw.readiness === "number" && isFinite(raw.readiness) && raw.readiness >= 0 && raw.readiness <= 100 ? Math.round(raw.readiness) : null;
+  const rd = isObj(raw.readiness) ? raw.readiness : { score: raw.readiness };
+  const rdScore = typeof rd.score === "number" && isFinite(rd.score) && rd.score >= 0 && rd.score <= 100 ? Math.round(rd.score) : null;
+  e.readiness = rdScore;   // the number or { score, target, stage, graded } (Security grading, 14 Nov)
+  e.readinessTarget = rdScore != null && typeof rd.target === "number" && rd.target >= 1 && rd.target <= 100 ? Math.round(rd.target) : 90;
+  e.readinessStage = rdScore != null && isStr(rd.stage) && rd.stage.length <= 20 ? rd.stage : "beta";
   e.self = raw.self === true;                       // Agent Desktop's own card: always Running, never launches itself
   if (raw.repo == null || raw.repo === "") e.repo = null; else if (isStr(raw.repo) && REPO.test(raw.repo)) e.repo = raw.repo; else bad("repo", "bad-repo");
   if (raw.release == null) e.release = { url: null, date: null, notes: null };

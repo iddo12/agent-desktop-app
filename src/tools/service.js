@@ -181,7 +181,28 @@ function createService(o) {
     return { ok: true };
   }
 
-  return { load, start, refreshStats, openLink, _files: { get catFile() { return getCatFile(); }, statsFile } };
+  // v1.160.0 All programs tab: read-only. The path comes from config (toolsGradesFile); a missing or bad file is an empty state, never an error.
+  const gradesPrevFile = path.join(o.userData, "tools_grades_prev.json");
+  function loadGrades(arg) {
+    const grades = require("./grades");
+    const file = (test && env.AGENT_DESKTOP_TOOLS_GRADES) || cfg.get("toolsGradesFile");
+    if (!file) return { ok: true, empty: true, reason: "No grading file configured (Setup > Tools)." };
+    let doc, mtime = 0;
+    try {
+      const st = fs.statSync(file); if (!st.isFile() || st.size > 4 * 1024 * 1024) return { ok: true, empty: true, reason: "No grading yet - run grade.py" };
+      mtime = st.mtimeMs; doc = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
+    } catch (e) { return { ok: true, empty: true, reason: "No grading yet - run grade.py" }; }
+    const g = grades.parse(doc);
+    if (!g.ok) return { ok: true, empty: true, reason: g.reason };
+    // keep the numbers of the previous generation so the header can say "(was ...)"
+    let st = {}; try { st = JSON.parse(fs.readFileSync(gradesPrevFile, "utf8")); } catch (e) { st = {}; }
+    const now = { generated: g.generated, mean: g.mean, atOrAbove: g.atOrAbove };
+    if (!st.cur || st.cur.generated !== now.generated) { st = { cur: now, prev: st.cur || null }; try { fs.writeFileSync(gradesPrevFile, JSON.stringify(st), "utf8"); } catch (e) { /* comparison just stays as it was */ } }
+    const prev = st.prev && typeof st.prev.mean === "number" ? { ok: true, generated: String(st.prev.generated || ""), mean: st.prev.mean, atOrAbove: st.prev.atOrAbove } : null;
+    return { ok: true, empty: false, mtime, header: grades.headerLine(g, prev), total: g.tools.length, tools: grades.filterRows(grades.sortRows(g.tools, arg && grades.SORTS.includes(arg.sort) ? arg.sort : "score"), arg && Array.isArray(arg.filters) ? arg.filters.filter((x) => typeof x === "string").slice(0, 6) : []) };
+  }
+
+  return { load, start, refreshStats, openLink, loadGrades, _files: { get catFile() { return getCatFile(); }, statsFile } };
 }
 
 module.exports = { createService };

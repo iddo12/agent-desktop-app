@@ -418,7 +418,7 @@ t("ipc: only the main window's own frame may call; oversized argument refused; s
   const wc = { mainFrame: {} }, win = { webContents: wc, isDestroyed: () => false };
   const w = world([base({ id: "a", launch: { path: path.join(os.tmpdir(), "x.vbs") } })]);
   MT.init({ ipcMain: { handle: (c, f) => { handlers[c] = f; } }, getMainWindow: () => win, userData: w.ud, workspaceRoot: w.ws, testMode: true, log: (l) => logs.push(l), env: { AGENT_DESKTOP_TOOLS_DIR: w.cat, AGENT_DESKTOP_TOOLS_ROOTS: w.root }, openExternal() {} });
-  assert.deepStrictEqual(Object.keys(handlers).sort(), ["tools-load", "tools-open-link", "tools-prefs-get", "tools-prefs-set", "tools-refresh", "tools-start"]);
+  assert.deepStrictEqual(Object.keys(handlers).sort(), ["tools-grades-load", "tools-load", "tools-open-link", "tools-prefs-get", "tools-prefs-set", "tools-refresh", "tools-start"]);
   const good = { sender: wc, senderFrame: wc.mainFrame };
   assert.strictEqual((await handlers["tools-load"](good)).ok, true);
   assert.strictEqual((await handlers["tools-load"]({ sender: {}, senderFrame: {} })).ok, false);
