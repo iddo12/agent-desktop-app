@@ -51,4 +51,13 @@ assert.strictEqual(A.likelyOpen({ dialogOpen: false, shortWaiting: false, pendin
 assert.strictEqual(A.likelyOpen({ dialogOpen: false, shortWaiting: false, pending: false, long: L }), false, "no daemon block, no long-text rescue");
 assert.strictEqual(A.likelyOpen({ dialogOpen: true, shortWaiting: false, pending: false, long: "" }), true);
 assert.strictEqual(A.likelyOpen({ dialogOpen: false, shortWaiting: false, pending: true, long: "" }), false);
+
+// v1.158.1: a name-only request ("approve Agent": sub-agent launch, no argument text) must be matchable; the old regex stripped the tool name and left "" (Review Writer 2026-11-14)
+assert.strictEqual(A.wantedText("approve Agent"), "Agent");
+assert.strictEqual(A.wantedText("approve Bash: ls -la /x"), "ls -la /x");
+const agentScreen = "x Esc to interrupt\n Agent(Write Maxima full writeup)\n Do you want to proceed?\n 1. Yes\n Esc to cancel";
+assert.strictEqual(A.openPromptFor(agentScreen, "approve Agent"), true, "Agent launch prompt on screen is recognised");
+assert.strictEqual(A.openPromptFor(agentScreen + "\n Esc to interrupt", "approve Agent"), false, "answered and working again: not open");
+assert.strictEqual(A.openPromptFor("working Esc to interrupt", "approve Agent"), false, "no dialog: not open");
+
 console.log("approvalScreen ok");

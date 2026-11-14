@@ -3431,6 +3431,8 @@ async function checkApprovalBlocked() {
       let best = null, bestT = 0;
       for (const fn of fs.readdirSync(pdir)) { if (!/\.jsonl$/.test(fn)) continue; const t = fs.statSync(path.join(pdir, fn)).mtimeMs; if (t > bestT) { bestT = t; best = fn; } }
       if (!best || best.replace(/\.jsonl$/, "") !== st.sessionId || st.state !== "working") continue;
+      // v1.158.1: the agent kept writing to its transcript well after the request was first seen = it was answered / moved on, the job file is stale (Review Writer card "waiting 16 min" with its sub-agents already run, Iddo 2026-11-14)
+      if (bestT > since + 20000) { approvalPending.delete(agentPath); approvalBlockedSince.delete(agentPath); continue; }
     } catch (_) { continue; }
     // shown in the Approvals pop-up and the banner. A CHANGED request is a new request: new `since`, so a click on the old card is refused.
     {
@@ -3583,7 +3585,8 @@ function assertApprovalsOnTop(w, soft) {
     // the next focus change back to Agent Desktop puts THYRA on top again (the momentary drop Iddo suggested 2026-11-07).
     // v1.155.6: the guard is now "is a capture tool in front", not "is one of our windows focused": Claude Desktop is itself a topmost window, so when Iddo clicked it
     // none of ours had focus, nothing re-raised THYRA and Claude (activated later, same topmost band) stayed above it (Iddo 2026-11-09).
-    if (soft && w.isAlwaysOnTop()) { if (thyraFgIsCapture()) return; if (w.isVisible() && !w.isMinimized()) w.moveTop(); return; }
+    if (soft && w.isAlwaysOnTop()) { if (thyraFgIsCapture() || soft !== "fg") return;   // v1.158.1: only a change of foreground program re-raises; the 1 s timer / blur / show never do (Lightshot's overlay takes no foreground, so the timer put THYRA over it, Iddo 2026-11-14)
+      if (w.isVisible() && !w.isMinimized()) w.moveTop(); return; }
     w.setAlwaysOnTop(true, "screen-saver");
     if (w.isVisible() && !w.isMinimized()) w.moveTop();
   } catch (e) { /* cosmetic */ }
@@ -3607,13 +3610,13 @@ function openApprovalsWindow() {
   w.webContents.on("will-navigate", (e) => e.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   w.__thyraWantTop = !!st.onTop;
-  const reassert = () => {
+  const reassert = (why) => {
     // v1.155.9: Win+D / "Show desktop" / another program minimizing or hiding the dock must not make it vanish (it has no taskbar button): bring it back unless the owner minimized it with its own button.
     try { if (!w.isDestroyed() && !w.__thyraUserMin && !w.__thyraCapture) { if (w.isMinimized()) { logStuckWatchdog("THYRA dock was minimized by something else, restoring"); w.restore(); } else if (!w.isVisible()) { logStuckWatchdog("THYRA dock was hidden by something else, showing"); w.showInactive(); } } } catch (e) { /* cosmetic */ }
-    if (w.__thyraWantTop) assertApprovalsOnTop(w, true);
+    if (w.__thyraWantTop) assertApprovalsOnTop(w, why === "fg" ? "fg" : true);
   };
   w.on("minimize", () => setTimeout(reassert, 150)); w.on("restore", () => { w.__thyraUserMin = false; });
-  startThyraFgWatcher(() => { if (!w.isDestroyed() && w.__thyraWantTop) setTimeout(reassert, 80); });   // v1.155.6: re-raise whenever another program (Claude Desktop ...) comes to the front
+  startThyraFgWatcher(() => { if (!w.isDestroyed() && w.__thyraWantTop) setTimeout(() => reassert("fg"), 80); });   // v1.155.6: re-raise whenever another program (Claude Desktop ...) comes to the front
   w.on("blur", () => setTimeout(reassert, 50)); w.on("show", reassert); w.on("restore", reassert);
   const topTimer = setInterval(() => { if (w.isDestroyed()) clearInterval(topTimer); else reassert(); }, 1000); topTimer.unref();
   const appEv = () => setTimeout(reassert, 50); app.on("browser-window-blur", appEv); app.on("browser-window-focus", appEv);

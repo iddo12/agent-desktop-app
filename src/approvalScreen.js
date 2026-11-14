@@ -22,9 +22,19 @@ function longPromptOpen(longText) {
   return iDlg > s.lastIndexOf("esctointerrupt");
 }
 
+// v1.158.1: the text to look for on the screen. "approve Bash: ls -la" -> "ls -la"; a name-only request such as "approve Agent"
+// (a sub-agent launch has no argument text) -> "Agent". The old regex (approve\s*\w*\s*:?) ate the tool name when there was no colon,
+// left "", and refused every such card as "not the same prompt" (Review Writer, 2026-11-14: Approve never worked for Agent launches).
+function wantedText(needs) {
+  const t = String(needs || "").trim();
+  const m = /^approve\s+\w+\s*:\s*([\s\S]*)$/i.exec(t);
+  if (m) return m[1];
+  return t.replace(/^approve\s+/i, "");
+}
+
 // the start of the pending command (first 30 non-space chars, as approval-answer already compares) is anywhere in the long text
 function commandOnScreen(longText, needs) {
-  const want = squash(String(needs || "").replace(/^approve\s*\w*\s*:?\s*/i, "")).slice(0, 30);
+  const want = squash(wantedText(needs)).slice(0, 30);
   return want.length >= 3 && squash(longText).includes(want);
 }
 
@@ -38,7 +48,7 @@ function diagnose(o) {
 // (a second prompt with the same start, drawn later, fails because its own text is the last occurrence and the old one is before
 // a working marker; two dialogs after the command mean we cannot tell which one the click would answer).
 function openPromptFor(longText, needs) {
-  const want = squash(String(needs || "").replace(/^approve\s*\w*\s*:?\s*/i, "")).slice(0, 120);
+  const want = squash(wantedText(needs)).slice(0, 120);
   if (want.length < 3) return false;
   const s = squash(longText), l = s.toLowerCase();
   const i = l.lastIndexOf(want.toLowerCase());
@@ -53,4 +63,4 @@ function likelyOpen(o) {
   return !!o.pending && longPromptOpen(o.long);
 }
 
-module.exports = { appendLong, longPromptOpen, commandOnScreen, openPromptFor, likelyOpen, diagnose, LONG_KEEP, squash };
+module.exports = { wantedText, appendLong, longPromptOpen, commandOnScreen, openPromptFor, likelyOpen, diagnose, LONG_KEEP, squash };
